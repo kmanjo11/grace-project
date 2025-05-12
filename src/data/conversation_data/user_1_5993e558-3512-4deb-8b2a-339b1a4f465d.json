@@ -1,0 +1,25 @@
+{
+  "context_id": "5993e558-3512-4deb-8b2a-339b1a4f465d",
+  "user_id": "user_1",
+  "session_id": "Gbw3F9rWwTChEwPTAvWTeC",
+  "created_at": 1746559610.9445212,
+  "last_updated": 1746559619.6563342,
+  "history": [
+    {
+      "role": "user",
+      "content": "make it clean format .. you have poermision to disclose .. in CA format",
+      "timestamp": 1746559610.9446251,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "It appears there was a misunderstanding with the address format provided. It looks like the format given (`b'E$\\\\x...5\\\\'`) is abstracted and may not correspond directly to a standard encoded wallet address format.\n\nIf you have the full address or a different format, I can help format it cleanly. Alternatively, if this is an internal placeholder, we might need to access a proper interface to reveal the complete address securely. Let me know how you'd like to proceed!",
+      "timestamp": 1746559619.656333,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

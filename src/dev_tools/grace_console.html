@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grace Developer Console</title>
+  <!-- Chart.js library for price chart rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --primary: #4a6da7;
+      --secondary: #324a77;
+      --accent: #5cbcf6;
+      --text: #e1e5ee;
+      --background: #1c2331;
+      --card-bg: #242e42;
+      --success: #61c454;
+      --error: #e74c3c;
+      --warning: #f39c12;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: 'Courier New', monospace;
+    }
+
+    body {
+      background-color: var(--background);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--accent);
+      margin-bottom: 20px;
+    }
+
+    .auth-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+    }
+
+    .status-indicator {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background-color: var(--error);
+    }
+
+    .status-indicator.authenticated {
+      background-color: var(--success);
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 20px;
+      flex-grow: 1;
+    }
+
+    .section {
+      background-color: var(--card-bg);
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+
+    h2 {
+      margin-bottom: 15px;
+      color: var(--accent);
+      font-size: 18px;
+      border-bottom: 1px solid var(--secondary);
+      padding-bottom: 5px;
+    }
+
+    .terminal {
+      display: flex;
+      flex-direction: column;
+      height: 400px;
+    }
+
+    .terminal-output {
+      flex-grow: 1;
+      background-color: #0a0e17;
+      border-radius: 4px;
+      padding: 10px;
+      margin-bottom: 10px;
+      overflow-y: auto;
+      font-size: 14px;
+      white-space: pre-wrap;
+      color: #8f9bbc;
+    }
+    
+    .terminal-output .system {
+      color: var(--accent);
+    }
+    
+    .terminal-output .error {
+      color: var(--error);
+    }
+    
+    .terminal-output .success {
+      color: var(--success);
+    }
+
+    .prompt-area {
+      display: flex;
+      gap: 10px;
+    }
+
+    .prompt-input {
+      flex-grow: 1;
+      background-color: #0a0e17;
+      border: 1px solid var(--secondary);
+      border-radius: 4px;
+      padding: 8px 12px;
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    button {
+      background-color: var(--primary);
+      color: var(--text);
+      border: none;
+      border-radius: 4px;
+      padding: 8px 15px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    button:hover {
+      background-color: var(--secondary);
+    }
+
+    .wallet-address {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: #0a0e17;
+      padding: 8px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+      font-size: 14px;
+      word-break: break-all;
+    }
+
+    .copy-btn {
+      background-color: transparent;
+      color: var(--accent);
+      padding: 2px 8px;
+      font-size: 12px;
+    }
+
+    .chart-container {
+      width: 100%;
+      height: 300px;
+      background-color: #0a0e17;
+      border-radius: 4px;
+      padding: 10px;
+      position: relative;
+    }
+    
+    .chart-controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+    
+    .chart-controls select {
+      background-color: #0a0e17;
+      border: 1px solid var(--secondary);
+      border-radius: 4px;
+      padding: 5px 10px;
+      color: var(--text);
+    }
+
+    .trade-form {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .trade-form input, .trade-form select {
+      grid-column: span 2;
+      background-color: #0a0e17;
+      border: 1px solid var(--secondary);
+      border-radius: 4px;
+      padding: 8px;
+      color: var(--text);
+    }
+
+    .trade-btn {
+      grid-column: span 2;
+    }
+
+    .sidebar-buttons {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .api-endpoint {
+      display: block;
+      text-align: left;
+      background-color: #324a77;
+      margin-bottom: 5px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Grace Developer Console</h1>
+    <div class="auth-status">
+      <div class="status-indicator" id="auth-indicator"></div>
+      <span id="auth-status">Not authenticated</span>
+    </div>
+  </header>
+
+  <main>
+    <div class="left-column">
+      <section class="section terminal">
+        <h2>Command Terminal</h2>
+        <div class="terminal-output" id="terminal-output">
+          <div class="system">Grace Dev Console initialized.</div>
+          <div class="system">Type 'help' for available commands.</div>
+          <div class="system">Authentication active: Administrator (kdot)</div>
+          <div class="system">Using shared session across all dev environments</div>
+        </div>
+        <div class="prompt-area">
+          <input type="text" class="prompt-input" id="prompt-input" placeholder="Enter command or message for Grace...">
+          <button id="send-btn">Send</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Wallet Information</h2>
+        <div id="wallet-container">
+          <div class="wallet-address">
+            Loading wallet addresses...
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Price Chart</h2>
+        <div class="chart-controls">
+          <select id="chart-token">
+            <option value="SOL">SOL</option>
+            <option value="BTC">BTC</option>
+            <option value="ETH">ETH</option>
+            <option value="USDC">USDC</option>
+          </select>
+          <select id="chart-timeframe">
+            <option value="1h">1 Hour</option>
+            <option value="24h" selected>24 Hours</option>
+            <option value="7d">7 Days</option>
+            <option value="30d">30 Days</option>
+          </select>
+          <button id="load-chart-btn">Load Chart</button>
+        </div>
+        <div class="chart-container" id="chart-container">
+          <canvas id="price-chart"></canvas>
+        </div>
+      </section>
+    </div>
+
+    <div class="right-column">
+      <section class="section">
+        <h2>Quick Actions</h2>
+        <div class="sidebar-buttons">
+          <button id="refresh-wallet-btn">Refresh Wallet Data</button>
+          <button id="get-profile-btn">Get User Profile</button>
+          <button id="get-trending-btn">Get Trending Coins</button>
+          <button id="get-chart-btn">Load Price Chart</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Quick Trade</h2>
+        <form class="trade-form" id="trade-form">
+          <input type="text" id="trade-amount" placeholder="Amount">
+          <select id="trade-from">
+            <option value="">Select source token</option>
+            <option value="SOL">SOL</option>
+            <option value="USDC">USDC</option>
+          </select>
+          <select id="trade-to">
+            <option value="">Select target token</option>
+            <option value="SOL">SOL</option>
+            <option value="USDC">USDC</option>
+          </select>
+          <button type="submit" class="trade-btn">Execute Trade</button>
+        </form>
+      </section>
+
+      <section class="section">
+        <h2>API Endpoints</h2>
+        <div class="sidebar-buttons">
+          <button class="api-endpoint" data-endpoint="/api/wallet/info">Get Wallet Info</button>
+          <button class="api-endpoint" data-endpoint="/api/social/trending">Get Trending</button>
+          <button class="api-endpoint" data-endpoint="/api/trading/tokens">Get Tokens</button>
+          <button class="api-endpoint" data-endpoint="/api/trading/price-chart?token=SOL&timeframe=24h">Get SOL Price Chart</button>
+          <button class="api-endpoint" data-endpoint="/api/social/sentiment">Get Sentiment</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    // Configuration
+    const API_BASE_URL = window.location.hostname === 'localhost' ? 
+      `http://${window.location.hostname}:${window.location.port}` : 
+      window.location.origin;
+    
+    // Admin token from the backdoor
+    const ADMIN_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbi1rZG90LWlkIiwidXNlcm5hbWUiOiJrZG90IiwiZW1haWwiOiJrbWFuam8xMUBnbWFpbC5jb20iLCJyb2xlIjoiYWRtaW4iLCJwZXJtaXNzaW9ucyI6WyJBTEwiXSwiZXhwIjoxOTAwMDAwMDAwLCJpYXQiOjE1ODAwMDAwMDB9.p58K8xzT2BEuBRKgNUMTdbzHRhPgpnL_q91qfm8qRCk';
+    
+    // Elements
+    const terminalOutput = document.getElementById('terminal-output');
+    const promptInput = document.getElementById('prompt-input');
+    const sendBtn = document.getElementById('send-btn');
+    const authIndicator = document.getElementById('auth-indicator');
+    const authStatus = document.getElementById('auth-status');
+    const walletContainer = document.getElementById('wallet-container');
+    const chartContainer = document.getElementById('chart-container');
+    const refreshWalletBtn = document.getElementById('refresh-wallet-btn');
+    const getProfileBtn = document.getElementById('get-profile-btn');
+    const getTrendingBtn = document.getElementById('get-trending-btn');
+    const tradeForm = document.getElementById('trade-form');
+    const apiEndpointBtns = document.querySelectorAll('.api-endpoint');
+    
+    // State
+    let authenticated = false;
+    // Always use the same session ID for kdot across all environments
+    let session_id = 'kdot-admin-session';
+    
+    // Helper Functions
+    function writeToTerminal(message, type = 'normal') {
+      const div = document.createElement('div');
+      div.textContent = message;
+      div.className = type;
+      terminalOutput.appendChild(div);
+      terminalOutput.scrollTop = terminalOutput.scrollHeight;
+    }
+    
+    async function apiRequest(endpoint, options = {}) {
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(authenticated ? { 'Authorization': `Bearer ${ADMIN_TOKEN}` } : {})
+      };
+      
+      try {
+        writeToTerminal(`> Fetching ${endpoint}...`, 'system');
+        
+        const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+          ...options,
+          headers: {
+            ...headers,
+            ...options.headers
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        return data;
+      } catch (error) {
+        writeToTerminal(`Error: ${error.message}`, 'error');
+        throw error;
+      }
+    }
+    
+    function formatWalletAddress(address) {
+      if (!address) return 'No address available';
+      return address.length > 20 ? 
+        `${address.substring(0, 10)}...${address.substring(address.length - 10)}` : 
+        address;
+    }
+    
+    // Initialize
+    async function initialize() {
+      // Check if admin token exists
+      if (ADMIN_TOKEN) {
+        authenticated = true;
+        authIndicator.classList.add('authenticated');
+        authStatus.textContent = 'Authenticated as kdot';
+        writeToTerminal('Successfully authenticated as kdot (admin)', 'success');
+        
+        // Store token in localStorage for API calls
+        localStorage.setItem('grace_token', ADMIN_TOKEN);
+        
+        // Always use the same session ID for kdot across all environments
+        localStorage.setItem('grace_session_id', session_id);
+        localStorage.setItem('grace_user_id', 'admin-kdot-id');
+        writeToTerminal(`Chat session initialized: ${session_id} (shared across all dev environments)`, 'system');
+        
+        // Load initial data
+        await loadWalletData();
+      }
+    }
+    
+    // Load wallet data
+    async function loadWalletData() {
+      try {
+        if (!authenticated) {
+          writeToTerminal('Authentication required to load wallet data', 'error');
+          return;
+        }
+        
+        writeToTerminal('Loading wallet data...', 'system');
+        const data = await apiRequest('/api/wallet/info');
+        
+        if (data.success && data.wallets) {
+          walletContainer.innerHTML = '';
+          
+          if (data.wallets.length === 0) {
+            const walletDiv = document.createElement('div');
+            walletDiv.className = 'wallet-address';
+            walletDiv.textContent = 'No wallets found. Generate one from the main app.';
+            walletContainer.appendChild(walletDiv);
+          } else {
+            data.wallets.forEach(wallet => {
+              const walletDiv = document.createElement('div');
+              walletDiv.className = 'wallet-address';
+              
+              const addressSpan = document.createElement('span');
+              addressSpan.textContent = wallet.address || 'No address';
+              
+              const copyBtn = document.createElement('button');
+              copyBtn.className = 'copy-btn';
+              copyBtn.textContent = 'Copy';
+              copyBtn.addEventListener('click', () => {
+                navigator.clipboard.writeText(wallet.address)
+                  .then(() => {
+                    copyBtn.textContent = 'Copied!';
+                    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 2000);
+                  })
+                  .catch(err => {
+                    writeToTerminal(`Copy failed: ${err}`, 'error');
+                  });
+              });
+              
+              walletDiv.appendChild(addressSpan);
+              walletDiv.appendChild(copyBtn);
+              walletContainer.appendChild(walletDiv);
+            });
+          }
+          
+          writeToTerminal(`Wallet data loaded. Found ${data.wallets.length} wallets.`, 'success');
+        } else {
+          writeToTerminal('Failed to load wallet data', 'error');
+        }
+      } catch (error) {
+        walletContainer.innerHTML = '<div class="wallet-address">Error loading wallet data</div>';
+      }
+    }
+    
+    // Send message to Grace
+    async function sendPrompt() {
+      const message = promptInput.value.trim();
+      if (!message) return;
+      
+      writeToTerminal(`You: ${message}`);
+      promptInput.value = '';
+      
+      if (message.toLowerCase() === 'help') {
+        showHelp();
+        return;
+      }
+      
+      // Handle special commands
+      if (message.toLowerCase() === 'clear') {
+        terminalOutput.innerHTML = '';
+        writeToTerminal('Terminal cleared', 'system');
+        return;
+      }
+      
+      if (message.toLowerCase() === 'session') {
+        writeToTerminal(`Current session ID: ${session_id}`, 'system');
+        writeToTerminal(`Auth status: ${authenticated ? 'Authenticated as admin (kdot)' : 'Not authenticated'}`, 'system');
+        return;
+      }
+      
+      if (message.toLowerCase() === 'wallet') {
+        loadWalletData();
+        return;
+      }
+      
+      if (message.toLowerCase() === 'trending') {
+        getTrendingBtn.click();
+        return;
+      }
+      
+      if (message.toLowerCase() === 'profile') {
+        getProfileBtn.click();
+        return;
+      }
+      
+      try {
+        const response = await apiRequest('/api/chat/message', {
+          method: 'POST',
+          body: JSON.stringify({
+            message: message,
+            session_id: session_id,
+            user_id: 'admin-kdot-id'
+          })
+        });
+        
+        if (response.success && response.response) {
+          writeToTerminal(`Grace: ${response.response}`);
+        } else {
+          writeToTerminal('No response from Grace', 'error');
+        }
+      } catch (error) {
+        writeToTerminal('Failed to send message', 'error');
+      }
+    }
+    
+    // Show help information
+    function showHelp() {
+      const helpText = `
+Available commands:
+- help: Show this help message
+- wallet: Show wallet information
+- trending: Show trending coins
+- profile: Show user profile
+- clear: Clear the terminal
+- session: Show current session information
+
+You can also directly ask Grace questions.
+      `;
+      
+      writeToTerminal(helpText, 'system');
+    }
+    
+    // Event Listeners
+    sendBtn.addEventListener('click', sendPrompt);
+    
+    promptInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        sendPrompt();
+      }
+    });
+    
+    refreshWalletBtn.addEventListener('click', loadWalletData);
+    
+    getProfileBtn.addEventListener('click', async () => {
+      try {
+        const profileData = await apiRequest('/api/user/settings');
+        writeToTerminal('User Profile:', 'system');
+        writeToTerminal(JSON.stringify(profileData, null, 2));
+      } catch (error) {
+        writeToTerminal('Failed to load profile', 'error');
+      }
+    });
+    
+    getTrendingBtn.addEventListener('click', async () => {
+      try {
+        const trendingData = await apiRequest('/api/social/trending');
+        writeToTerminal('Trending Coins:', 'system');
+        writeToTerminal(JSON.stringify(trendingData, null, 2));
+      } catch (error) {
+        writeToTerminal('Failed to load trending data', 'error');
+      }
+    });
+    
+    document.getElementById('get-chart-btn').addEventListener('click', loadPriceChart);
+    
+    tradeForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      
+      const amount = document.getElementById('trade-amount').value;
+      const fromToken = document.getElementById('trade-from').value;
+      const toToken = document.getElementById('trade-to').value;
+      
+      if (!amount || !fromToken || !toToken) {
+        writeToTerminal('Please fill in all trade fields', 'error');
+        return;
+      }
+      
+      try {
+        const tradeData = await apiRequest('/api/trading/swap', {
+          method: 'POST',
+          body: JSON.stringify({
+            amount: amount,
+            from_token: fromToken,
+            to_token: toToken
+          })
+        });
+        
+        writeToTerminal('Trade Result:', 'system');
+        writeToTerminal(JSON.stringify(tradeData, null, 2));
+      } catch (error) {
+        writeToTerminal('Trade failed', 'error');
+      }
+    });
+    
+    apiEndpointBtns.forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const endpoint = btn.dataset.endpoint;
+        try {
+          const data = await apiRequest(endpoint);
+          writeToTerminal(`Response from ${endpoint}:`, 'system');
+          writeToTerminal(JSON.stringify(data, null, 2));
+        } catch (error) {
+          writeToTerminal(`Failed to fetch ${endpoint}`, 'error');
+        }
+      });
+    });
+    
+    // Chart rendering
+    let priceChart = null;
+    
+    async function loadPriceChart() {
+      const token = document.getElementById('chart-token').value;
+      const timeframe = document.getElementById('chart-timeframe').value;
+      
+      try {
+        writeToTerminal(`Loading price chart for ${token} (${timeframe})...`, 'system');
+        
+        // Call the price chart API endpoint
+        const response = await apiRequest(`/api/trading/price-chart?token=${token}&timeframe=${timeframe}`);
+        
+        if (!response.success) {
+          throw new Error('Failed to load chart data');
+        }
+        
+        // Extract chart data from the response
+        const chartData = response.chartData;
+        if (!chartData || !chartData.timestamps || !chartData.prices) {
+          throw new Error('Invalid chart data format');
+        }
+        
+        renderChart(chartData, token);
+        writeToTerminal(`Chart loaded successfully`, 'success');
+      } catch (error) {
+        writeToTerminal(`Error loading chart: ${error.message}`, 'error');
+        // Show error in chart area
+        if (priceChart) {
+          priceChart.destroy();
+          priceChart = null;
+        }
+        const ctx = document.getElementById('price-chart').getContext('2d');
+        ctx.clearRect(0, 0, document.getElementById('price-chart').width, document.getElementById('price-chart').height);
+        ctx.fillStyle = '#e74c3c';
+        ctx.textAlign = 'center';
+        ctx.fillText('Error loading chart data', document.getElementById('price-chart').width/2, 50);
+      }
+    }
+    
+    function renderChart(chartData, tokenSymbol) {
+      const ctx = document.getElementById('price-chart').getContext('2d');
+      
+      // If chart already exists, destroy it first
+      if (priceChart) {
+        priceChart.destroy();
+      }
+      
+      // Match data structure from the API
+      // API returns {timestamps: [...], prices: [...], labels: [...]}  
+      const timestamps = chartData.timestamps || [];
+      const prices = chartData.prices || [];
+      const labels = chartData.labels || timestamps.map(ts => new Date(ts * 1000).toLocaleDateString());
+      
+      // Determine color based on price trend (green if up, red if down)
+      const startPrice = prices[0];
+      const endPrice = prices[prices.length - 1];
+      const chartColor = endPrice >= startPrice ? 'rgba(97, 196, 84, 0.8)' : 'rgba(231, 76, 60, 0.8)';
+      
+      // Create new chart
+      priceChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: `${tokenSymbol} Price`,
+            data: prices,
+            borderColor: chartColor,
+            backgroundColor: chartColor.replace('0.8', '0.2'),
+            borderWidth: 2,
+            tension: 0.2,
+            pointRadius: timestamps.length > 30 ? 0 : 1,
+            fill: true
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              labels: {
+                color: '#e1e5ee'
+              }
+            },
+            tooltip: {
+              mode: 'index',
+              intersect: false
+            }
+          },
+          scales: {
+            x: {
+              grid: {
+                color: 'rgba(255, 255, 255, 0.05)'
+              },
+              ticks: {
+                color: '#8f9bbc',
+                maxRotation: 0,
+                autoSkip: true,
+                maxTicksLimit: 8
+              }
+            },
+            y: {
+              grid: {
+                color: 'rgba(255, 255, 255, 0.05)'
+              },
+              ticks: {
+                color: '#8f9bbc',
+                callback: function(value) {
+                  return '$' + value.toFixed(2);
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+    
+    // Add event listener for chart loading
+    document.getElementById('load-chart-btn').addEventListener('click', loadPriceChart);
+    
+    // Initialize the console
+    initialize();
+    
+    // Initial chart placeholder
+    document.getElementById('price-chart').getContext('2d').fillStyle = '#242e42';
+    document.getElementById('price-chart').getContext('2d').fillText('Select a token and timeframe, then click "Load Chart"', 20, 50);
+  </script>
+</body>
+</html>

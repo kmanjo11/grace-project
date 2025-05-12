@@ -1,0 +1,25 @@
+{
+  "context_id": "af7afe21-9e0e-4571-a92b-6e29bdbec6e5",
+  "user_id": "user_1",
+  "session_id": "JAGd4ShCTLKSATL5E4qFMN",
+  "created_at": 1746559501.2754507,
+  "last_updated": 1746559506.1414032,
+  "history": [
+    {
+      "role": "user",
+      "content": "hi",
+      "timestamp": 1746559501.2755516,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! How can I assist you today?",
+      "timestamp": 1746559506.1414,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

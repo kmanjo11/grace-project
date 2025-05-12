@@ -1,0 +1,9 @@
+{
+  "98e195e2-227f-411f-a1a2-86f6281de69f": {
+    "user_id": "test_user_id",
+    "email": "test@example.com",
+    "created_at": 1745638315.520479,
+    "expires_at": 1745724715.520418,
+    "used": true
+  }
+}

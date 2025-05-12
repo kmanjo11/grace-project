@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  grace_app:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - ./keys:/app/keys  # Mount private key volume
+    environment:
+      - MANGO_V3_BASE_URL=${MANGO_V3_BASE_URL}
+      - MANGO_V3_PRIVATE_KEY_PATH=${MANGO_V3_PRIVATE_KEY_PATH}
+
+  mango_v3_service:
+    image: mango-v3-service  # Replace with actual Mango V3 service image
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./mango_v3_config:/config

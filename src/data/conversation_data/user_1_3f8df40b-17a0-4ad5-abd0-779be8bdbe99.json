@@ -1,0 +1,56 @@
+{
+  "context_id": "3f8df40b-17a0-4ad5-abd0-779be8bdbe99",
+  "user_id": "user_1",
+  "session_id": "dYPV2LkSPwM4vhcbeZ8AKP",
+  "created_at": 1746559553.2802072,
+  "last_updated": 1746559557.930475,
+  "history": [
+    {
+      "role": "user",
+      "content": "can you completely execute a trade for me ...without issue?",
+      "timestamp": 1746559553.2802713,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "I can help you with cryptocurrency trading on the Solana blockchain. The process is secure, and I'll guide you through each step, requiring your explicit approval to ensure safety.\n\n1. We'll start by reviewing your wallet balance and the available cryptocurrencies.\n2. We'll discuss the specific trade you have in mind.\n3. I'll generate a transaction that you'll need to approve before it is executed.\n\nLet's begin by checking your wallet. Would you like to see your wallet information first?",
+      "timestamp": 1746559557.9304721,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [
+    {
+      "name": "trading",
+      "confidence": 0.8,
+      "first_mentioned": 1746559553.2802982,
+      "last_mentioned": 1746559553.2802982
+    }
+  ],
+  "entities": {},
+  "background_tasks": {
+    "wallet_check_1746559557_140619353409536": {
+      "type": "wallet_check",
+      "status": "completed",
+      "created_at": 1746559557.922632,
+      "updated_at": 1746559557.922632,
+      "data": {
+        "wallet_data": {
+          "status": "success",
+          "user_id": "user_1",
+          "wallets": [
+            {
+              "type": "internal",
+              "address": "b'E$\\x1f\\xdc\\xcb\\xde\\xdb\\xf9\\x1d\\xcc\\x885\\x80\\x16\\x1dA|\\xac\\xcbB\\xb9\\x1fU\\xc7\\xd6\\xdf\\xc1\\xbd\\x0c\\xf9\\xe5\\\\'",
+              "balance": {
+                "sol": 0.0,
+                "usdc": 0.0
+              }
+            }
+          ]
+        },
+        "timestamp": 1746559557.922553
+      }
+    }
+  },
+  "state": "active"
+}

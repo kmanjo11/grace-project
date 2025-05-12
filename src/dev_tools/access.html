@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grace Dev Console Access</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      background-color: #1c2331;
+      color: #e1e5ee;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      padding: 20px;
+      text-align: center;
+    }
+    
+    h1 {
+      color: #5cbcf6;
+      margin-bottom: 30px;
+    }
+    
+    .access-card {
+      background-color: #242e42;
+      border-radius: 8px;
+      padding: 30px;
+      max-width: 600px;
+      width: 100%;
+    }
+    
+    .button-container {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      margin: 30px 0;
+    }
+    
+    button {
+      background-color: #4a6da7;
+      color: #e1e5ee;
+      border: none;
+      border-radius: 4px;
+      padding: 12px 20px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+      font-size: 16px;
+    }
+    
+    button:hover {
+      background-color: #324a77;
+    }
+    
+    .info {
+      background-color: #0a0e17;
+      padding: 15px;
+      border-radius: 4px;
+      margin-top: 20px;
+      text-align: left;
+      font-size: 14px;
+    }
+    
+    .highlight {
+      color: #5cbcf6;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="access-card">
+    <h1>Grace Developer Tools</h1>
+    
+    <div class="button-container">
+      <button id="console-btn">Launch Developer Console</button>
+      <button id="main-app-btn">Go to Main Application</button>
+      <button id="admin-access-btn">Access Main App as Admin</button>
+    </div>
+    
+    <div class="info">
+      <p><span class="highlight">Developer Console:</span> Direct terminal-style access to Grace Core APIs</p>
+      <p><span class="highlight">Main Application:</span> The full Grace user interface</p>
+      <p><span class="highlight">Admin Access:</span> Automatic login to main app as admin user "kdot"</p>
+    </div>
+  </div>
+  
+  <script>
+    document.getElementById('console-btn').addEventListener('click', () => {
+      window.location.href = 'grace_console.html';
+    });
+    
+    document.getElementById('main-app-btn').addEventListener('click', () => {
+      const baseUrl = window.location.href.split('/dev_tools')[0];
+      window.location.href = `${baseUrl}/`;
+    });
+    
+    document.getElementById('admin-access-btn').addEventListener('click', () => {
+      const baseUrl = window.location.href.split('/dev_tools')[0];
+      window.location.href = `${baseUrl}/?xmaster=kdotaccess`;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "context_id": "74aee353-cdbf-40db-8ec2-131e916518bb",
+  "user_id": "user_1",
+  "session_id": "bKPJVLux6r7s4izYe2V2cm",
+  "created_at": 1746559529.3229978,
+  "last_updated": 1746559531.3259,
+  "history": [
+    {
+      "role": "user",
+      "content": "how are you ?",
+      "timestamp": 1746559529.323046,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "I'm just a program, so I don't have feelings, but I'm here and ready to help you! How can I assist you today?",
+      "timestamp": 1746559531.3258984,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

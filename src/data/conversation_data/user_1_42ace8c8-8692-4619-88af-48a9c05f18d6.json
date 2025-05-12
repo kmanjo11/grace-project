@@ -1,0 +1,25 @@
+{
+  "context_id": "42ace8c8-8692-4619-88af-48a9c05f18d6",
+  "user_id": "user_1",
+  "session_id": "Dg6v5psTugG2TLP3H6G9pw",
+  "created_at": 1746559664.6453662,
+  "last_updated": 1746559670.4714842,
+  "history": [
+    {
+      "role": "user",
+      "content": "thanks for nada",
+      "timestamp": 1746559664.6454897,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "I apologize for any confusion. I'm here to help, so please feel free to ask if there's anything else you need or if you'd like to try something different.",
+      "timestamp": 1746559670.4714825,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

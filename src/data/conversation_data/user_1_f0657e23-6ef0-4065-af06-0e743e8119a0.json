@@ -1,0 +1,32 @@
+{
+  "context_id": "f0657e23-6ef0-4065-af06-0e743e8119a0",
+  "user_id": "user_1",
+  "session_id": "nZv3pEzndY23jGEU43zhz3",
+  "created_at": 1746559572.1731527,
+  "last_updated": 1746559574.7501688,
+  "history": [
+    {
+      "role": "user",
+      "content": "whats my wallet balance",
+      "timestamp": 1746559572.1732092,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "It looks like your internal wallet currently holds 0.0 SOL and 0.0 USDC. \n\nIf you'd like to proceed with a trade, you'll need to ensure your wallet is funded. You can also connect your Phantom wallet if that\u2019s preferred. Would you like to explore funding options, or do you have another question?",
+      "timestamp": 1746559574.750167,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [
+    {
+      "name": "wallet",
+      "confidence": 0.8,
+      "first_mentioned": 1746559572.1732314,
+      "last_mentioned": 1746559572.1732316
+    }
+  ],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

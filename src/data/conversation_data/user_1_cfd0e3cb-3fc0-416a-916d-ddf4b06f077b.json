@@ -1,0 +1,32 @@
+{
+  "context_id": "cfd0e3cb-3fc0-416a-916d-ddf4b06f077b",
+  "user_id": "user_1",
+  "session_id": "auWboz2KLD9Wm4j3MK8PnM",
+  "created_at": 1746559585.0174828,
+  "last_updated": 1746559587.7404344,
+  "history": [
+    {
+      "role": "user",
+      "content": "whats my wallet address",
+      "timestamp": 1746559585.0175583,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Your internal wallet address starts with `b'E$\\x...5\\\\'`. If you're looking to receive funds or deposit cryptocurrencies, you'll need to use this address.\n\nIf you need the full wallet address or further assistance, please let me know!",
+      "timestamp": 1746559587.7404335,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [
+    {
+      "name": "wallet",
+      "confidence": 0.8,
+      "first_mentioned": 1746559585.017587,
+      "last_mentioned": 1746559585.0175872
+    }
+  ],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

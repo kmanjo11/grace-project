@@ -1,0 +1,25 @@
+{
+  "context_id": "c7fdc446-9bcd-4d9a-a55c-2d5ba078ce2d",
+  "user_id": "user_1",
+  "session_id": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidXNlcl8xIiwiZXhwIjoxNzQ2NjQ1NTI5fQ.xel_5y9w_s9m07KSSOWlVPgjHZUjmt3CqrsZbB9o8eA",
+  "created_at": 1746559134.490383,
+  "last_updated": 1746559136.7015462,
+  "history": [
+    {
+      "role": "user",
+      "content": "hi",
+      "timestamp": 1746559134.4904587,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Hi again! Is there anything specific you'd like to know or do today? I'm here to help, whether it's about crypto trading, wallet management, or any other questions you might have.",
+      "timestamp": 1746559136.7015448,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

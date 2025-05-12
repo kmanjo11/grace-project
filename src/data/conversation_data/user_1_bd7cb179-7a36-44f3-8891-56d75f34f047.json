@@ -1,0 +1,25 @@
+{
+  "context_id": "bd7cb179-7a36-44f3-8891-56d75f34f047",
+  "user_id": "user_1",
+  "session_id": "nBuMmJmddXuACgWHRyELAX",
+  "created_at": 1746561078.6533587,
+  "last_updated": 1746561084.4018953,
+  "history": [
+    {
+      "role": "user",
+      "content": "hi",
+      "timestamp": 1746561078.653394,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! How can I assist you today? Whether it's about crypto trading, handling your wallet, or any other inquiry, feel free to let me know!",
+      "timestamp": 1746561084.4018922,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}
