@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 env/
+venv/
 build/
 develop-eggs/
 dist/
@@ -38,3 +39,26 @@ yarn-error.log*
 *.swo
 .DS_Store
 Thumbs.db
+
+# Test files
+test_*.py
+*.test.ts
+*.test.tsx
+test_data/
+
+# Development files
+*.log
+.coverage
+coverage/
+.pytest_cache/
+.mypy_cache/
+
+# SSH Keys
+X
+X.pub
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
