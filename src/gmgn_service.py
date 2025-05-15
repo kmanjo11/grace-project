@@ -98,7 +98,8 @@ class GMGNService:
             except Exception as e:
                 logger.error(f"Failed to initialize Mango V3 Extension: {e}")
                 logger.error(f"Mango V3 Configuration that caused the error: {mango_v3_config}")
-        self.price_chart_endpoint = "https://www.gmgn.cc/kline"
+        # IMPORTANT: Chart functionality must stay with GMGN, do not move to Mango V3
+        self.price_chart_endpoint = "https://www.gmgn.cc/kline"  # GMGN-only endpoint for charts
         
         # Solana RPC settings
         self.solana_rpc_url = get_config().get("solana_rpc_url")
@@ -1226,6 +1227,201 @@ class GMGNService:
                 logger.error(f"Error placing Mango V3 leverage trade: {e}")
                 return {'success': False, 'error': str(e)}
         return {'success': False, 'error': 'Mango V3 extension not enabled'}
+    def place_limit_order(self, market: str, side: str, price: float, size: float, client_id: Optional[str] = None, reduce_only: bool = False, **kwargs) -> Dict[str, Any]:
+        """
+        Place a limit order with flexible trade type support.
+        
+        Args:
+            market: Trading market
+            side: Order side (buy/sell)
+            price: Limit price
+            size: Order size
+            client_id: Optional client order ID
+            reduce_only: Whether order should only reduce position
+            **kwargs: Additional parameters including:
+                - trade_type: 'spot' or 'leverage'
+                - leverage: Leverage multiplier (for leverage trades)
+                - user_id: Optional user identifier
+        """
+        try:
+            # Basic parameter validation
+            if not market or not side or not price or not size:
+                return {
+                    'success': False,
+                    'error': 'Missing required parameters',
+                    'code': 'INVALID_INPUT'
+                }
+            
+            if side.lower() not in ['buy', 'sell']:
+                return {
+                    'success': False,
+                    'error': f'Invalid side: {side}',
+                    'code': 'INVALID_SIDE'
+                }
+            
+            trade_type = kwargs.get('trade_type', 'spot').lower()
+            if trade_type not in ['spot', 'leverage']:
+                return {
+                    'success': False,
+                    'error': f'Invalid trade type: {trade_type}. Must be spot or leverage.',
+                    'code': 'INVALID_TRADE_TYPE'
+                }
+            
+            # Execute order based on type
+            if trade_type == 'spot':
+                result = self.mango_spot_market.place_limit_order(
+                    market=market,
+                    side=side,
+                    price=price,
+                    size=size,
+                    client_id=client_id,
+                    reduce_only=reduce_only,
+                    user_id=kwargs.get('user_id')
+                )
+            elif trade_type == 'leverage':
+                result = self.leverage_trade_manager.place_limit_order(
+                    market=market,
+                    side=side,
+                    price=price,
+                    size=size,
+                    leverage=kwargs.get('leverage', 1.0),
+                    client_id=client_id,
+                    reduce_only=reduce_only,
+                    user_id=kwargs.get('user_id')
+                )
+            else:
+                return {'success': False, 'error': f'Invalid trade type: {trade_type}', 'code': 'INVALID_TYPE'}
+            
+            # Log to memory system if successful
+            if result.get('success') and self.memory_system:
+                try:
+                    order_details = {
+                        'event_type': f'mango_v3_{trade_type}_limit_order',
+                        'market': market,
+                        'side': side,
+                        'price': price,
+                        'size': size,
+                        'reduce_only': reduce_only,
+                        'timestamp': datetime.now().isoformat()
+                    }
+                    
+                    # Only add client_id if provided
+                    if client_id:
+                        order_details['client_id'] = client_id
+                    
+                    # Add leverage info only for leverage trades
+                    if trade_type == 'leverage':
+                        order_details['leverage'] = kwargs.get('leverage', 1.0)
+                    
+                    self.memory_system.create_memory(
+                        title=f'Limit Order: {market} {side}',
+                        content=json.dumps(order_details),
+                        source='mango_v3',
+                        expiry=None  # Permanent memory
+                    )
+                except Exception as mem_err:
+                    self.logger.warning(f"Failed to create memory for limit order: {mem_err}")
+            
+            return result
+            else:
+                return {'success': False, 'error': f'Invalid trade type: {trade_type}', 'code': 'INVALID_TYPE'}
+        except Exception as e:
+            self.logger.error(f"Limit order error: {e}", exc_info=True)
+            return {'success': False, 'error': str(e), 'code': 'EXECUTION_ERROR'}
+
+    def confirm_trade(self, confirmation_id: str, user_id: str) -> Dict[str, Any]:
+        """
+        Confirm a pending trade with robust multi-platform support.
+        
+        Args:
+            confirmation_id: Unique identifier for the trade
+            user_id: User identifier
+        
+        Returns:
+            Comprehensive trade confirmation result
+        """
+        # Validate input parameters
+        if not confirmation_id or not user_id:
+            return {
+                "status": "error",
+                "message": "Invalid trade confirmation parameters",
+                "details": "Confirmation ID and User ID are required"
+            }
+        
+        # Prioritize Mango V3 Trade Confirmation
+        if MANGO_V3_AVAILABLE:
+            try:
+                # Enhanced Mango V3 confirmation
+                mango_confirm_result = self.mango_v3_extension.confirm_trade(
+                    confirmation_id=confirmation_id,
+                    user_identifier=user_id
+                )
+                
+                if mango_confirm_result.get('success'):
+                    logger.info(f"Trade {confirmation_id} successfully confirmed via Mango V3")
+                    return {
+                        "status": "success",
+                        "platform": "mango_v3",
+                        "confirmation_details": mango_confirm_result,
+                        "trade_id": confirmation_id,
+                        "user_id": user_id
+                    }
+                
+                # Log non-success Mango V3 result
+                logger.warning(f"Mango V3 trade confirmation returned non-success: {mango_confirm_result}")
+            
+            except Exception as mango_error:
+                logger.error(f"Mango V3 trade confirmation failed: {mango_error}", exc_info=True)
+        
+        # Fallback to GMGN Trade Confirmation
+        try:
+            gmgn_confirm_result = self._gmgn_confirm_trade(
+                confirmation_id=confirmation_id, 
+                user_id=user_id
+            )
+            
+            if gmgn_confirm_result.get('success'):
+                logger.info(f"Trade {confirmation_id} confirmed via GMGN")
+                return {
+                    "status": "success", 
+                    "platform": "gmgn",
+                    "confirmation_details": gmgn_confirm_result,
+                    "trade_id": confirmation_id,
+                    "user_id": user_id
+                }
+            
+            logger.warning(f"GMGN trade confirmation returned non-success: {gmgn_confirm_result}")
+        
+        except Exception as gmgn_error:
+            logger.critical(f"Trade confirmation failed on all platforms: {gmgn_error}", exc_info=True)
+        
+        # Final fallback if all confirmation methods fail
+        return {
+            "status": "critical_failure",
+            "message": "Trade confirmation impossible",
+            "trade_id": confirmation_id,
+            "user_id": user_id,
+            "error": "No available platforms could confirm the trade"
+        }
+        
+    def _gmgn_confirm_trade(self, confirmation_id: str, user_id: str) -> Dict[str, Any]:
+        """
+        Internal method for GMGN trade confirmation.
+        
+        Args:
+            confirmation_id: Unique identifier for the trade
+            user_id: User identifier
+        
+        Returns:
+            Trade confirmation result
+        """
+        # Existing GMGN confirmation logic
+        confirm_result = super().confirm_trade(
+            confirmation_id, 
+            user_id
+        )
+        
+        return confirm_result
 
     def monitor_smart_trading_positions(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """

@@ -888,6 +888,34 @@ async def learn():
     return jsonify({"message": "Learn endpoint not fully implemented"}), 501
 
 # Trading Positions Endpoints
+
+@app.route('/api/limit-orders', methods=['GET'])
+async def get_limit_orders():
+    """Get active limit orders for the user."""
+    try:
+        # Verify authentication
+        user_id = await verify_token_and_get_user_id()
+        if not user_id:
+            return jsonify({'success': False, 'error': 'Authentication required'}), 401
+
+        # Get query parameters
+        trade_type = request.args.get('trade_type')  # 'spot' or 'leverage' or None for both
+        market = request.args.get('market')  # specific market or None for all
+
+        # Get limit orders through Grace Core
+        result = await run_grace_sync(
+            current_app.grace_instance.get_limit_orders,
+            user_id=user_id,
+            trade_type=trade_type,
+            market=market
+        )
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error getting limit orders: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/user/leverage_positions', methods=['GET'])
 @jwt_required()
 def get_user_leverage_positions():
@@ -1297,6 +1325,71 @@ async def disconnect_phantom_wallet():
         return jsonify({"error": "Error disconnecting Phantom wallet"}), 500
 
 # Trading Endpoints
+@app.route('/api/limit-orders', methods=['POST'])
+async def place_limit_order():
+    """Place a limit order for spot or leverage trading."""
+    try:
+        # Verify authentication
+        user_id = await verify_token_and_get_user_id()
+        if not user_id:
+            return jsonify({'success': False, 'error': 'Authentication required', 'code': 'AUTH_REQUIRED'}), 401
+
+        # Get request data
+        data = await request.get_json()
+        required_fields = ['market', 'side', 'price', 'size']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({
+                    'success': False, 
+                    'error': f'Missing required field: {field}',
+                    'code': 'MISSING_FIELD'
+                }), 400
+
+        # Validate trade type
+        trade_type = data.get('trade_type', 'spot').lower()
+        if trade_type not in ['spot', 'leverage']:
+            return jsonify({
+                'success': False,
+                'error': f'Invalid trade type: {trade_type}. Must be spot or leverage.',
+                'code': 'INVALID_TRADE_TYPE'
+            }), 400
+
+        # Validate side
+        if data['side'].lower() not in ['buy', 'sell']:
+            return jsonify({
+                'success': False,
+                'error': f'Invalid side: {data["side"]}. Must be buy or sell.',
+                'code': 'INVALID_SIDE'
+            }), 400
+
+        # Extract optional parameters
+        leverage = float(data.get('leverage', 1.0)) if trade_type == 'leverage' else None
+        reduce_only = bool(data.get('reduce_only', False))
+        client_id = data.get('client_id')
+
+        # Place limit order through Grace Core
+        result = await run_grace_sync(
+            current_app.grace_instance.place_limit_order,
+            market=data['market'],
+            side=data['side'].lower(),
+            price=float(data['price']),
+            size=float(data['size']),
+            client_id=client_id,
+            reduce_only=reduce_only,
+            user_id=user_id,
+            trade_type=trade_type,
+            leverage=leverage
+        )
+
+        if result.get('success'):
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+
+    except Exception as e:
+        logger.error(f"Error placing limit order: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/wallet/transactions', methods=['GET'])
 async def get_transactions():
     """Get transaction history for a user."""
@@ -1306,27 +1399,109 @@ async def get_transactions():
     
     user_id = result['user_id']
     
+    # Extract optional query parameters
+    trade_type = request.args.get('trade_type')
+    limit = int(request.args.get('limit', 50))
+    
     try:
-        # Get user profile to retrieve transaction history
+        transactions = []
+        
+        # First, get user profile to access existing transactions
         user_profile = await run_grace_sync(
             grace_instance.user_profile_system.get_user_profile,
             user_id=user_id
         )
         
-        transactions = []
-        
+        # Initialize transactions from user profile
         if user_profile.get('success') and 'profile' in user_profile:
             profile = user_profile['profile']
             transactions = profile.get('transactions', [])
         
+        # Try to get trades from Mango V3 Extension
+        mango_trades = []
+        try:
+            if hasattr(grace_instance, 'mango_v3_extension'):
+                mango_trades_result = await run_grace_sync(
+                    grace_instance.mango_v3_extension.get_trade_history,
+                    user_identifier=user_id,
+                    trade_type=trade_type,
+                    limit=limit
+                )
+                
+                if mango_trades_result and mango_trades_result.get('success'):
+                    mango_trades = mango_trades_result.get('trades', [])
+        except Exception as e:
+            logger.warning(f"Error getting Mango V3 trades: {str(e)}")
+        
+        # Merge Mango trades with existing transactions
+        # Prevent duplicates by checking trade_id
+        existing_trade_ids = {tx.get('trade_id') for tx in transactions}
+        for trade in mango_trades:
+            if trade.get('trade_id') not in existing_trade_ids:
+                # Standardize Mango trade to match transaction format
+                mango_transaction = {
+                    "transaction_id": trade.get('trade_id', str(uuid.uuid4())),
+                    "type": trade.get('trade_type', 'mango_trade'),
+                    "status": "completed",
+                    "market": trade.get('market', ''),
+                    "side": trade.get('side', ''),
+                    "price": trade.get('price', 0),
+                    "size": trade.get('size', 0),
+                    "timestamp": trade.get('timestamp', datetime.now().isoformat()),
+                    "trade_source": "mango_api",
+                    "leverage": trade.get('leverage', 1.0)
+                }
+                transactions.append(mango_transaction)
+        
+        # If transaction confirmation system has pending transactions, add those
+        if hasattr(grace_instance, 'transaction_confirmation_system'):
+            try:
+                pending_transactions = await run_grace_sync(
+                    grace_instance.transaction_confirmation_system.get_pending_transactions,
+                    user_id=user_id
+                )
+                transactions.extend(pending_transactions.get('transactions', []))
+            except Exception as e:
+                logger.warning(f"Error getting pending transactions: {str(e)}")
+        
+        # Update user profile with merged transactions
+        try:
+            await run_grace_sync(
+                grace_instance.user_profile_system.update_user_profile,
+                user_id=user_id,
+                profile_updates={
+                    "transactions": transactions
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Could not update user profile with transactions: {str(e)}")
+        
+        # Filter transactions by trade type if specified
+        if trade_type:
+            transactions = [
+                tx for tx in transactions 
+                if tx.get('type', '').lower() == trade_type.lower()
+            ]
+        
+        # Sort transactions by timestamp (newest first)
+        transactions.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        
+        # Limit number of transactions
+        transactions = transactions[:limit]
+        
         return jsonify({
             "success": True,
-            "transactions": transactions
+            "transactions": transactions,
+            "total_transactions": len(transactions)
         })
     except Exception as e:
         logger.error(f"Error getting transactions: {str(e)}", exc_info=True)
-        return jsonify({"error": "Error retrieving transaction history"}), 500
-
+        return jsonify({
+            "success": False,
+            "error": "Error retrieving transaction history", 
+            "transactions": [],
+            "total_transactions": 0
+        }), 500
 @app.route('/api/wallet/send', methods=['POST'])
 async def send_funds():
     """Send funds from internal wallet to another address."""
@@ -1554,10 +1729,11 @@ async def get_price_chart():
     timeframe = request.args.get('timeframe', '1d')
     
     try:
-        # Try to get price chart data using the GMGNService
+        # IMPORTANT: Chart functionality must stay with GMGN, do not move to Mango V3
+        # This ensures consistent chart display across the application
         try:
             chart_data = await run_grace_sync(
-                grace_instance.gmgn_service.get_token_price,
+                grace_instance.gmgn_service.get_token_price,  # Using GMGN's price/chart endpoint
                 token, "sol", timeframe
             )
         except Exception as inner_e:
