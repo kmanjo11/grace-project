@@ -1,0 +1,36 @@
+[MASTER]
+# Discover python modules and packages in the file system subtree
+recursive=yes
+
+# Files or directories to be skipped. They should be base names, not paths
+ignore=CVS,.git,__pycache__
+
+# Add any Python module names here where you want to disable all warnings
+disable=C0111,C0103,C0301,R0903,R0913,W0511
+
+[MESSAGES CONTROL]
+# Disable specific warnings
+disable=missing-docstring,invalid-name,line-too-long,too-few-public-methods,too-many-arguments,fixme
+
+[FORMAT]
+# Maximum number of characters on a single line
+max-line-length=120
+
+[BASIC]
+# Regular expression which should only match function or class names
+function-rgx=[a-z_][a-z0-9_]{2,50}$
+class-rgx=[A-Z_][a-zA-Z0-9_]+$
+argument-rgx=[a-z_][a-z0-9_]{2,30}$
+variable-rgx=[a-z_][a-z0-9_]{2,30}$
+
+[SIMILARITIES]
+# Minimum lines number of a similarity
+min-similarity-lines=6
+
+[TYPECHECK]
+# List of module names for which member attributes should not be checked
+ignored-modules=numpy,tensorflow,torch,cv2
+
+[MISCELLANEOUS]
+# List of note tags to take into consideration
+notes=FIXME,XXX,TODO

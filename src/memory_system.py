@@ -8,7 +8,7 @@ from chromadb.utils import embedding_functions
 import uuid
 import re
 
-from src.config import get_config
+
 from src.user_profile import UserProfileSystem
 class MemorySystem:
     """

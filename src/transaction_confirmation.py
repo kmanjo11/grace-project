@@ -38,6 +38,119 @@ class TransactionConfirmationSystem:
         solana_wallet_manager = None,
         config: Optional[Dict[str, Any]] = None
     ):
+        self.pending_transactions: Dict[str, Dict[str, Any]] = {}
+        self.user_profile_system = user_profile_system
+        self.gmgn_service = gmgn_service
+        self.solana_wallet_manager = solana_wallet_manager
+        self.config = config or {}
+        self.logger = logger
+
+    def generate_transaction_token(
+        self, 
+        user_id: str, 
+        trade_details: Dict[str, Any]
+    ) -> str:
+        """
+        Generate a secure, time-limited transaction token
+        
+        Args:
+            user_id: User initiating the transaction
+            trade_details: Specific trade parameters
+        
+        Returns:
+            Unique transaction token
+        """
+        token = secrets.token_urlsafe(16)
+        expiration = datetime.utcnow() + timedelta(minutes=15)
+        
+        # Store token with trade details and expiration
+        self.pending_transactions[token] = {
+            'user_id': user_id,
+            'trade_details': trade_details,
+            'expiration': expiration,
+            'status': 'pending'
+        }
+        
+        return token
+    
+    def verify_transaction_token(
+        self, 
+        token: str, 
+        trade_details: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Verify transaction token and trade details
+        
+        Args:
+            token: Transaction verification token
+            trade_details: Trade parameters to verify
+        
+        Returns:
+            Verification result
+        """
+        # Check if token exists and is valid
+        if token not in self.pending_transactions:
+            return {
+                'success': False, 
+                'error': 'Invalid transaction token'
+            }
+        
+        transaction = self.pending_transactions[token]
+        
+        # Check expiration
+        if datetime.utcnow() > transaction['expiration']:
+            del self.pending_transactions[token]
+            return {
+                'success': False, 
+                'error': 'Transaction token expired'
+            }
+        
+        # Validate trade details match
+        if not self._validate_trade_details(
+            transaction['trade_details'], 
+            trade_details
+        ):
+            return {
+                'success': False, 
+                'error': 'Trade details do not match'
+            }
+        
+        # Mark transaction as approved
+        transaction['status'] = 'approved'
+        
+        return {
+            'success': True,
+            'user_id': transaction['user_id']
+        }
+    
+    def _validate_trade_details(
+        self, 
+        original_details: Dict[str, Any], 
+        new_details: Dict[str, Any]
+    ) -> bool:
+        """
+        Compare critical trade parameters
+        
+        Args:
+            original_details: Initial trade details
+            new_details: Details to compare against
+        
+        Returns:
+            Whether trade details are consistent
+        """
+        critical_fields = [
+            'market', 
+            'side', 
+            'size', 
+            'price', 
+            'leverage'
+        ]
+        
+        return all(
+            original_details.get(field) == new_details.get(field) 
+            for field in critical_fields
+        )
+    ):
         """
         Initialize the Transaction Confirmation System.
         

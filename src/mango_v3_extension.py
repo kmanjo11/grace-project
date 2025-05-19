@@ -10,7 +10,7 @@ import json
 import logging
 import requests
 from typing import Dict, List, Any, Optional, Union
-from datetime import datetime
+from datetime import datetime, timedelta
 
 class MangoV3Client:
     """
@@ -535,135 +535,603 @@ class MangoV3Extension:
             }
 
     def get_trade_history(
-    self, 
-    user_identifier: Optional[str] = None, 
-    trade_type: Optional[str] = None,
-    limit: int = 50
-) -> Dict[str, Any]:
-    """
-    Retrieve trade history for Mango V3 trades.
-    
-    Args:
-        user_identifier: Optional user identifier
-        trade_type: Optional filter for trade type (spot/leverage)
+        self, 
+        user_identifier: Optional[str] = None, 
+        trade_type: Optional[str] = None,
+        limit: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Retrieve trade history for Mango V3 trades.
         limit: Maximum number of trades to retrieve
-    
-    Returns:
-        Dictionary of trade history
-    """
-    try:
-        # Validate inputs
-        if not user_identifier:
-            return {
-                "success": False,
-                "error": "User identifier is required",
-                "trades": [],
-                "total_trades": 0
-            }
-        
-        # Initialize trades list
-        trades = []
-        
-        # 1. Attempt to fetch trades directly from Mango API
+
+        Returns:
+            Dictionary of trade history
+        """
         try:
-            # Use Mango client to fetch trades
-            # Assuming self.client is the Mango Markets API client
-            mango_trades = self.client.get_user_trades(
-                user=user_identifier,
-                market_type=trade_type,  # Mango API might use different parameter names
-                limit=limit
-            )
+            # Parse timestamps if provided
+            def parse_time(t):
+                if t is None:
+                    return None
+                if isinstance(t, (int, float)):
+                    return datetime.fromtimestamp(t / 1000 if t > 1e12 else t)
+                elif isinstance(t, str):
+                    try:
+                        return datetime.fromisoformat(t.replace('Z', '+00:00'))
+                    except ValueError:
+                        return None
+                return None
+                
+            start_dt = parse_time(start_time)
+            end_dt = parse_time(end_time) or datetime.utcnow()
             
-            # Transform Mango API trades to standard format
-            for trade in mango_trades:
-                trades.append({
-                    "market": trade.get('market', ''),
-                    "side": trade.get('side', ''),
-                    "price": trade.get('price', 0),
-                    "size": trade.get('size', 0),
-                    "timestamp": trade.get('timestamp', ''),
-                    "trade_source": "mango_api",
-                    "trade_type": trade.get('type', ''),
-                    "trade_id": trade.get('id', ''),
-                    "leverage": trade.get('leverage', 1.0)
-                })
+            # Apply cursor if provided
+            since_id = None
+            if cursor:
+                try:
+                    cursor_data = json.loads(base64.b64decode(cursor).decode('utf-8'))
+                    since_id = cursor_data.get('since_id')
+                    if 'before_timestamp' in cursor_data:
+                        end_dt = parse_time(cursor_data['before_timestamp'])
+                except (json.JSONDecodeError, binascii.Error):
+                    pass
+            
+            trades = []
+            next_cursor = None
+            has_more = False
+            
+            # Get trades from Mango V3 API
+            try:
+                mango_trades = self.client.get_trades()
+                if mango_trades and 'trades' in mango_trades:
+                    for trade in mango_trades['trades']:
+                        if user_identifier and trade.get('user_id') != user_identifier:
+                            continue
+                        if trade_type and trade.get('type') != trade_type:
+                            continue
+                            
+                        trade_timestamp = parse_time(trade.get('timestamp'))
+                        if not trade_timestamp:
+                            continue
+                            
+                        # Apply time filters
+                        if start_dt and trade_timestamp < start_dt:
+                            continue
+                        if end_dt and trade_timestamp > end_dt:
+                            has_more = True
+                            continue
+                            
+                        trades.append({
+                            "id": trade.get('id', str(uuid.uuid4())),
+                            "market": trade.get('market', ''),
+                            "side": trade.get('side', ''),
+                            "price": float(trade.get('price', 0)),
+                            "size": float(trade.get('size', 0)),
+                            "timestamp": trade_timestamp.isoformat(),
+                            "trade_source": "mango_api",
+                            "trade_type": trade.get('type', 'spot'),
+                            "leverage": float(trade.get('leverage', 1.0))
+                        })
         except Exception as api_error:
-            self.logger.warning(f"Mango API trade fetch failed: {api_error}")
+            self.logger.warning(f"Mango V3 API trade fetch failed: {api_error}")
         
-        # 2. Fallback to memory system if Mango API fetch fails or returns no trades
-        if not trades and self.memory_system:
+        # Get trades from memory system if available
+        if self.memory_system:
             try:
                 query_params = {
                     "user_id": user_identifier,
-                    "memory_types": ["short_term", "medium_term"],
-                    "n_results": limit
+                    "limit": limit,
+                    "start_time": start_dt.isoformat() if start_dt else None,
+                    "end_time": end_dt.isoformat() if end_dt else None
                 }
-                
-                # Add trade type filter if specified
                 if trade_type:
-                    query_params["trade_type"] = trade_type
+                    query_params["event_type"] = trade_type
+                if since_id:
+                    query_params["since_id"] = since_id
                 
                 memory_trades = self.memory_system.query_memory(
                     query="trade",
-                    **query_params
+                    **{k: v for k, v in query_params.items() if v is not None}
                 )
                 
                 for memory in memory_trades:
                     trade_details = memory.get('metadata', {})
                     if trade_details.get('event_type') in ['mango_v3_leverage_trade', 'spot_trade']:
-                        trade = {
+                        trade_timestamp = parse_time(memory.get('timestamp'))
+                        if not trade_timestamp:
+                            continue
+                            
+                        trades.append({
+                            "id": memory.get('id', str(uuid.uuid4())),
                             "market": trade_details.get('market', ''),
                             "side": trade_details.get('side', ''),
-                            "price": trade_details.get('price', 0),
-                            "size": trade_details.get('size', 0),
-                            "timestamp": memory.get('timestamp', ''),
+                            "price": float(trade_details.get('price', 0)),
+                            "size": float(trade_details.get('size', 0)),
+                            "timestamp": trade_timestamp.isoformat(),
                             "trade_source": "memory_system",
                             "trade_type": trade_details.get('event_type', ''),
-                            "leverage": trade_details.get('leverage', 1.0)
-                        }
-                        trades.append(trade)
+                            "leverage": float(trade_details.get('leverage', 1.0))
+                        })
             except Exception as memory_error:
                 self.logger.warning(f"Memory system trade fetch failed: {memory_error}")
         
         # Sort trades by timestamp, most recent first
-        trades.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        trades = trades[:limit]
+        trades.sort(key=lambda x: (x.get('timestamp', ''), x.get('id', '')), reverse=True)
+        
+        # Apply limit and prepare next cursor
+        if len(trades) > limit:
+            has_more = True
+            trades = trades[:limit]
+            
+            if trades:
+                last_trade = trades[-1]
+                next_cursor = base64.b64encode(json.dumps({
+                    'since_id': last_trade['id'],
+                    'before_timestamp': last_trade['timestamp']
+                }).encode('utf-8')).decode('utf-8')
         
         return {
             "success": True,
             "trades": trades,
-            "total_trades": len(trades),
+            "pagination": {
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+                "limit": limit,
+                "total": len(trades)
+            },
             "metadata": {
                 "user_identifier": user_identifier,
+                "start_time": start_dt.isoformat() if start_dt else None,
+                "end_time": end_dt.isoformat() if end_dt else None,
                 "timestamp": datetime.utcnow().isoformat(),
                 "fetch_sources": ["mango_api", "memory_system"]
+        except Exception as e:
+            self.logger.error(f"Comprehensive error retrieving trade history: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "trades": [],
+                "pagination": {
+                    "has_more": False,
+                    "next_cursor": None,
+                    "limit": limit,
+                    "total": 0
+                },
+                "metadata": {
+                    "user_identifier": user_identifier,
+                    "start_time": start_dt.isoformat() if start_dt else None,
+                    "end_time": end_dt.isoformat() if end_dt else None,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "fetch_sources": ["mango_api", "memory_system"]
+                }
+            }
+            
+     def _create_error_response(self, 
+                             error_message: str, 
+                             error_code: str = None, 
+                             status_code: int = 400,
+                             **additional_info) -> Dict[str, Any]:
+        """
+        Create a standardized error response.
+        
+        Args:
+            error_message: Human-readable error message
+            error_code: Machine-readable error code
+            status_code: HTTP status code
+            additional_info: Any additional error context
+            
+        Returns:
+            Dictionary with error information
+        """
+        error_data = {
+            'success': False,
+            'error': {
+                'message': error_message,
+                'code': error_code or 'api_error',
+                'status': status_code,
+                'timestamp': datetime.utcnow().isoformat(),
+                **additional_info
+            },
+            'position_history': [],
+            'pagination': {
+                'has_more': False,
+                'limit': additional_info.get('limit', 100),
+                'total': 0
+            },
+            'metadata': {
+                'user_identifier': additional_info.get('user_identifier', ''),
+                'market': additional_info.get('market', 'all'),
+                'start_time': additional_info.get('start_time'),
+                'end_time': additional_info.get('end_time'),
+                'interval': additional_info.get('interval', '1d'),
+                'total_positions': 0,
+                'has_more': False
             }
         }
-    
-    except Exception as e:
-        self.logger.error(f"Comprehensive error retrieving trade history: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "trades": [],
-            "total_trades": 0
-        }
+        return error_data
 
-# Example usage
-if __name__ == "__main__":
-    import time
-    
-    # Initialize the extension
-    mango = MangoV3Extension(base_url="http://localhost")
-    
-    # Get market data
-    markets = mango.get_market_data()
-    print(f"Available markets: {len(markets)} markets found")
-    
-    # Get portfolio summary
-    portfolio = mango.get_portfolio_summary()
-    print(f"Portfolio: {portfolio}")
-    
-    # Test wallet linking
-    result = mango.link_wallet("5FHwkrdxBc3S4TidqJfhRxzVZrj8xnHKKZwQpWrXKmZa", "test_user")
-    print(f"Wallet linking result: {result}")
+    def _validate_position_history_params(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Validate position history parameters.
+        
+        Args:
+            params: Dictionary of parameters to validate
+            
+        Returns:
+            Error response if validation fails, None otherwise
+        """
+        if not params.get('user_identifier'):
+            return self._create_error_response(
+                'User identifier is required',
+                'missing_parameter',
+                400,
+                **params
+            )
+            
+        try:
+            # Validate limit range
+            limit = params.get('limit', 100)
+            if not (1 <= limit <= 1000):
+                return self._create_error_response(
+                    'Limit must be between 1 and 1000',
+                    'invalid_parameter',
+                    400,
+                    **params
+                )
+                
+            # Validate interval format
+            interval = params.get('interval', '1d')
+            if not re.match(r'^\d+[mhdw]$', interval):
+                return self._create_error_response(
+                    'Invalid interval format. Use format like 1m, 1h, 1d, 1w',
+                    'invalid_parameter',
+                    400,
+                    **params
+                )
+                
+        except Exception as e:
+            return self._create_error_response(
+                f'Invalid parameters: {str(e)}',
+                'invalid_parameters',
+                400,
+                **params
+            )
+            
+        return None
+
+    def get_position_history(
+        self,
+        user_identifier: str,
+        market: Optional[str] = None,
+        start_time: Optional[Union[int, str]] = None,
+        end_time: Optional[Union[int, str]] = None,
+        interval: str = '1d',
+        include_pnl: bool = True,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+        include_live_pnl: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Retrieve historical position data with P&L calculation over time.
+        
+        Args:
+            user_identifier: Unique identifier for the user
+            market: Optional market filter (e.g., 'BTC-PERP')
+            start_time: Start time as timestamp (seconds or ms) or ISO format string
+            end_time: End time as timestamp (seconds or ms) or ISO format string
+            interval: Time interval for position snapshots ('1m', '1h', '1d', etc.)
+            include_pnl: Whether to include P&L calculations
+            cursor: Pagination cursor for fetching next page of results
+            limit: Maximum number of position snapshots to return (default: 100, max: 1000)
+            include_live_pnl: Whether to include live P&L calculations for open positions
+            
+        Returns:
+            Dictionary containing position history with timestamps and P&L data
+        """
+        try:
+            # Prepare params for validation and error context
+            params = {
+                'user_identifier': user_identifier,
+                'market': market,
+                'start_time': start_time,
+                'end_time': end_time,
+                'interval': interval,
+                'limit': limit,
+                'cursor': cursor
+            }
+            
+            # Validate parameters
+            validation_error = self._validate_position_history_params(params)
+            if validation_error:
+                return validation_error
+                
+            # Convert string timestamps to datetime objects
+            def parse_time(t):
+                if t is None:
+                    return None
+                if isinstance(t, (int, float)):
+                    # Handle both seconds and milliseconds
+                    if t > 1e12:  # Likely milliseconds
+                        return datetime.fromtimestamp(t / 1000)
+                    return datetime.fromtimestamp(t)
+                elif isinstance(t, str):
+                    try:
+                        return datetime.fromisoformat(t.replace('Z', '+00:00'))
+                    except ValueError:
+                        return datetime.utcnow()
+                return datetime.utcnow()
+                
+            now = datetime.utcnow()
+            end_dt = parse_time(end_time) if end_time else now
+            start_dt = parse_time(start_time) if start_time else (end_dt - timedelta(days=30))
+            
+            # Parse cursor for pagination
+            cursor_data = {}
+            if cursor:
+                try:
+                    import base64
+                    import json
+                    cursor_data = json.loads(base64.b64decode(cursor).decode('utf-8'))
+                    # Update start_time from cursor if not explicitly provided
+                    if 'last_timestamp' in cursor_data and not start_time:
+                        start_dt = parse_time(cursor_data['last_timestamp'])
+                except Exception as e:
+                    self.logger.warning(f"Invalid cursor provided: {e}")
+            
+            # Get trades for the user with pagination
+            trade_limit = min(1000, max(limit * 2, 100))  # Get more trades than needed for better pagination
+            trade_history = self.get_trade_history(
+                user_identifier=user_identifier, 
+                limit=trade_limit,
+                cursor=cursor
+            )
+            
+            if not trade_history.get('success', False):
+                return {
+                    "success": False,
+                    "error": f"Failed to fetch trade history: {trade_history.get('error', 'Unknown error')}",
+                    "position_history": [],
+                    "pagination": {
+                        "has_more": False,
+                        "limit": limit,
+                        "total": 0
+                    },
+                    "metadata": {
+                        "user_identifier": user_identifier,
+                        "market": market or 'all',
+                        "start_time": start_dt.isoformat() if start_dt else None,
+                        "end_time": end_dt.isoformat() if end_dt else None,
+                        "interval": interval,
+                        "total_positions": 0,
+                        "has_more": False
+                    }
+                }
+                
+            # Process trades into position history
+            position_history = []
+            current_positions = {}
+            
+            # Sort trades by timestamp
+            trades = sorted(trade_history.get('trades', []), 
+                          key=lambda x: x.get('timestamp', ''))
+            
+            # Track if there are more trades available
+            has_more_trades = trade_history.get('pagination', {}).get('has_more', False)
+            total_trades = trade_history.get('pagination', {}).get('total', 0)
+            
+            # Process each trade and track positions over time
+            for trade in trades:
+                trade_time = parse_time(trade.get('timestamp'))
+                if not trade_time or trade_time < start_dt or trade_time > end_dt:
+                    continue
+                    
+                market_name = trade.get('market')
+                if market and market_name != market:
+                    continue
+                    
+                # Initialize position if it doesn't exist
+                if market_name not in current_positions:
+                    current_positions[market_name] = {
+                        'market': market_name,
+                        'size': 0,
+                        'entry_price': 0,
+                        'leverage': float(trade.get('leverage', 1.0)),
+                        'side': trade.get('side', 'buy'),
+                        'pnl': 0,
+                        'unrealized_pnl': 0,
+                        'realized_pnl': 0,
+                        'timestamp': trade_time.isoformat(),
+                        'trades': []
+                    }
+                
+                # Update position based on trade
+                position = current_positions[market_name]
+                trade_size = float(trade.get('size', 0))
+                trade_price = float(trade.get('price', 0))
+                
+                # Calculate position changes
+                if trade.get('side') == 'buy':
+                    # Update position size and average entry price
+                    total_size = position['size'] + trade_size
+                    if total_size != 0:
+                        position['entry_price'] = (
+                            (position['entry_price'] * position['size']) + 
+                            (trade_price * trade_size)
+                        ) / total_size
+                    position['size'] = total_size
+                else:  # sell
+                    # Calculate P&L for the closed portion
+                    if position['size'] > 0:
+                        pnl = (trade_price - position['entry_price']) * min(trade_size, position['size'])
+                        position['realized_pnl'] += pnl
+                        position['pnl'] += pnl
+                        position['size'] = max(0, position['size'] - trade_size)
+                
+                # Add trade to position history
+                position['trades'].append({
+                    'timestamp': trade.get('timestamp'),
+                    'side': trade.get('side'),
+                    'price': trade_price,
+                    'size': trade_size,
+                    'leverage': float(trade.get('leverage', 1.0))
+                })
+                
+                # Update position timestamp
+                position['timestamp'] = trade_time.isoformat()
+                
+                # Add position snapshot to history
+                position_history.append({
+                    'market': market_name,
+                    'size': position['size'],
+                    'entry_price': position['entry_price'],
+                    'leverage': position['leverage'],
+                    'side': position['side'],
+                    'pnl': position['pnl'],
+                    'realized_pnl': position['realized_pnl'],
+                    'unrealized_pnl': position['unrealized_pnl'],
+                    'timestamp': position['timestamp']
+                })
+            
+            # If no trades but we have current positions, include them
+            if not position_history and current_positions:
+                for market_name, position in current_positions.items():
+                    if market and market_name != market:
+                        continue
+                    position_history.append({
+                        'market': market_name,
+                        'size': position['size'],
+                        'entry_price': position['entry_price'],
+                        'leverage': position['leverage'],
+                        'side': position['side'],
+                        'pnl': position['pnl'],
+                        'realized_pnl': position['realized_pnl'],
+                        'unrealized_pnl': position['unrealized_pnl'],
+                        'timestamp': position['timestamp']
+                    })
+            
+            # Sort position history by timestamp (newest first)
+            position_history.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+            
+            # Apply limit for pagination
+            has_more = len(position_history) > limit
+            paginated_history = position_history[:limit]
+            
+            # Calculate P&L over time if requested
+            pnl_over_time = []
+            if include_pnl and paginated_history:
+                # Group positions by timestamp and calculate total P&L
+                pnl_dict = {}
+                for pos in paginated_history:
+                    timestamp = pos['timestamp']
+                    if timestamp not in pnl_dict:
+                        pnl_dict[timestamp] = {
+                            'timestamp': timestamp,
+                            'total_pnl': 0,
+                            'markets': {}
+                        }
+                    
+                    # Update market-specific P&L
+                    market_name = pos['market']
+                    pnl_dict[timestamp]['markets'][market_name] = {
+                        'size': pos['size'],
+                        'entry_price': pos['entry_price'],
+                        'pnl': pos['pnl'],
+                        'realized_pnl': pos['realized_pnl'],
+                        'unrealized_pnl': pos['unrealized_pnl']
+                    }
+                    
+                    # Update total P&L
+                    pnl_dict[timestamp]['total_pnl'] += pos['pnl']
+                
+                # Convert to list and sort by timestamp (oldest first)
+                pnl_over_time = sorted(pnl_dict.values(), key=lambda x: x['timestamp'])
+            
+            # Generate next cursor if there are more results
+            next_cursor = None
+            if has_more and paginated_history:
+                last_timestamp = paginated_history[-1].get('timestamp')
+                if last_timestamp:
+                    cursor_data = {
+                        'last_timestamp': last_timestamp,
+                        'offset': len(paginated_history)
+                    }
+                    try:
+                        import base64
+                        import json
+                        next_cursor = base64.b64encode(json.dumps(cursor_data).encode('utf-8')).decode('utf-8')
+                    except Exception as e:
+                        self.logger.warning(f"Failed to generate next cursor: {e}")
+            
+            # Include live P&L for open positions if requested
+            if include_live_pnl:
+                current_markets = {pos['market'] for pos in paginated_history if pos.get('size', 0) != 0}
+                if current_markets:
+                    try:
+                        # Get current market prices
+                        market_prices = {}
+                        for mkt in current_markets:
+                            market_data = self.get_market_data(mkt)
+                            if market_data and 'last_price' in market_data:
+                                market_prices[mkt] = float(market_data['last_price'])
+                        
+                        # Update unrealized P&L for open positions
+                        for pos in paginated_history:
+                            if pos['size'] != 0 and pos['market'] in market_prices:
+                                current_price = market_prices[pos['market']]
+                                pos['unrealized_pnl'] = (current_price - pos['entry_price']) * pos['size']
+                                pos['pnl'] = pos['realized_pnl'] + pos['unrealized_pnl']
+                    except Exception as e:
+                        self.logger.error(f"Error calculating live P&L: {e}")
+            
+            # Prepare response
+            response = {
+                'success': True,
+                'position_history': paginated_history,
+                'pnl_over_time': pnl_over_time if include_pnl else [],
+                'pagination': {
+                    'has_more': has_more,
+                    'next_cursor': next_cursor,
+                    'limit': limit,
+                    'total': len(paginated_history)
+                },
+                'metadata': {
+                    'user_identifier': user_identifier,
+                    'market': market or 'all',
+                    'start_time': start_dt.isoformat(),
+                    'end_time': end_dt.isoformat(),
+                    'interval': interval,
+                    'total_positions': len(paginated_history),
+                    'has_more': has_more
+                }
+            }
+            
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Error retrieving position history: {str(e)}", exc_info=True)
+            return self._create_error_response(
+                f'Internal server error: {str(e)}',
+                'internal_server_error',
+                500,
+                **params,
+                exception_type=e.__class__.__name__,
+                traceback=traceback.format_exc()
+            )
+
+    # Example usage
+    if __name__ == "__main__":
+        import time
+        
+        # Initialize the extension
+        mango = MangoV3Extension(base_url="http://localhost")
+        
+        # Get market data
+        markets = mango.get_market_data()
+        print(f"Available markets: {len(markets)} markets found")
+        
+        # Get portfolio summary
+        portfolio = mango.get_portfolio_summary()
+        print(f"Portfolio: {portfolio}")
+        
+        # Test wallet linking
+        result = mango.link_wallet("5FHwkrdxBc3S4TidqJfhRxzVZrj8xnHKKZwQpWrXKmZa", "test_user")
+        print(f"Wallet linking result: {result}")

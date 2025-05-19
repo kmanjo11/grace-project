@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { useAuth } from '../components/AuthContext';
-import LightweightPositionsWidget from '../components/LightweightPositionsWidget';
 import { api, API_ENDPOINTS, ApiError } from '../api/apiClient';
 import {
   LineChart,

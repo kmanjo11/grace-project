@@ -144,7 +144,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         } else {
           // Verify token using apiClient with proper endpoint constant
-          const { success, data } = await api.get(API_ENDPOINTS.AUTH.VERIFY);
+          const { success, data } = await api.get(API_ENDPOINTS.AUTH.VERIFY_TOKEN);
           
           if (!success) throw new Error('Token verification failed');
           

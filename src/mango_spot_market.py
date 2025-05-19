@@ -39,13 +39,6 @@ except ImportError:
 # Mango V3 integration
 from src.mango_v3_extension import MangoV3Extension
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("MangoSpotMarket")
-
 class EntityMapper:
     """Maps conversation entities to Mango V3 order format."""
     
@@ -68,6 +61,13 @@ class EntityMapper:
             "fill_or_kill": "fill_or_kill"
         }
     
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger("MangoSpotMarket")
+
     def to_mango_order(self, entities: Dict[str, Any]) -> Dict[str, Any]:
         """
         Convert extracted entities to Mango V3 order format.

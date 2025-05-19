@@ -6,6 +6,7 @@
 
 // Import standardized auth utilities
 import { getAuthToken, addAuthHeaders } from '../utils/authUtils';
+import { PositionHistoryResponse, PositionHistoryEntry } from './apiTypes';
 // No circular imports
 
 // API Response types
@@ -47,7 +48,10 @@ export const API_ENDPOINTS = {
   USER: {
     PROFILE: '/api/user/profile',
     LEVERAGE_POSITIONS: '/api/user/leverage_positions',
-    SPOT_POSITIONS: '/api/user/spot_positions'
+    SPOT_POSITIONS: '/api/user/spot_positions',
+    POSITION_HISTORY: '/api/user/position_history',
+    TRADE_HISTORY: '/api/user/trade_history',
+    LIMIT_ORDERS: '/api/user/limit-orders'
   },
   WALLET: {
     DATA: '/api/wallet/data',
@@ -77,7 +81,7 @@ export const API_ENDPOINTS = {
     SELL_POSITION: '/api/trading/sell-position',
     USER_POSITIONS: '/api/user/positions',
     LEVERAGE_POSITIONS: '/api/user/leverage-positions',
-    SPOT_POSITIONS: '/api/user/spot-positions'
+    SPOT_POSITIONS: '/api/user/spot-positions',
   },
   SOCIAL: {
     // Backend implemented endpoints
@@ -238,7 +242,191 @@ export const api = {
   
   async delete<T = any>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     return apiRequest<T>(endpoint, { ...options, method: 'DELETE' });
+  }
+};
+
+// Trading API methods
+export const TradingApi = {
+  /**
+   * Get position history for a user with pagination and filtering
+   * @param params Query parameters for filtering position history
+   * @returns Promise with position history data
+   */
+  getPositionHistory: async (params?: {
+    market?: string;
+    startTime?: string | number;
+    endTime?: string | number;
+    interval?: string;
+    includePnl?: boolean;
+    includeLivePnl?: boolean;
+    cursor?: string;
+    limit?: number;
+  }): Promise<PositionHistoryResponse> => {
+    try {
+      // Build query parameters
+      const queryParams = new URLSearchParams();
+      
+      if (params?.market) queryParams.append('market', params.market);
+      if (params?.startTime) queryParams.append('start_time', String(params.startTime));
+      if (params?.endTime) queryParams.append('end_time', String(params.endTime));
+      if (params?.interval) queryParams.append('interval', params.interval);
+      if (params?.includePnl !== undefined) queryParams.append('include_pnl', String(params.includePnl));
+      if (params?.includeLivePnl) queryParams.append('include_live_pnl', 'true');
+      if (params?.cursor) queryParams.append('cursor', params.cursor);
+      if (params?.limit) queryParams.append('limit', String(params.limit));
+      
+      const response = await fetch(`${API_ENDPOINTS.USER.POSITION_HISTORY}?${queryParams.toString()}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getAuthToken()}`
+        }
+      });
+      
+      const data = await response.json();
+      
+      // Handle error responses
+      if (!response.ok) {
+        const errorData = data?.error || {};
+        throw new ApiError(
+          errorData.message || `HTTP error! status: ${response.status}`,
+          response.status,
+          {
+            code: errorData.code || 'api_error',
+            status: errorData.status || response.status,
+            timestamp: errorData.timestamp || new Date().toISOString(),
+            ...(errorData.details && { details: errorData.details })
+          }
+        );
+      }
+      
+      // Transform the successful response to match the PositionHistoryResponse type
+      return {
+        success: data.success,
+        position_history: data.position_history || [],
+        pnl_over_time: data.pnl_over_time || [],
+        pagination: data.pagination || {
+          has_more: data.metadata?.has_more || false,
+          next_cursor: data.metadata?.cursor,
+          limit: params?.limit || 100,
+          total: data.metadata?.total || 0
+        },
+        metadata: {
+          user_identifier: data.metadata?.user_identifier || '',
+          market: params?.market || 'all',
+          start_time: data.metadata?.start_time || new Date().toISOString(),
+          end_time: data.metadata?.end_time || new Date().toISOString(),
+          interval: params?.interval || '1d',
+          total_positions: data.metadata?.total || 0,
+          has_more: data.metadata?.has_more || false,
+          cursor: data.metadata?.cursor
+        }
+      };
+    } catch (error) {
+      console.error('Error fetching position history:', error);
+      
+      // Handle ApiError instances
+      if (error instanceof ApiError) {
+        return {
+          success: false,
+          position_history: [],
+          pnl_over_time: [],
+          pagination: {
+            has_more: false,
+            next_cursor: undefined,
+            limit: params?.limit || 100,
+            total: 0
+          },
+          metadata: {
+            user_identifier: '',
+            market: params?.market || 'all',
+            start_time: new Date().toISOString(),
+            end_time: new Date().toISOString(),
+            interval: params?.interval || '1d',
+            total_positions: 0,
+            has_more: false
+          },
+          error: error.message,
+          error_details: error.data
+        };
+      }
+      
+      // Handle other types of errors
+      return {
+        success: false,
+        position_history: [],
+        pnl_over_time: [],
+        pagination: {
+          has_more: false,
+          next_cursor: undefined,
+          limit: params?.limit || 100,
+          total: 0
+        },
+        metadata: {
+          user_identifier: '',
+          market: params?.market || 'all',
+          start_time: new Date().toISOString(),
+          end_time: new Date().toISOString(),
+          interval: params?.interval || '1d',
+          total_positions: 0,
+          has_more: false
+        },
+        error: error instanceof Error ? error.message : 'Unknown error',
+        error_details: {
+          code: 'unexpected_error',
+          status: 500,
+          timestamp: new Date().toISOString()
+        }
+      };
+    }
   },
+
+  /**
+   * Get detailed position history for a specific position
+   * @param positionId ID of the position to get history for
+   * @param params Additional query parameters
+   * @returns Promise with detailed position history
+   */
+  getPositionDetails: async (
+    positionId: string,
+    params?: {
+      startTime?: string | number;
+      endTime?: string | number;
+      interval?: string;
+    }
+  ): Promise<PositionHistoryEntry> => {
+    try {
+      // Convert params to query string
+      const queryParams = new URLSearchParams({ positionId });
+      if (params?.startTime) queryParams.append('startTime', String(params.startTime));
+      if (params?.endTime) queryParams.append('endTime', String(params.endTime));
+      if (params?.interval) queryParams.append('interval', params.interval);
+
+      const endpoint = `${API_ENDPOINTS.USER.POSITION_HISTORY}/details?${queryParams.toString()}`;
+      // Create headers object with proper typing
+      const authHeaders = addAuthHeaders();
+      const headers = new Headers();
+      headers.append('Content-Type', 'application/json');
+      
+      // Add auth headers if they exist
+      if (authHeaders) {
+        Object.entries(authHeaders).forEach(([key, value]) => {
+          if (value) headers.append(key, value);
+        });
+      }
+      
+      const response = await api.get<{ success: boolean; data: PositionHistoryEntry }>(endpoint, { headers });
+
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to fetch position details');
+      }
+
+      return (response.data as any).data;
+    } catch (error) {
+      console.error('Error fetching position details:', error);
+      throw error;
+    }
+  }
 };
 
 export default api;

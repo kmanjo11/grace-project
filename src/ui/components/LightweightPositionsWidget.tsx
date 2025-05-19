@@ -4,7 +4,7 @@ import { TradingApi } from '../api/apiTypes';
 import { LeveragePosition, BasePosition, SpotPosition } from '../api/apiTypes';
 import { api, API_ENDPOINTS, ApiError } from '../api/apiClient';
 import { getAuthToken } from '../utils/authUtils';
-import { AgentTaskManager } from '../services/AgentTaskManager';
+import { AgentTaskManager } from '../../services/AgentTaskManager';
 
 // Enhanced Position Tracking Hook
 const usePositionTracking = () => {

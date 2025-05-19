@@ -29,7 +29,7 @@ from src.user_profile import UserProfileSystem, SecureDataManager
 from src.solana_wallet import SolanaWalletManager
 from src.gmgn_service import GMGNService
 from src.transaction_confirmation import TransactionConfirmationSystem
-from src.nitter_service import NitterService
+from src.social_media_service import SocialMediaService
 
 class GraceIntegrationTest:
     """Integration test for Grace components."""
@@ -43,7 +43,7 @@ class GraceIntegrationTest:
         self.gmgn_service = self._init_gmgn_service()
         self.solana_wallet_manager = self._init_solana_wallet_manager()
         self.transaction_confirmation = self._init_transaction_confirmation()
-        self.nitter_service = self._init_nitter_service()
+        self.social_media_service = self._init_social_media_service()
         
         # Test user credentials
         self.test_user_id = "test_user"
@@ -103,16 +103,14 @@ class GraceIntegrationTest:
         
         return transaction_confirmation
     
-    def _init_nitter_service(self):
-        """Initialize the Nitter service."""
-        logger.info("Initializing Nitter Service")
+    def _init_social_media_service(self):
+        """Initialize the Social Media service."""
+        logger.info("Initializing Social Media Service")
         
-        # Create Nitter service with localhost instance
-        nitter_service = NitterService(
-            nitter_instance = get_config().get("nitter_instance")
-        )
+        # Create Social Media service
+        social_media_service = SocialMediaService()
         
-        return nitter_service
+        return social_media_service
     
     def run_tests(self):
         """Run all integration tests."""
@@ -123,7 +121,7 @@ class GraceIntegrationTest:
             "wallet_integration": self.test_wallet_integration(),
             "gmgn_service": self.test_gmgn_service(),
             "transaction_confirmation": self.test_transaction_confirmation(),
-            "nitter_service": self.test_nitter_service(),
+            "social_media_service": self.test_social_media_service(),
             "natural_language": self.test_natural_language_processing()
         }
         
@@ -329,36 +327,34 @@ class GraceIntegrationTest:
             logger.error(f"Error testing Transaction Confirmation System: {str(e)}")
             return {"success": False, "message": f"Error testing Transaction Confirmation System: {str(e)}"}
     
-    def test_nitter_service(self):
-        """Test Nitter service."""
-        logger.info("Testing Nitter Service")
+    def test_social_media_service(self):
+        """Test Social Media service."""
+        logger.info("Testing Social Media Service")
         
         try:
-            # Note: This will likely fail if the local Nitter instance is not running,
-            # but we're testing the integration, not the actual service
-            
             # Test search
-            search_result = self.nitter_service.search_twitter(
+            search_result = self.social_media_service.search_twitter(
                 query="solana",
+                search_type="recent",
                 count=5
             )
             
             # Test user profile
-            user_result = self.nitter_service.get_user_profile(
+            user_result = self.social_media_service.get_user_profile(
                 username="solana"
             )
             
             # Test natural language processing
-            nlp_result = self.nitter_service.execute_dynamic_function(
-                request="What's trending about Solana?"
+            nlp_result = self.social_media_service.analyze_sentiment(
+                text="I love Solana! It's fast and efficient."
             )
             
-            logger.info("Nitter Service test passed")
-            return {"success": True, "message": "Nitter Service test passed"}
+            logger.info("Social Media Service test passed")
+            return {"success": True, "message": "Social Media Service test passed"}
         
         except Exception as e:
-            logger.error(f"Error testing Nitter Service: {str(e)}")
-            return {"success": False, "message": f"Error testing Nitter Service: {str(e)}"}
+            logger.error(f"Error testing Social Media Service: {str(e)}")
+            return {"success": False, "message": f"Error testing Social Media Service: {str(e)}"}
     
     def test_natural_language_processing(self):
         """Test natural language processing across all components."""
@@ -408,8 +404,9 @@ class GraceIntegrationTest:
             ]
             
             for command in social_commands:
-                result = self.nitter_service.execute_dynamic_function(
-                    request=command
+                result = self.social_media_service.execute_dynamic_function(
+                    function_name="process_natural_language_query",
+                    query=command
                 )
             
             logger.info("Natural Language Processing test passed")

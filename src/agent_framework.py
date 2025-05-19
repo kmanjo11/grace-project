@@ -15,6 +15,7 @@ import asyncio
 import uuid
 import threading
 from enum import Enum
+import datetime
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -31,6 +32,7 @@ class AgentType(Enum):
     BASE = "base"
     DATA_WHIZ = "data_whiz"
     TRADING = "trading"
+    LEVERAGE_TRADING = "leverage_trading"
     COMMUNITY_TRACKER = "community_tracker"
     MEMORY_KEEPER = "memory_keeper"
     COORDINATOR = "coordinator"
@@ -786,35 +788,74 @@ class TradingAgent(BaseAgent):
         Returns:
             Dict: Task result
         """
-        if not self.api_services_manager:
-            raise ValueError("API services manager not available")
+        if not self.api_services_manager or not hasattr(self.api_services_manager, 'mango_spot_market'):
+            raise ValueError("Mango spot market not available")
         
+        # Extract trade parameters
         user_id = task.content.get("user_id")
-        from_token = task.content.get("from_token")
-        to_token = task.content.get("to_token")
-        amount = task.content.get("amount")
-        wallet_address = task.content.get("wallet_address")
+        market = task.content.get("market") # e.g. "BTC/USDC"
+        side = task.content.get("side") # "buy" or "sell"
+        order_type = task.content.get("type", "market") # "limit" or "market"
+        size = task.content.get("size")
+        price = task.content.get("price") # Optional for market orders
+        client_id = task.content.get("client_id") # Optional
         
-        if not user_id or not from_token or not to_token or not amount:
-            raise ValueError("user_id, from_token, to_token, and amount are required")
-        
-        # Execute trade
-        result = self.api_services_manager.execute_trade_for_user(
-            user_id=user_id,
-            from_token=from_token,
-            to_token=to_token,
-            amount=amount,
-            wallet_address=wallet_address
-        )
-        
-        return {
-            "user_id": user_id,
-            "from_token": from_token,
-            "to_token": to_token,
-            "amount": amount,
-            "wallet_address": wallet_address,
-            "result": result
+        # Validate required fields
+        if not all([user_id, market, side, size]):
+            raise ValueError("user_id, market, side, and size are required")
+        if order_type == "limit" and not price:
+            raise ValueError("price is required for limit orders")
+            
+        # Prepare trade request
+        trade_request = {
+            "market": market,
+            "side": side,
+            "type": order_type,
+            "size": float(size)
         }
+        if price:
+            trade_request["price"] = float(price)
+        if client_id:
+            trade_request["client_id"] = client_id
+            
+        # Execute trade through MangoSpotMarket
+        try:
+            result = self.api_services_manager.mango_spot_market.process_trade_request(
+                entities=trade_request,
+                client_id=user_id
+            )
+            
+            # Store trade in memory system
+            if hasattr(self.api_services_manager, 'memory_system') and self.api_services_manager.memory_system:
+                trade_memory = {
+                    "type": "trade_execution",
+                    "source": "mango_v3",
+                    "user_id": user_id,
+                    "trade_details": trade_request,
+                    "result": result,
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+                self.api_services_manager.memory_system.add_to_short_term(
+                    user_id=user_id,
+                    text=f"Executed {trade_request['side']} trade of {trade_request['size']} {trade_request['market']} via Mango V3",
+                    metadata=trade_memory
+                )
+            
+            return {
+                "status": "success",
+                "user_id": user_id,
+                "trade_details": trade_request,
+                "result": result
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Trade execution failed: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "user_id": user_id,
+                "trade_details": trade_request
+            }
     
     def _handle_get_user_trades(self, task: AgentTask) -> Dict[str, Any]:
         """
@@ -897,74 +938,37 @@ class TradingAgent(BaseAgent):
                 "status": "error",
                 "error": "Token symbol not provided"
             }
-        
-        # Normalize token symbol
-        token_symbol = token_symbol.upper()
-        
+            
         try:
-            # Use GMGN service to get token price if available
-            if self.api_services_manager:  # This is now the GMGN service
-                self.logger.info(f"Getting price for {token_symbol} via GMGN service")
+            # Try Mango V3 first
+            if hasattr(self.api_services_manager, 'mango_spot_market'):
                 try:
-                    # Call the appropriate method on the GMGN service
-                    # Note: This assumes the GMGN service has a get_token_price method
-                    # If it has a different method name, this should be adjusted
-                    price_info = self.api_services_manager.get_token_price(token_symbol)
-                    
-                    if price_info and isinstance(price_info, dict) and 'price' in price_info:
-                        self.logger.info(f"Successfully retrieved price for {token_symbol}: {price_info}")
+                    market_data = self.api_services_manager.mango_spot_market.get_market_data(token_symbol)
+                    if market_data and 'price' in market_data:
                         return {
                             "status": "success",
-                            "symbol": token_symbol,
-                            "price": price_info.get("price", 0.0),
-                            "change_24h": price_info.get("change_24h", 0.0),
-                            "user_id": user_id
+                            "source": "mango_v3",
+                            "price": market_data['price'],
+                            "market_data": market_data
                         }
-                    else:
-                        self.logger.warning(f"Invalid price info format for {token_symbol}")
-                except AttributeError:
-                    self.logger.warning(f"GMGN service does not support get_token_price method")
                 except Exception as e:
-                    self.logger.warning(f"Error getting price from GMGN service: {str(e)}")
-            else:
-                self.logger.warning("GMGN service not available for price check")
+                    self.logger.warning(f"Mango V3 price check failed: {str(e)}, falling back to GMGN")
             
-            # Fallback to simulated prices if API services manager is not available or returned an error
-            self.logger.info(f"Using simulated price for {token_symbol}")
-            
-            # Simulated prices for common tokens
-            simulated_prices = {
-                "BTC": {"price": 50000.00, "change_24h": 2.5},
-                "ETH": {"price": 3000.00, "change_24h": 1.8},
-                "SOL": {"price": 100.00, "change_24h": 5.2},
-                "DOGE": {"price": 0.12, "change_24h": -1.5},
-                "ADA": {"price": 0.50, "change_24h": 0.8},
-                "XRP": {"price": 0.60, "change_24h": 1.2},
-                "BNB": {"price": 350.00, "change_24h": 3.1},
-                "USDT": {"price": 1.00, "change_24h": 0.01},
-                "USDC": {"price": 1.00, "change_24h": 0.0},
-                "WIF": {"price": 0.75, "change_24h": 10.5}
-            }
-            
-            # Get price from simulated prices or generate a random one
-            if token_symbol in simulated_prices:
-                price_data = simulated_prices[token_symbol]
-            else:
-                # Generate a random price for unknown tokens
-                import random
-                price_data = {
-                    "price": round(random.uniform(0.1, 100.0), 2),
-                    "change_24h": round(random.uniform(-5.0, 5.0), 2)
+            # Fallback to GMGN
+            try:
+                price = self._get_token_price(token_symbol)
+                return {
+                    "status": "success",
+                    "source": "gmgn",
+                    "token_symbol": token_symbol,
+                    "price": price
                 }
-            
-            return {
-                "status": "success",
-                "symbol": token_symbol,
-                "price": price_data["price"],
-                "change_24h": price_data["change_24h"],
-                "source": "simulated",
-                "user_id": user_id
-            }
+            except Exception as e:
+                self.logger.error(f"Both Mango V3 and GMGN price checks failed for {token_symbol}: {str(e)}")
+                return {
+                    "status": "error",
+                    "error": str(e)
+                }
             
         except Exception as e:
             self.logger.error(f"Error in price check handler: {str(e)}")
@@ -988,352 +992,68 @@ class TradingAgent(BaseAgent):
         Returns:
             Dict: Task result with wallet balance information
         """
-        self.logger.info(f"Handling wallet balance check task: {task.task_id}")
+        if not self.api_services_manager:
+            raise ValueError("API services manager not available")
         
-        # Extract user_id from task content
-        content = task.content
-        user_id = content.get("user_id")
-        wallet_address = content.get("wallet_address")
+        user_id = task.content.get("user_id")
+        wallet_address = task.content.get("wallet_address")
         
         if not user_id:
-            self.logger.error("User ID not provided for wallet balance check")
-            return {
-                "status": "error",
-                "error": "User ID not provided"
-            }
-        
+            raise ValueError("user_id is required")
+            
         try:
-            # Use API services manager to get wallet balance if available
-            if self.api_services_manager:
-                self.logger.info(f"Getting wallet balance for user {user_id} via API services manager")
-                balance_info = self.api_services_manager.get_wallet_balance(user_id)
-                
-                if balance_info and 'error' not in balance_info:
-                    self.logger.info(f"Successfully retrieved wallet balance for user {user_id}: {balance_info}")
+            # Try Mango V3 first
+            if hasattr(self.api_services_manager, 'mango_spot_market'):
+                try:
+                    balances = self.api_services_manager.mango_spot_market.get_wallet_balances(user_id)
                     return {
                         "status": "success",
+                        "source": "mango_v3",
                         "user_id": user_id,
-                        "balance": balance_info.get("balance", 0.0),
-                        "currency": balance_info.get("currency", "USD"),
-                        "wallet_address": wallet_address or balance_info.get("wallet_address")
+                        "wallet_address": wallet_address,
+                        "balances": balances
                     }
-                else:
-                    self.logger.warning(f"Error getting wallet balance for user {user_id}: {balance_info.get('error', 'Unknown error')}")
+                except Exception as e:
+                    self.logger.warning(f"Mango V3 balance check failed: {str(e)}, falling back to GMGN")
             
-            # Fallback to simulated wallet balance if API services manager is not available or returned an error
-            self.logger.info(f"Using simulated wallet balance for user {user_id}")
+            # Fallback to GMGN
+            result = self.api_services_manager.get_wallet_balance(
+                user_id=user_id,
+                wallet_address=wallet_address
+            )
             
-            # Generate a simulated wallet balance
-            import random
-            simulated_balance = {
-                "balance": round(random.uniform(100.0, 10000.0), 2),
-                "currency": "USD",
-                "tokens": [
-                    {"symbol": "BTC", "amount": round(random.uniform(0.001, 0.1), 6)},
-                    {"symbol": "ETH", "amount": round(random.uniform(0.01, 1.0), 6)},
-                    {"symbol": "SOL", "amount": round(random.uniform(1.0, 50.0), 6)}
-                ]
-            }
+            # Store GMGN balance check in memory system
+            if hasattr(self.api_services_manager, 'memory_system') and self.api_services_manager.memory_system:
+                balance_memory = {
+                    "type": "balance_check",
+                    "source": "gmgn",
+                    "user_id": user_id,
+                    "wallet_address": wallet_address,
+                    "result": result,
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+                self.api_services_manager.memory_system.add_to_short_term(
+                    user_id=user_id,
+                    text=f"Retrieved wallet balance via GMGN for wallet {wallet_address}",
+                    metadata=balance_memory
+                )
             
             return {
                 "status": "success",
+                "source": "gmgn",
                 "user_id": user_id,
-                "balance": simulated_balance["balance"],
-                "currency": simulated_balance["currency"],
-                "tokens": simulated_balance["tokens"],
-                "source": "simulated",
-                "wallet_address": wallet_address or f"simulated_wallet_{user_id[:8]}"
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error in wallet balance check handler: {str(e)}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            
-            return {
-                "status": "error",
-                "user_id": user_id,
-                "error": str(e)
-            }
-    
-    def _handle_trade_initiate(self, task: AgentTask) -> Dict[str, Any]:
-        """
-        Handle a trade_initiate task, which prepares for a trade but doesn't execute it.
-        
-        Args:
-            task: Task to process
-            
-        Returns:
-            Dict: Task result with trade preparation information
-        """
-        self.logger.info(f"Handling trade initiation task: {task.task_id}")
-        
-        # Extract trade details from task content
-        content = task.content
-        user_id = content.get("user_id")
-        from_token = content.get("from_token")
-        to_token = content.get("to_token")
-        amount = content.get("amount")
-        wallet_address = content.get("wallet_address")
-        
-        if not user_id or not from_token or not to_token:
-            missing = []
-            if not user_id: missing.append("user_id")
-            if not from_token: missing.append("from_token")
-            if not to_token: missing.append("to_token")
-            
-            self.logger.error(f"Missing required parameters for trade initiation: {', '.join(missing)}")
-            return {
-                "status": "error",
-                "error": f"Missing required parameters: {', '.join(missing)}"
-            }
-        
-        try:
-            # Normalize token symbols
-            from_token = from_token.upper()
-            to_token = to_token.upper()
-            
-            # Get current prices for both tokens
-            from_price = self._get_token_price(from_token)
-            to_price = self._get_token_price(to_token)
-            
-            # Calculate estimated trade details
-            if amount:
-                # If amount is specified, calculate the estimated result
-                try:
-                    amount_float = float(amount)
-                    estimated_result = (amount_float * from_price) / to_price if to_price > 0 else 0
-                except (ValueError, TypeError):
-                    self.logger.error(f"Invalid amount format: {amount}")
-                    estimated_result = 0
-            else:
-                # If no amount is specified, just provide exchange rate
-                amount_float = 1.0
-                estimated_result = from_price / to_price if to_price > 0 else 0
-            
-            # Prepare trade details
-            trade_details = {
-                "status": "prepared",
-                "user_id": user_id,
-                "from_token": from_token,
-                "to_token": to_token,
-                "amount": amount_float if amount else None,
-                "from_price": from_price,
-                "to_price": to_price,
-                "estimated_result": estimated_result,
-                "exchange_rate": f"1 {from_token} = {from_price / to_price:.6f} {to_token}" if to_price > 0 else "N/A",
                 "wallet_address": wallet_address,
-                "fees": {
-                    "percentage": 0.1,  # 0.1% fee
-                    "estimated": amount_float * 0.001 if amount else 0
-                },
-                "ready_to_execute": True
+                "balances": result
             }
             
-            return trade_details
-            
         except Exception as e:
-            self.logger.error(f"Error in trade initiation handler: {str(e)}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            
+            self.logger.error(f"Both Mango V3 and GMGN balance checks failed: {str(e)}")
             return {
                 "status": "error",
+                "error": str(e),
                 "user_id": user_id,
-                "from_token": from_token,
-                "to_token": to_token,
-                "error": str(e)
+                "wallet_address": wallet_address
             }
-    
-    def _get_token_price(self, token_symbol):
-        """
-        Helper method to get token price, with fallback to simulated prices.
-        
-        Args:
-            token_symbol: Symbol of the token
-            
-        Returns:
-            float: Token price
-        """
-        try:
-            # Try to get price from GMGN service
-            if self.api_services_manager:  # This is now the GMGN service
-                try:
-                    # Call the get_token_price method on the GMGN service if it exists
-                    if hasattr(self.api_services_manager, 'get_token_price'):
-                        price_info = self.api_services_manager.get_token_price(token_symbol)
-                        if price_info and isinstance(price_info, dict) and 'price' in price_info:
-                            return price_info['price']
-                    else:
-                        self.logger.warning(f"GMGN service does not have get_token_price method")
-                except Exception as e:
-                    self.logger.warning(f"Error getting price from GMGN service: {str(e)}")
-            else:
-                self.logger.debug("GMGN service not available for price check")
-            
-            # Fallback to simulated prices
-            simulated_prices = {
-                "BTC": 50000.00,
-                "ETH": 3000.00,
-                "SOL": 100.00,
-                "DOGE": 0.12,
-                "ADA": 0.50,
-                "XRP": 0.60,
-                "BNB": 350.00,
-                "USDT": 1.00,
-                "USDC": 1.00,
-                "WIF": 0.75
-            }
-            
-            # Return simulated price or a default value
-            return simulated_prices.get(token_symbol, 1.0)
-            
-        except Exception as e:
-            self.logger.error(f"Error getting token price for {token_symbol}: {str(e)}")
-            return 1.0  # Default fallback price
-        
-    def _handle_get_user_liquidity_pools(self, task: AgentTask) -> Dict[str, Any]:
-        """
-        Handle a get_user_liquidity_pools task.
-        
-        Args:
-            task: Task to process
-            
-        Returns:
-            Dict: Task result
-        """
-        # This is a placeholder implementation
-        user_id = task.content.get("user_id")
-        
-        if not user_id:
-            raise ValueError("user_id is required")
-        
-        # Return simulated liquidity pools
-        return {
-            "user_id": user_id,
-            "pools": [
-                {
-                    "pool_id": "simulated_pool_1",
-                    "token_a": "SOL",
-                    "token_b": "USDC",
-                    "amount_a": 10.0,
-                    "amount_b": 1000.0,
-                    "created_at": "2023-01-01T00:00:00Z"
-                }
-            ]
-        }
-        
-    def _handle_remove_liquidity(self, task: AgentTask) -> Dict[str, Any]:
-        """
-        Handle a remove_liquidity task.
-        
-        Args:
-            task: Task to process
-            
-        Returns:
-            Dict: Task result
-        """
-        # This is a placeholder implementation
-        user_id = task.content.get("user_id")
-        pool_id = task.content.get("pool_id")
-        
-        if not user_id or not pool_id:
-            raise ValueError("user_id and pool_id are required")
-        
-        # Return simulated result
-        return {
-            "user_id": user_id,
-            "pool_id": pool_id,
-            "status": "success",
-            "token_a": "SOL",
-            "token_b": "USDC",
-            "amount_a_returned": 10.0,
-            "amount_b_returned": 1000.0
-        }
-        
-    def _handle_setup_auto_trading(self, task: AgentTask) -> Dict[str, Any]:
-        """
-        Handle a setup_auto_trading task.
-        
-        Args:
-            task: Task to process
-            
-        Returns:
-            Dict: Task result
-        """
-        # This is a placeholder implementation
-        user_id = task.content.get("user_id")
-        token = task.content.get("token")
-        strategy = task.content.get("strategy")
-        
-        if not user_id or not token or not strategy:
-            raise ValueError("user_id, token, and strategy are required")
-        
-        # Return simulated result
-        return {
-            "user_id": user_id,
-            "token": token,
-            "strategy": strategy,
-            "status": "success",
-            "auto_trading_id": "simulated_auto_trading_" + str(uuid.uuid4())[:8]
-        }
-    
-    def _handle_get_user_liquidity_pools(self, task: AgentTask) -> Dict[str, Any]:
-        """
-        Handle a get_user_liquidity_pools task.
-        
-        Args:
-            task: Task to process
-            
-        Returns:
-            Dict: Task result
-        """
-        if not self.api_services_manager:
-            raise ValueError("API services manager not available")
-        
-        user_id = task.content.get("user_id")
-        
-        if not user_id:
-            raise ValueError("user_id is required")
-        
-        # Get user liquidity pools
-        result = self.api_services_manager.trading_service.get_user_liquidity_pools(user_id)
-        
-        return {
-            "user_id": user_id,
-            "liquidity_pools": result
-        }
-    
-    def _handle_remove_liquidity(self, task: AgentTask) -> Dict[str, Any]:
-        """
-        Handle a remove_liquidity task.
-        
-        Args:
-            task: Task to process
-            
-        Returns:
-            Dict: Task result
-        """
-        if not self.api_services_manager:
-            raise ValueError("API services manager not available")
-        
-        user_id = task.content.get("user_id")
-        pool_id = task.content.get("pool_id")
-        
-        if not user_id or not pool_id:
-            raise ValueError("user_id and pool_id are required")
-        
-        # Remove liquidity
-        result = self.api_services_manager.trading_service.remove_liquidity(
-            user_id=user_id,
-            pool_id=pool_id
-        )
-        
-        return {
-            "user_id": user_id,
-            "pool_id": pool_id,
-            "result": result
-        }
     
     def _handle_setup_auto_trading(self, task: AgentTask) -> Dict[str, Any]:
         """
@@ -1811,6 +1531,11 @@ class SmartRouter:
             "get_user_liquidity_pools": AgentType.TRADING,
             "remove_liquidity": AgentType.TRADING,
             "setup_auto_trading": AgentType.TRADING,
+            
+            # LeverageTradeAgent tasks
+            "execute_leverage_trade": AgentType.LEVERAGE_TRADING,
+            "get_leverage_positions": AgentType.LEVERAGE_TRADING,
+            "update_leverage_trade": AgentType.LEVERAGE_TRADING,
             
             # CommunityTrackerAgent tasks
             "get_community_insights": AgentType.COMMUNITY_TRACKER,

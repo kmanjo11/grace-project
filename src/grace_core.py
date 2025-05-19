@@ -23,6 +23,8 @@ from src.solana_wallet import SolanaWalletManager
 from src.transaction_confirmation import TransactionConfirmationSystem
 from src.research_service import ResearchService
 from src.conversation_management_wrapper import ConversationManager, create_conversation_management_system
+from src.leverage_trading_handler import LeverageTradeManager
+from src.social_media_service import SocialMediaService
 
 # Configure logging
 logging.basicConfig(
@@ -83,6 +85,8 @@ class GraceCore:
         self.solana_wallet_manager = self._init_solana_wallet_manager() # Needs to be initialized before transaction_confirmation
         self.transaction_confirmation = self._init_transaction_confirmation()
         self.research_service = self._init_research_service() # Initialize Research Service
+        self.leverage_trade_manager = self._init_leverage_trade_manager() # Initialize Leverage Trade Manager
+        self.social_media_service = self._init_social_media_service() # Initialize Social Media Service
         self.agent_manager = self._init_agent_manager() # Initialize Agent Manager
 
         # Initialize Open Interpreter components if not in test mode
@@ -216,18 +220,37 @@ class GraceCore:
         return conversation_manager
 
     def _init_gmgn_service(self):
-        """Initialize the GMGN service."""
-        logger.info("Initializing GMGN Service")
-        config = {
+        """Initialize the GMGN service with Mango V3 as primary trading service."""
+        logger.info("Initializing GMGN Service with Mango V3 integration")
+        
+        # Initialize Mango spot market first
+        from src.mango_spot_market import MangoSpotMarket
+        mango_config = {
+            "mango_url": self.config.get("mango_v3_endpoint"),
+            "private_key_path": self.config.get("mango_private_key_path")
+        }
+        mango_spot_market = MangoSpotMarket(
+            config=mango_config,
+            memory_system=self.memory_system
+        )
+        
+        # Initialize GMGN with Mango spot market
+        gmgn_config = {
             "trade_endpoint": self.config.get("gmgn_router_endpoint"),
-            "price_chart_endpoint": self.config.get("gmgn_price_endpoint"),
+            # Charts must stay with GMGN for consistent display and data format
+            "price_chart_endpoint": self.config.get("gmgn_price_endpoint"),  # GMGN-only chart endpoint
             "solana_rpc_url": self.config.get("solana_rpc_url"),
             "solana_network": self.config.get("solana_network")
         }
-        return GMGNService(
+        gmgn_service = GMGNService(
             memory_system=self.memory_system,
-            config=config
+            config=gmgn_config
         )
+        
+        # Attach Mango spot market to GMGN
+        gmgn_service.mango_spot_market = mango_spot_market
+        
+        return gmgn_service
 
     def _init_solana_wallet_manager(self):
         """Initialize the Solana wallet manager."""
@@ -250,17 +273,130 @@ class GraceCore:
             gmgn_service=self.gmgn_service
         )
         
-    def _init_research_service(self):
-        """Initialize the Research service."""
-        logger.info("Initializing Research Service")
-        return ResearchService(
+    def _init_social_media_service(self):
+        """Initialize the Social Media service."""
+        logger.info("Initializing Social Media Service")
+        return SocialMediaService(
             memory_system=self.memory_system,
-            interpreter=None  # Will be updated after interpreter is initialized
+            config=self.config.get("social_media", {})
         )
         
-    def _setup_memory_pruning(self):
-        """Set up periodic memory pruning to prevent memory leaks."""
-        if not self.memory_system:
+    # Get a comprehensive system message that includes all prompt components
+    base_prompt = get_system_prompt("general")
+    trading_prompt = get_system_prompt("trading")
+    research_prompt = get_system_prompt("research")
+    
+    # Combine all prompts into a comprehensive system message
+    # We need to extract just the trading and research specific parts
+    trading_specific = trading_prompt.replace(base_prompt, "").strip()
+    research_specific = research_prompt.replace(base_prompt, "").strip()
+    
+    # Combine all components
+    system_message = f"{base_prompt}\n\n{trading_specific}\n\n{research_specific}"
+    
+    return system_message
+            
+    logger.info("Setting up periodic memory pruning")
+        
+    # Define pruning interval (in seconds)
+    pruning_interval = self.config.get("memory_pruning_interval", 3600)  # Default: 1 hour
+        
+    def pruning_task():
+        """Task to periodically prune expired memories."""
+        while True:
+            try:
+                logger.info("Running memory pruning task")
+                self.memory_system.prune_expired_memories()
+                logger.info("Memory pruning completed successfully")
+            except Exception as e:
+                logger.error(f"Error during memory pruning: {str(e)}")
+            finally:
+                # Sleep for the specified interval
+                time.sleep(pruning_interval)
+        
+    # Start pruning thread
+    pruning_thread = threading.Thread(target=pruning_task, daemon=True)
+    pruning_thread.start()
+    logger.info(f"Memory pruning scheduled every {pruning_interval} seconds")
+
+def _init_agent_manager(self):
+    """Initialize the Agent Manager for the multi-agent framework."""
+    logger.info("Initializing Agent Manager")
+    # Create the agent manager with the necessary dependencies
+    from src.agent_framework import SystemAgentManager, AgentType, AgentPriority
+        
+    agent_manager = SystemAgentManager(
+        memory_system=self.memory_system,
+        api_services_manager=self.gmgn_service,  # Use the existing GMGN service
+        wallet_connection_system=self.solana_wallet_manager
+    )
+        
+    # Import the conversation manager for process_message tasks
+    from conversation_management import ConversationManager
+    conversation_storage_dir = os.path.join(self.data_dir, "conversations")
+    os.makedirs(conversation_storage_dir, exist_ok=True)
+    conversation_manager = ConversationManager(storage_dir=conversation_storage_dir)
+        
+    # Register specialized agents for specific task types
+    # Core message processing
+    agent_manager.register_agent_for_task_type("process_message", conversation_manager, AgentPriority.HIGH)
+        
+    # Memory operations
+    agent_manager.register_agent_for_task_type("query_memory", self.memory_system, AgentPriority.MEDIUM)
+    agent_manager.register_agent_for_task_type("add_memory", self.memory_system, AgentPriority.MEDIUM)
+    agent_manager.register_agent_for_task_type("remember", self.memory_system, AgentPriority.MEDIUM)
+        
+    # Trading operations
+    agent_manager.register_agent_for_task_type("execute_trade", self.gmgn_service, AgentPriority.HIGH)
+    agent_manager.register_agent_for_task_type("get_token_price", self.gmgn_service, AgentPriority.MEDIUM)
+    agent_manager.register_agent_for_task_type("price_check", self.gmgn_service, AgentPriority.MEDIUM)
+    agent_manager.register_agent_for_task_type("check_wallet_balance", self.gmgn_service, AgentPriority.MEDIUM)
+    agent_manager.register_agent_for_task_type("trade_preparation", self.gmgn_service, AgentPriority.HIGH)
+    agent_manager.register_agent_for_task_type("execute_swap", self.gmgn_service, AgentPriority.HIGH)
+    agent_manager.register_agent_for_task_type("monitor_smart_trading", self.gmgn_service, AgentPriority.LOW)
+    
+    # Create and register LeverageTradeAgent
+    from src.leverage_trade_agent import LeverageTradeAgent
+    leverage_trade_agent = LeverageTradeAgent(
+        agent_id="leverage_trade_agent",
+        leverage_trade_manager=self.leverage_trade_manager,
+        config=self.config
+    )
+    
+    # Register LeverageTradeAgent for leverage trading operations
+    agent_manager.register_agent(leverage_trade_agent)
+    agent_manager.register_agent_for_task_type("execute_leverage_trade", leverage_trade_agent, AgentPriority.HIGH)
+    agent_manager.register_agent_for_task_type("get_leverage_positions", leverage_trade_agent, AgentPriority.MEDIUM)
+    agent_manager.register_agent_for_task_type("update_leverage_trade", leverage_trade_agent, AgentPriority.HIGH)
+        
+    # Schedule smart trading monitoring task to run every 5 minutes
+    agent_manager.schedule_task(
+        task_type="monitor_smart_trading",
+        content={},  # No specific parameters needed
+        interval_seconds=300,  # 5 minutes
+        priority=AgentPriority.LOW
+    )
+    logger.info("Scheduled smart trading monitoring task to run every 5 minutes")
+        
+    # Community tracking operations
+    agent_manager.register_agent_for_task_type("get_community_pulse", self.research_service, AgentPriority.MEDIUM)
+        
+    # Start all agents
+    agent_manager.start_all_agents()
+        
+    # Log registered task types for debugging
+    logger.info(f"Registered task types: {list(agent_manager.task_type_to_agent.keys())}")
+        
+    return agent_manager
+        
+def _register_interpreter_functions(self, interpreter_instance):
+    """Register helper functions with Open Interpreter to allow direct calls to the agent framework."""
+    logger.info("Registering helper functions with Open Interpreter")
+        
+    try:
+        # Check if the interpreter supports function registration
+        if not hasattr(interpreter_instance, 'function') and not hasattr(interpreter_instance, 'register_function'):
+            logger.warning("Open Interpreter does not support function registration")
             logger.warning("Memory system not available, skipping memory pruning setup")
             return
             

@@ -66,7 +66,6 @@ class GraceConfig:
         "GRACE_ENCRYPTION_KEY": "encryption_key",
         "SOLANA_RPC_URL": "solana_rpc_url",
         "SOLANA_NETWORK": "solana_network",
-        "NITTER_INSTANCE": "nitter_instance",
         "GMGN_ROUTER_ENDPOINT": "gmgn_router_endpoint",
         "GMGN_PRICE_ENDPOINT": "gmgn_price_endpoint",
         "AUTHORIZED_ADMIN_EMAIL": "authorized_admin_email",
@@ -76,7 +75,7 @@ class GraceConfig:
         "TRANSACTION_CONFIRMATION_TIMEOUT": "transaction_confirmation_timeout",
         "MAX_SLIPPAGE": "max_slippage",
         "UI_THEME": "ui_theme",
-        "UI_PORT": "ui_port"
+        "UI_PORT": "ui_port",
     }
     
     def __init__(self, config_path: Optional[str] = None):

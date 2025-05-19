@@ -16,6 +16,8 @@ import asyncio
 from typing import Dict, List, Any, Optional, Union, Tuple
 from datetime import datetime, timedelta
 import re
+from src.mango_spot_market import MangoSpotMarket  # Import for spot trading
+from src.leverage_trade_manager import LeverageTradeManager  # Import for leverage trading
 
 # Solana Integration
 from solana.rpc.async_api import AsyncClient
@@ -30,15 +32,12 @@ except ImportError:
 
 # Mango V3 is the only supported version
 
-from src.config import get_config
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("GraceGMGNService")
+
+def get_config():
+    return {'solana_rpc_url': 'http://localhost:8899'}
 
 class GMGNService:
+
     """Service for interacting with GMGN API for Solana trading and price data."""
     
     def __init__(
@@ -55,6 +54,13 @@ class GMGNService:
             cache_duration: Duration in seconds to cache results
             config: Additional configuration options
         """
+
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger("GMGNService")
         self.memory_system = memory_system
         self.cache_duration = cache_duration
         self.config = config or {}
@@ -81,7 +87,7 @@ class GMGNService:
         if mango_v3_enabled:
             try:
                 # Log detailed Mango V3 configuration
-                logger.info(f"Attempting to initialize Mango V3 Extension with configuration: {mango_v3_config}")
+                self.logger.info(f"Attempting to initialize Mango V3 Extension with configuration: {mango_v3_config}")
                 
                 self.mango_v3 = MangoV3Extension(
                     base_url=mango_v3_config.get('url', 'http://localhost'),
@@ -90,11 +96,11 @@ class GMGNService:
                 )
                 
                 # Enhanced logging with more context
-                logger.info(f"Mango V3 Extension initialized successfully")
-                logger.info(f"Mango V3 Configuration Details:")
-                logger.info(f"  - Base URL: {mango_v3_config.get('url', 'N/A')}")
-                logger.info(f"  - Private Key Path: {'Configured' if mango_v3_config.get('private_key_path') else 'Not Specified'}")
-                logger.info(f"  - Additional Config: {', '.join(str(k) for k in mango_v3_config.keys() if k not in ['url', 'private_key_path'])}")
+                self.logger.info(f"Mango V3 Extension initialized successfully")
+                self.logger.info(f"Mango V3 Configuration Details:")
+                self.logger.info(f"  - Base URL: {mango_v3_config.get('url', 'N/A')}")
+                self.logger.info(f"  - Private Key Path: {'Configured' if mango_v3_config.get('private_key_path') else 'Not Specified'}")
+                self.logger.info(f"  - Additional Config: {', '.join(str(k) for k in mango_v3_config.keys() if k not in ['url', 'private_key_path'])}")
             except Exception as e:
                 logger.error(f"Failed to initialize Mango V3 Extension: {e}")
                 logger.error(f"Mango V3 Configuration that caused the error: {mango_v3_config}")
@@ -105,10 +111,10 @@ class GMGNService:
         self.solana_rpc_url = get_config().get("solana_rpc_url")
         self.solana_network = get_config().get("solana_network")
         
-        logger.info(f"Initialized GMGN Service with trade endpoint: {self.trade_endpoint}")
-        logger.info(f"Price chart endpoint: {self.price_chart_endpoint}")
-        logger.info(f"Solana RPC URL: {self.solana_rpc_url}")
-        logger.info(f"Solana network: {self.solana_network}")
+        self.logger.info(f"Initialized GMGN Service with trade endpoint: {self.trade_endpoint}")
+        self.logger.info(f"Price chart endpoint: {self.price_chart_endpoint}")
+        self.logger.info(f"Solana RPC URL: {self.solana_rpc_url}")
+        self.logger.info(f"Solana network: {self.solana_network}")
     
     def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """
@@ -123,10 +129,10 @@ class GMGNService:
         if cache_key in self.cache:
             cache_entry = self.cache[cache_key]
             if datetime.now() < cache_entry["expires_at"]:
-                logger.info(f"Cache hit for key: {cache_key}")
+                self.logger.info(f"Cache hit for key: {cache_key}")
                 return cache_entry["data"]
             else:
-                logger.info(f"Cache expired for key: {cache_key}")
+                self.logger.info(f"Cache expired for key: {cache_key}")
                 del self.cache[cache_key]
         
         return None
@@ -148,7 +154,7 @@ class GMGNService:
             "expires_at": expires_at
         }
         
-        logger.info(f"Added to cache with key: {cache_key}, expires at: {expires_at}")
+        self.logger.info(f"Added to cache with key: {cache_key}, expires at: {expires_at}")
     
     def get_user_leverage_positions(
         self, 
@@ -360,7 +366,7 @@ class GMGNService:
         """
         # Parse request
         parsed_request = self._parse_natural_language_request(request)
-        logger.info(f"Parsed request: {parsed_request}")
+        self.logger.info(f"Parsed request: {parsed_request}")
         
         # Check confidence
         if parsed_request["confidence"] < 0.6:
@@ -948,8 +954,8 @@ class GMGNService:
                 }
                 
                 # Make API request
-                logger.info(f"Would execute trade with payload: {payload}")
-                logger.info(f"Using trade endpoint: {self.trade_endpoint}")
+                self.logger.info(f"Would execute trade with payload: {payload}")
+                self.logger.info(f"Using trade endpoint: {self.trade_endpoint}")
                 
                 # This is a placeholder for the actual API call
                 # response = requests.post(self.trade_endpoint, json=payload)
@@ -985,8 +991,8 @@ class GMGNService:
                 }
                 
                 # Make API request
-                logger.info(f"Would execute swap with payload: {payload}")
-                logger.info(f"Using trade endpoint: {self.trade_endpoint}")
+                self.logger.info(f"Would execute swap with payload: {payload}")
+                self.logger.info(f"Using trade endpoint: {self.trade_endpoint}")
                 
                 # This is a placeholder for the actual API call
                 # response = requests.post(self.trade_endpoint, json=payload)
@@ -1042,7 +1048,7 @@ class GMGNService:
             Dict[str, Any]: Task result
         """
         task_type = task_content.get("type")
-        logger.info(f"Processing task of type: {task_type}")
+        self.logger.info(f"Processing task of type: {task_type}")
         
         if task_type == "get_token_price" or task_type == "price_check":
             token = task_content.get("token_symbol")
@@ -1289,8 +1295,7 @@ class GMGNService:
                     reduce_only=reduce_only,
                     user_id=kwargs.get('user_id')
                 )
-            else:
-                return {'success': False, 'error': f'Invalid trade type: {trade_type}', 'code': 'INVALID_TYPE'}
+            # Removed the unnecessary else block
             
             # Log to memory system if successful
             if result.get('success') and self.memory_system:
@@ -1309,6 +1314,13 @@ class GMGNService:
                     if client_id:
                         order_details['client_id'] = client_id
                     
+                    # Intelligent validation for price, size, and leverage
+                    if not isinstance(price, (int, float)) or price <= 0:
+                        return {'success': False, 'error': 'Invalid price', 'code': 'INVALID_PRICE'}
+                    if not isinstance(size, (int, float)) or size <= 0:
+                        return {'success': False, 'error': 'Invalid size', 'code': 'INVALID_SIZE'}
+                    if leverage and (not isinstance(leverage, (int, float)) or leverage <= 0):
+                        return {'success': False, 'error': 'Invalid leverage', 'code': 'INVALID_LEVERAGE'}
                     # Add leverage info only for leverage trades
                     if trade_type == 'leverage':
                         order_details['leverage'] = kwargs.get('leverage', 1.0)
@@ -1323,8 +1335,6 @@ class GMGNService:
                     self.logger.warning(f"Failed to create memory for limit order: {mem_err}")
             
             return result
-            else:
-                return {'success': False, 'error': f'Invalid trade type: {trade_type}', 'code': 'INVALID_TYPE'}
         except Exception as e:
             self.logger.error(f"Limit order error: {e}", exc_info=True)
             return {'success': False, 'error': str(e), 'code': 'EXECUTION_ERROR'}
@@ -1358,7 +1368,7 @@ class GMGNService:
                 )
                 
                 if mango_confirm_result.get('success'):
-                    logger.info(f"Trade {confirmation_id} successfully confirmed via Mango V3")
+                    self.logger.info(f"Trade {confirmation_id} successfully confirmed via Mango V3")
                     return {
                         "status": "success",
                         "platform": "mango_v3",
@@ -1381,7 +1391,7 @@ class GMGNService:
             )
             
             if gmgn_confirm_result.get('success'):
-                logger.info(f"Trade {confirmation_id} confirmed via GMGN")
+                self.logger.info(f"Trade {confirmation_id} confirmed via GMGN")
                 return {
                     "status": "success", 
                     "platform": "gmgn",
@@ -1435,7 +1445,7 @@ class GMGNService:
         Returns:
             Dict with monitoring results
         """
-        logger.info(f"Starting smart trading monitoring {'for user ' + user_id if user_id else 'for all users'}")
+        self.logger.info(f"Starting smart trading monitoring {'for user ' + user_id if user_id else 'for all users'}")
         results = {
             "status": "success",
             "monitored_users": 0,
@@ -1475,7 +1485,7 @@ class GMGNService:
                                     users_to_monitor.append(uid)
             
             results["monitored_users"] = len(users_to_monitor)
-            logger.info(f"Found {len(users_to_monitor)} users with smart trading enabled")
+            self.logger.info(f"Found {len(users_to_monitor)} users with smart trading enabled")
             
             # Process each user's positions
             for uid in users_to_monitor:
@@ -1529,7 +1539,7 @@ class GMGNService:
                                 stop_loss_triggered = True
                                 
                             if stop_loss_triggered:
-                                logger.info(f"Stop loss triggered for user {uid}, {token} at {current_price}")
+                                self.logger.info(f"Stop loss triggered for user {uid}, {token} at {current_price}")
                                 
                                 # Execute the opposite action to close the position
                                 close_action = 'sell' if trade_type == 'buy' else 'buy'
@@ -1590,7 +1600,7 @@ class GMGNService:
                                                         text=trade_memory_text,
                                                         metadata=metadata
                                                     )
-                                                    logger.info(f"Added stop loss memory for user {uid}: {trade_memory_text}")
+                                                    self.logger.info(f"Added stop loss memory for user {uid}: {trade_memory_text}")
                         
                         # Check take profit condition
                         if trade.get('take_profit_price'):
@@ -1604,7 +1614,7 @@ class GMGNService:
                                 take_profit_triggered = True
                                 
                             if take_profit_triggered:
-                                logger.info(f"Take profit triggered for user {uid}, {token} at {current_price}")
+                                self.logger.info(f"Take profit triggered for user {uid}, {token} at {current_price}")
                                 
                                 # Execute the opposite action to close the position
                                 close_action = 'sell' if trade_type == 'buy' else 'buy'
@@ -1665,7 +1675,7 @@ class GMGNService:
                                                         text=trade_memory_text,
                                                         metadata=metadata
                                                     )
-                                                    logger.info(f"Added take profit memory for user {uid}: {trade_memory_text}")
+                                                    self.logger.info(f"Added take profit memory for user {uid}: {trade_memory_text}")
                 except Exception as user_err:
                     error_msg = f"Error processing user {uid}: {str(user_err)}"
                     logger.error(error_msg)
@@ -1693,7 +1703,7 @@ class GMGNService:
         try:
             # In a real implementation, this would execute the actual trade
             # For now, we'll just simulate a successful confirmation
-            logger.info(f"Auto-confirming trade {confirmation_id} for user {user_id}")
+            self.logger.info(f"Auto-confirming trade {confirmation_id} for user {user_id}")
             
             return {
                 "status": "success",
