@@ -62,15 +62,20 @@ const XFeed: React.FC<XFeedProps> = ({ maxItems = 5 }) => {
     
     try {
       // Create promises for each account
-      const promises = followedAccounts.map(handle => 
-        axios.get<ApiResponse>(`/api/social-media/tweets`, {
+      const promises = followedAccounts.map(handle => {
+        // Format handle for Twitter search according to social_media_service.py
+        // For user tweets, we should use 'from:username' format
+        const formattedQuery = `from:${handle.replace('@', '')}`;
+        
+        return axios.get<ApiResponse>(`/api/social-media/tweets`, {
           params: {
-            query: handle,
+            query: formattedQuery,
             search_type: 'tweets',
-            count: Math.ceil(maxItems / followedAccounts.length)
+            count: Math.ceil(maxItems / followedAccounts.length),
+            include_media: true
           }
-        })
-      );
+        });
+      });
       
       // Execute all requests in parallel
       const results = await Promise.all(promises);
@@ -133,25 +138,35 @@ const XFeed: React.FC<XFeedProps> = ({ maxItems = 5 }) => {
     return Math.min(100, Math.round(rawScore / 10));
   };
 
-  // Add a new account to follow
-  const handleAddAccount = () => {
-    if (!newHandle) return;
+  // Add a new Twitter handle to follow
+  const addHandle = () => {
+    if (!newHandle.trim()) return;
     
-    // Clean handle (remove @ if present)
-    const cleanHandle = newHandle.trim().replace(/^@/, '');
+    // Remove @ if present and clean the handle
+    let handle = newHandle.trim();
+    if (handle.startsWith('@')) {
+      handle = handle.substring(1);
+    }
     
-    if (cleanHandle && !followedAccounts.includes(cleanHandle)) {
-      const updatedAccounts = [...followedAccounts, cleanHandle];
-      
-      // Update app state
-      dispatch({
-        type: 'UPDATE_XFEED',
-        payload: {
-          followedAccounts: updatedAccounts
-        }
-      });
-      
+    // Further clean the handle - remove any spaces or special characters
+    handle = handle.replace(/[^a-zA-Z0-9_]/g, '');
+    
+    if (!handle) return; // Don't add empty handles
+    
+    // Check if already in list
+    if (followedAccounts.includes(handle)) {
       setNewHandle('');
+      return;
+    }
+    
+    // Update state
+    const updatedAccounts = [...followedAccounts, handle];
+    dispatch({ type: 'UPDATE_XFEED', payload: { followedAccounts: updatedAccounts } });
+    setNewHandle('');
+    
+    // Fetch tweets immediately if this is the first account added
+    if (followedAccounts.length === 0) {
+      fetchTweets();
     }
   };
 
@@ -305,7 +320,7 @@ const XFeed: React.FC<XFeedProps> = ({ maxItems = 5 }) => {
             <Button 
               variant="contained" 
               size="small"
-              onClick={handleAddAccount}
+              onClick={addHandle}
               disabled={!newHandle}
             >
               Add
