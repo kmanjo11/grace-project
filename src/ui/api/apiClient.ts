@@ -6,7 +6,7 @@
 
 // Import standardized auth utilities
 import { getAuthToken, addAuthHeaders } from '../utils/authUtils';
-import { PositionHistoryResponse, PositionHistoryEntry } from './apiTypes';
+import { Trade, TradeHistoryResponse, PositionHistoryResponse, TradeExecutionResult, PositionHistoryEntry, UserPositionsResponse, BasePosition } from './apiTypes';
 // No circular imports
 
 // API Response types
@@ -70,6 +70,26 @@ export const API_ENDPOINTS = {
     HISTORY: (sessionId: string) => `/api/chat/history/${sessionId}`,
     MESSAGE: '/api/chat/message'
   },
+  SOCIAL: {
+    // Core social media endpoints
+    SENTIMENT: '/api/social/sentiment',
+    TRENDING: '/api/social/trending',
+    INFLUENTIAL: '/api/social/influential',
+    TWEETS: '/api/social/tweets',
+  },
+  MANGO: {
+    // Mango Markets API endpoints
+    BASE: '/api/mango',
+    OHLCV: '/api/mango/ohlcv',
+    MARKETS: '/api/mango/markets',
+    ORDER_BOOK: '/api/mango/orderbook',
+    TRADES: '/api/mango/trades',
+    MARKET_STATS: '/api/mango/market-stats',
+    COMMUNITIES: '/api/social/communities',
+    ENTITIES: '/api/social/entities',
+    FEED: '/api/social/feed',
+    CONNECTIONS: '/api/social/connections'
+  },
   TRADING: {
     EXECUTE: '/api/trading/execute',
     CONFIRM: '/api/trading/confirm',
@@ -81,17 +101,7 @@ export const API_ENDPOINTS = {
     SELL_POSITION: '/api/trading/sell-position',
     USER_POSITIONS: '/api/user/positions',
     LEVERAGE_POSITIONS: '/api/user/leverage-positions',
-    SPOT_POSITIONS: '/api/user/spot-positions',
-  },
-  SOCIAL: {
-    // Backend implemented endpoints
-    SENTIMENT: '/api/social/sentiment',
-    TRENDING: '/api/social/trending',
-    INFLUENTIAL: '/api/social/influential',
-    TWEETS: '/api/social/tweets',
-    // Keep these for future implementation
-    FEED: '/api/social/feed',
-    CONNECTIONS: '/api/social/connections',
+    SPOT_POSITIONS: '/api/user/spot-positions'
   },
   SETTINGS: {
     // Updated to match backend implementation
@@ -247,6 +257,129 @@ export const api = {
 
 // Trading API methods
 export const TradingApi = {
+  /**
+   * Execute a trade (first step of two-phase trade execution)
+   * @param params Trade execution parameters
+   * @returns Trade execution result with confirmation ID if confirmation required
+   */
+  async executeTrade(params: {
+    action: 'buy' | 'sell';
+    token: string;
+    amount: string | number;
+    isLeverage?: boolean;
+    leverage?: number;
+    stopLoss?: number;
+    takeProfit?: number;
+  }): Promise<TradeExecutionResult> {
+    try {
+      const response = await api.post('/api/trading/execute', {
+        ...params,
+        amount: params.amount.toString()
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Trade execution failed:', error);
+      throw new Error(
+        error.response?.data?.error || 'Trade execution failed'
+      );
+    }
+  },
+
+  /**
+   * Confirm a pending trade (second step of two-phase trade execution)
+   * @param confirmationId The confirmation ID from executeTrade response
+   * @returns Final trade execution result
+   */
+  async confirmTrade(confirmationId: string): Promise<TradeExecutionResult> {
+    try {
+      const response = await api.post('/api/trading/confirm', {
+        confirmation_id: confirmationId
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Trade confirmation failed:', error);
+      throw new Error(
+        error.response?.data?.error || 'Trade confirmation failed'
+      );
+    }
+  },
+  
+  /**
+   * Sell or close a position (full or partial)
+   * @param params Position selling parameters
+   * @returns Result of the position sale
+   */
+  async sellPosition(params: {
+    positionId: string;
+    token: string;
+    amount: number;
+    type: 'spot' | 'leverage';
+    percentage?: number; // Optional: percentage of position to close (0-100)
+  }): Promise<{success: boolean; message?: string; error?: string}> {
+    try {
+      const requestData = {...params};
+      
+      // If percentage is provided, adjust the amount accordingly
+      if (params.percentage && params.percentage > 0 && params.percentage < 100) {
+        requestData.amount = (params.amount * params.percentage / 100);
+      }
+      
+      const response = await api.post(API_ENDPOINTS.TRADING.SELL_POSITION, requestData);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to close position:', error);
+      throw new Error(
+        error.response?.data?.error || 'Failed to close position'
+      );
+    }
+  },
+
+  /**
+   * Get user's spot positions
+   * @returns User's spot positions
+   */
+  async getUserSpotPositions(): Promise<UserPositionsResponse> {
+    try {
+      const response = await api.get<BasePosition[]>(API_ENDPOINTS.USER.SPOT_POSITIONS);
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to fetch spot positions');
+      }
+      return {
+        positions: response.data || [],
+        metadata: {} // No metadata for spot positions
+      };
+    } catch (error) {
+      console.error('Error fetching spot positions:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get user's leverage positions
+   * @returns User's leverage positions
+   */
+  async getUserLeveragePositions(): Promise<UserPositionsResponse> {
+    try {
+      const response = await api.get<{positions: BasePosition[], metadata?: any}>(API_ENDPOINTS.USER.LEVERAGE_POSITIONS);
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to fetch leverage positions');
+      }
+      
+      // Handle both array response and object with positions array
+      const positions = Array.isArray(response.data) 
+        ? response.data 
+        : (response.data?.positions || []);
+        
+      return {
+        positions: positions,
+        metadata: Array.isArray(response.data) ? {} : (response.data?.metadata || {})
+      };
+    } catch (error) {
+      console.error('Error fetching leverage positions:', error);
+      throw error;
+    }
+  },
+  
   /**
    * Get position history for a user with pagination and filtering
    * @param params Query parameters for filtering position history

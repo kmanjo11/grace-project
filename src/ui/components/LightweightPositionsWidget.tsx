@@ -1,151 +1,20 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from './AuthContext';
-import { TradingApi } from '../api/apiTypes';
-import { LeveragePosition, BasePosition, SpotPosition } from '../api/apiTypes';
-import { api, API_ENDPOINTS, ApiError } from '../api/apiClient';
+import { 
+  LeveragePosition, 
+  BasePosition, 
+  SpotPosition, 
+  UserPositionsResponse,
+  ErrorDetails,
+  PositionHistoryParams,
+  Trade
+} from '../api/apiTypes';
+import { api, API_ENDPOINTS, ApiError, TradingApi } from '../api/apiClient';
 import { getAuthToken } from '../utils/authUtils';
+import { toast } from 'react-toastify';
 import { AgentTaskManager } from '../../services/AgentTaskManager';
 
-// Enhanced Position Tracking Hook
-const usePositionTracking = () => {
-  const [positions, setPositions] = useState<BasePosition[]>([]);
-  const [positionAnalysis, setPositionAnalysis] = useState<any>({});
-  const [transactions, setTransactions] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchTransactions = useCallback(async () => {
-    try {
-      const response = await fetch(API_ENDPOINTS.WALLET.TRANSACTIONS, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getAuthToken()}`
-        }
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        setTransactions(data.transactions || []);
-      }
-    } catch (error) {
-      console.error('Error fetching transactions:', error);
-    }
-  }, []);
-
-  const fetchPositions = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      
-      // Fetch both leverage and spot positions
-      const [leverageResponse, spotResponse] = await Promise.all([
-        fetch(API_ENDPOINTS.TRADING.LEVERAGE_POSITIONS, {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${getAuthToken()}`
-          }
-        }).then(res => res.json()),
-        fetch(API_ENDPOINTS.TRADING.SPOT_POSITIONS, {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${getAuthToken()}`
-          }
-        }).then(res => res.json())
-      ]);
-
-      // Combine positions
-      const combinedPositions = [
-        ...leverageResponse.positions,
-        ...spotResponse.positions
-      ];
-
-      setPositions(combinedPositions);
-      updatePositionAnalysis(combinedPositions);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-      console.error('Position tracking error:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  const updatePositionAnalysis = useCallback((currentPositions: BasePosition[]) => {
-    const analysis = calculatePositionAnalysis(currentPositions);
-    setPositionAnalysis(analysis);
-  }, []);
-
-  // Sell a specific position
-  const sellPosition = useCallback(async (positionId: string) => {
-    try {
-      const foundPosition = positions.find(pos => pos.id === positionId);
-      if (!foundPosition) {
-        throw new Error('Position not found');
-      }
-
-      const response = await fetch(API_ENDPOINTS.TRADING.SELL_POSITION, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getAuthToken()}`
-        },
-        body: JSON.stringify({ positionId })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to sell position');
-      }
-
-      if (data.success) {
-        // Update positions and analysis
-        const updatedPositions = positions.filter(pos => pos.id !== positionId);
-        setPositions(updatedPositions);
-        updatePositionAnalysis(updatedPositions);
-
-        // Emit sell event with transaction details
-        tradingEventBus.emit('positionSold', {
-          ...foundPosition,
-          soldAmount: data.soldAmount,
-          timestamp: data.timestamp
-        });
-
-        // Show success message
-        console.log(data.message);
-      } else {
-        throw new Error(data.error || 'Unknown error during position sale');
-      }
-    } catch (error) {
-      console.error('Error selling position', error);
-      setError(error instanceof Error ? error.message : 'Unknown error');
-    }
-  }, [positions, updatePositionAnalysis]);
-
-  // Set up real-time position tracking and transaction history
-  useEffect(() => {
-    const trackPositionsInterval = setInterval(fetchPositions, 30000); // Update every 30 seconds
-    const trackTransactionsInterval = setInterval(fetchTransactions, 60000); // Update every minute
-    
-    // Initial fetch
-    fetchPositions();
-    fetchTransactions();
-
-    return () => {
-      clearInterval(trackPositionsInterval);
-      clearInterval(trackTransactionsInterval);
-    };
-  }, [fetchPositions, fetchTransactions]);
-
-  return { 
-    positions, 
-    positionAnalysis, 
-    isLoading, 
-    error, 
-    refetch: fetchPositions,
-    sellPosition 
-  };
-};
-
-// Utility function to calculate position analysis
+// Calculate position analysis metrics
 const calculatePositionAnalysis = (positions: BasePosition[]) => {
   if (!positions || positions.length === 0) {
     return {
@@ -226,30 +95,16 @@ export const tradingEventBus = new TradingEventBus();
 
 // Compact interface for trading positions
 // Strict type definition for incoming position data
-// API Response Type for Positions
-interface PositionsResponse {
-  success: boolean;
-  error?: string;
-  positions?: RawPosition[];
-}
-
-// Raw Position Data Type
-interface RawPosition {
-  id?: string;
-  token?: string;
-  type?: 'spot' | 'leverage';
-  amount?: number | string;
-  entryPrice?: number | string;
-  currentPrice?: number | string;
-  leverage?: number | string;
-  openTimestamp?: string;
-  market?: string;
-  side?: 'long' | 'short';
-  liquidationPrice?: number | string;
-  marginUsed?: number | string;
-  unrealizedPnl?: number | string;
-  pnlPercentage?: number | string;
-}
+// Extended position type for UI with calculated fields
+type UIPosition = BasePosition & {
+  currentValue: number;
+  profitLoss: number;
+  openTimestamp: string;
+  leverage?: number;
+  liquidationPrice?: number;
+  marginRatio?: number;
+  // Add any additional UI-specific fields here
+};
 
 // Validated and transformed position interface
 // Transaction types for comprehensive tracking
@@ -275,263 +130,486 @@ interface CompactPosition {
   profitLoss: number;
 }
 
-// Type guard to validate and transform position
-function isValidPosition(pos: RawPosition): pos is CompactPosition {
-  // Validate required fields and convert types
-  try {
-    return !!(
-      pos.id && 
-      typeof pos.id === 'string' &&
-      pos.token && 
-      typeof pos.token === 'string' &&
-      (pos.type === 'spot' || pos.type === 'leverage') &&
-      pos.amount !== undefined &&
-      pos.entryPrice !== undefined &&
-      pos.currentPrice !== undefined
-    );
-  } catch {
-    return false;
-  }
-}
+// Type guard to validate position data
+const isValidPosition = (pos: unknown): pos is BasePosition => {
+  if (typeof pos !== 'object' || pos === null) return false;
+  
+  const position = pos as Partial<BasePosition>;
+  return (
+    typeof position.id === 'string' &&
+    typeof position.token === 'string' &&
+    (position.type === 'spot' || position.type === 'leverage') &&
+    typeof position.amount === 'number' &&
+    typeof position.entryPrice === 'number' &&
+    typeof position.currentPrice === 'number' &&
+    typeof position.openTimestamp === 'number'
+  );
+};
 
-// Safe type conversion function
-function safeConvert(value: number | string | undefined, defaultValue: number = 0): number {
-  if (value === undefined || value === null) return defaultValue;
-  const converted = Number(value);
-  return isNaN(converted) ? defaultValue : converted;
-}
+// Safe type conversion with error handling
+const safeConvert = <T extends number | string | undefined>(
+  value: T,
+  defaultValue: T extends number ? number : string = 0 as any
+): T extends number ? number : string => {
+  if (value === undefined || value === null) return defaultValue as any;
+  if (typeof value === 'number') return value as any;
+  if (typeof value === 'string') {
+    const num = parseFloat(value);
+    return (isNaN(num) ? defaultValue : num) as any;
+  }
+  return defaultValue as any;
+};
 
 interface LightweightPositionsWidgetProps {
   initialExpanded?: boolean;
   onToggleExpand?: (expanded: boolean) => void;
+  refreshInterval?: number;
 }
 
 const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
   initialExpanded = false,
-  onToggleExpand
+  onToggleExpand,
+  refreshInterval = 30000, // 30 seconds default
 }) => {
   const { user } = useAuth();
-  const [positions, setPositions] = useState<CompactPosition[]>([]);
-  const [transactions, setTransactions] = useState<any[]>([]);
+  // Define a unified position type for the UI that includes all possible fields
+  interface UIPosition {
+    id: string;
+    token: string;
+    type: 'spot' | 'leverage';
+    amount: number;
+    entryPrice: number;
+    currentPrice: number;
+    currentValue: number;
+    profitLoss: number;
+    openTimestamp: string;
+    // Optional fields that might be present
+    side?: 'long' | 'short';
+    market?: string;
+    timestamp?: string;
+    unrealizedPnl?: number;
+    realizedPnl?: number;
+    // Leverage specific fields
+    leverage?: number;
+    liquidationPrice?: number;
+    marginRatio?: number;
+  }
+  
+  const [positions, setPositions] = useState<UIPosition[]>([]);
+  
+  // Type guard to check if a position is a leverage position
+  const isLeveragePosition = (position: UIPosition): position is UIPosition & { leverage: number } => {
+    return position.type === 'leverage';
+  };
+  const [transactions, setTransactions] = useState<TransactionDetails[]>([]);
   const [isExpanded, setIsExpanded] = useState(initialExpanded);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  
+  // Refs for cleanup and state management
+  const isMounted = useRef(true);
+  const positionInterval = useRef<NodeJS.Timeout>();
+  const transactionsInterval = useRef<NodeJS.Timeout>();
 
-  // Fetch transaction history
-  const fetchTransactions = useCallback(async () => {
-    try {
-      const response = await fetch(API_ENDPOINTS.WALLET.TRANSACTIONS, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getAuthToken()}`
-        }
-      });
-      
-      const data = await response.json();
-      if (data.success) {
-        setTransactions(data.transactions || []);
-      }
-    } catch (error) {
-      console.error('Error fetching transactions:', error);
-    }
-  }, []);
-
-  // Track new trades from different sources
-  const trackNewTrade = useCallback((tradeData: RawPosition) => {
-    // Validate and transform trade data
-    if (!isValidPosition(tradeData)) {
-      console.warn('Invalid trade data', tradeData);
+  // Fetch transaction history with retry logic
+  const fetchTransactions = useCallback(async (isRetry = false): Promise<void> => {
+    if (!user?.token) {
+      setError('Authentication required');
       return;
     }
 
-    const newPosition: CompactPosition = {
-      id: tradeData.id || `trade_${Date.now()}`,
-      token: tradeData.token as string,
-      type: tradeData.type === 'leverage' ? 'leverage' : 'spot',
-      amount: safeConvert(tradeData.amount),
-      entryPrice: safeConvert(tradeData.entryPrice),
-      currentPrice: safeConvert(tradeData.currentPrice, safeConvert(tradeData.entryPrice)),
-      leverage: tradeData.leverage ? safeConvert(tradeData.leverage) : undefined,
-      openTimestamp: tradeData.openTimestamp || new Date().toISOString(),
-      currentValue: safeConvert(tradeData.amount) * safeConvert(tradeData.currentPrice, safeConvert(tradeData.entryPrice)),
-      profitLoss: tradeData.entryPrice ? 
-        ((safeConvert(tradeData.currentPrice) - safeConvert(tradeData.entryPrice)) / safeConvert(tradeData.entryPrice)) * 100 : 0
-    };
-
-    setPositions(prev => [...prev, newPosition]);
-
-    // Update transactions after successful sell
-    fetchTransactions();
-
-    // Log transaction
-    const transaction: TransactionDetails = {
-      id: newPosition.id,
-      type: newPosition.type === 'leverage' ? 'buy' : 'swap',
-      token: newPosition.token,
-      amount: newPosition.amount,
-      timestamp: new Date().toISOString(),
-      status: 'completed'
-    };
-
-    setTransactions(prev => [transaction, ...prev]);
-  }, []);
-
-  // Fetch user-specific positions with minimal authentication
-  const fetchPositions = async () => {
-    console.log('🔍 Fetching User Positions');
+    if (!isRetry) {
+      setIsLoading(true);
+    }
 
     try {
-      // Attempt to get user identifier from local storage or session
-      const userIdentifier = localStorage.getItem('user_identifier') || 
-                             sessionStorage.getItem('user_identifier');
+      const { data, success, error } = await api.get<TransactionDetails[]>(
+        API_ENDPOINTS.WALLET.TRANSACTIONS,
+        { headers: { 'Authorization': `Bearer ${user.token}` } }
+      );
+      
+      if (success && data) {
+        setTransactions(Array.isArray(data) ? data : []);
+      } else {
+        throw new Error(error || 'Failed to fetch transactions');
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to fetch transactions';
+      console.error('Error fetching transactions:', error);
+      
+      if (!isRetry) {
+        // Only show error toast on first attempt
+        toast.error(errorMessage);
+        // Auto-retry after delay
+        setTimeout(() => fetchTransactions(true), 5000);
+      }
+      
+      throw error; // Re-throw for handling in the caller if needed
+    } finally {
+      if (!isRetry) {
+        setIsLoading(false);
+      }
+    }
+  }, [user?.token]);
 
-      if (!userIdentifier) {
-        console.warn('🚫 No user identifier found, skipping position fetch');
-        setPositions([]);
+  // Track new trades from different sources
+  const trackNewTrade = useCallback((tradeData: Partial<BasePosition>) => {
+    try {
+      // Validate and transform trade data
+      if (!isValidPosition(tradeData)) {
+        console.warn('Invalid trade data', tradeData);
         return;
       }
+  
+      const entryPrice = tradeData.entryPrice || 0;
+      const currentPrice = tradeData.currentPrice || entryPrice;
+      const amount = tradeData.amount || 0;
+      const profitLoss = entryPrice ? 
+        ((currentPrice - entryPrice) / entryPrice) * 100 : 0;
+  
+      const newPosition: UIPosition = {
+        ...tradeData,
+        id: tradeData.id || `trade_${Date.now()}`,
+        token: tradeData.token || 'UNKNOWN',
+        type: tradeData.type || 'spot',
+        amount,
+        entryPrice,
+        currentPrice,
+        openTimestamp: tradeData.openTimestamp?.toString() || new Date().toISOString(),
+        timestamp: tradeData.timestamp || new Date().toISOString(),
+        currentValue: amount * currentPrice,
+        profitLoss
+      };
 
-      // Fetch spot positions
-      const spotResponse: PositionsResponse = await api.get(API_ENDPOINTS.TRADING.USER_POSITIONS, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Identifier': userIdentifier
-        }
-      });
-      
-      // Fetch leverage positions from Mango V3
-      const leverageResponse: PositionsResponse = await api.get(API_ENDPOINTS.TRADING.LEVERAGE_POSITIONS, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Identifier': userIdentifier
-        }
-      });
-      
-      console.log('📊 Spot Positions:', spotResponse);
-      console.log('📊 Leverage Positions:', leverageResponse);
+      // Log transaction first to ensure it's captured before potential position updates
+      const transaction: TransactionDetails = {
+        id: newPosition.id,
+        type: newPosition.type === 'leverage' ? 'buy' : 'swap',
+        token: newPosition.token,
+        amount: newPosition.amount,
+        timestamp: newPosition.openTimestamp,
+        status: 'completed'
+      };
 
-      // Combine and validate positions
+      // Batch state updates
+      setPositions(prev => [...prev, newPosition]);
+      setTransactions(prev => [transaction, ...prev]);
+
+      // Refresh transactions data
+      fetchTransactions().catch(err => {
+        console.error('Error refreshing transactions:', err);
+      });
+    } catch (error) {
+      console.error('Error tracking new trade:', error);
+      toast.error('Failed to track new trade');
+    }
+  }, [fetchTransactions]);
+
+  // Fetch user positions with proper error handling and type safety
+  const fetchPositions = useCallback(async (isRetry = false): Promise<void> => {
+    if (!user?.token) {
+      setError('User not authenticated');
+      return;
+    }
+
+    if (!isRetry) {
+      setIsLoading(true);
+      setError(null);
+    }
+
+    try {
+      // Use TradingApi methods that match your API types
+      const [spotResponse, leverageResponse] = await Promise.all([
+        TradingApi.getUserSpotPositions(),
+        TradingApi.getUserLeveragePositions()
+      ]);
+
+      if (!isMounted.current) return;
+
+      // Transform API positions to UI positions
+      const transformToUIPosition = (pos: SpotPosition | LeveragePosition): UIPosition => {
+        const basePosition: UIPosition = {
+          id: pos.id,
+          token: pos.token,
+          type: pos.type,
+          amount: pos.amount,
+          entryPrice: pos.entryPrice,
+          currentPrice: pos.currentPrice || 0,
+          currentValue: pos.amount * (pos.currentPrice || 0),
+          profitLoss: pos.unrealizedPnl || 0,
+          openTimestamp: new Date(pos.openTimestamp || Date.now()).toISOString(),
+          side: pos.side,
+          market: pos.market,
+          timestamp: pos.timestamp,
+          unrealizedPnl: pos.unrealizedPnl,
+          realizedPnl: pos.realizedPnl
+        };
+
+        // Add leverage-specific fields if this is a leverage position
+        if (pos.type === 'leverage') {
+          const levPos = pos as LeveragePosition;
+          return {
+            ...basePosition,
+            leverage: levPos.leverage || 1,
+            liquidationPrice: levPos.liquidationPrice || 0,
+            marginRatio: levPos.marginRatio || 0
+          };
+        }
+
+        return basePosition;
+      };
+
+      // Transform and combine all positions
       const allPositions = [
-        ...(spotResponse.positions || []),
-        ...(leverageResponse.positions || [])
+        ...(spotResponse.positions || []).map(transformToUIPosition),
+        ...(leverageResponse.positions || []).map(transformToUIPosition)
       ];
 
-      if (!Array.isArray(allPositions)) {
-        console.error('❌ Invalid positions data type');
-        throw new Error('Invalid positions data');
+      setPositions(allPositions);
+      setLastUpdated(new Date());
+      
+    } catch (error) {
+      console.error('Error fetching positions:', error);
+      
+      if (!isRetry) {
+        const errorMessage = error instanceof Error ? error.message : 'Failed to fetch positions';
+        setError(errorMessage);
+        // Auto-retry after delay
+        setTimeout(() => fetchPositions(true), 5000);
       }
       
-      // Transform and validate positions
-      const compactPositions: CompactPosition[] = allPositions
-        .filter(isValidPosition)
-        .map(pos => ({
-          id: pos.id as string,
-          token: pos.token as string,
-          type: pos.type === 'leverage' ? 'leverage' : 'spot',
-          amount: safeConvert(pos.amount),
-          entryPrice: safeConvert(pos.entryPrice),
-          currentPrice: safeConvert(pos.currentPrice),
-          leverage: pos.leverage ? safeConvert(pos.leverage) : undefined,
-          openTimestamp: pos.openTimestamp || new Date().toISOString(),
-          currentValue: safeConvert(pos.amount) * safeConvert(pos.currentPrice),
-          profitLoss: safeConvert(pos.entryPrice) ? 
-            ((safeConvert(pos.currentPrice) - safeConvert(pos.entryPrice)) / safeConvert(pos.entryPrice)) * 100 : 0
-        }));
-      
-      console.log(`✅ Processed ${compactPositions.length} user positions`);
-
-      // Always set positions, even if empty
-      setPositions(compactPositions);
-    } catch (error) {
-      console.error('❌ Failed to fetch user positions', error);
-      setPositions([]); // Clear existing positions on error
+      throw error; // Re-throw for handling in the caller if needed
+    } finally {
+      if (!isRetry) {
+        setIsLoading(false);
+      }
     }
-  };
+  }, [user?.token]);
 
   // Fetch positions when user changes or component mounts
   useEffect(() => {
     fetchPositions();
   }, [user]);
 
-  // Initial fetch and periodic refresh
+  // Listen for trade confirmation events
   useEffect(() => {
-    if (user) {
-      // Initial fetch
-      fetchPositions();
-      fetchTransactions();
-
-      // Set up periodic refresh
-      const positionsInterval = setInterval(fetchPositions, 60000); // Refresh every minute
-      const transactionsInterval = setInterval(fetchTransactions, 60000); // Refresh every minute
-
-      // Listen for trading events
-      tradingEventBus.on('newTrade', trackNewTrade);
-      tradingEventBus.on('positionUpdate', fetchPositions);
-
-      return () => {
-        clearInterval(positionsInterval);
-        clearInterval(transactionsInterval);
-        tradingEventBus.off('newTrade', trackNewTrade);
-        tradingEventBus.off('positionUpdate', fetchPositions);
-      };
-    }
-  }, [user, trackNewTrade]);
-
-  // Sell a specific position
-  const sellPosition = async (positionId: string) => {
-    const [positions, setPositions] = useState<BasePosition[]>([]);
-    const [positionAnalysis, setPositionAnalysis] = useState<any>({});
-    try {
-      const foundPosition = positions.find(pos => pos.id === positionId);
-      if (!foundPosition) {
-        throw new Error('Position not found');
-      }
-
-      const response = await fetch(API_ENDPOINTS.TRADING.SELL_POSITION, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${getAuthToken()}`
-        },
-        body: JSON.stringify({ positionId })
+    // Handler for trade confirmation events
+    const handleTradeConfirmation = (eventData: any) => {
+      console.log('Trade confirmed, refreshing positions:', eventData);
+      // Refresh positions immediately after trade confirmation
+      fetchPositions().catch(err => {
+        console.error('Error refreshing positions after trade confirmation:', err);
       });
+    };
+    
+    // Subscribe to trade:confirmed events
+    tradingEventBus.on('trade:confirmed', handleTradeConfirmation);
+    
+    // Cleanup when component unmounts
+    return () => {
+      tradingEventBus.off('trade:confirmed', handleTradeConfirmation);
+    };
+  }, [fetchPositions]);
 
-      const data = await response.json();
+  // Set up polling with proper cleanup
+  useEffect(() => {
+    if (!user) return;
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to sell position');
+    // Initial fetch
+    const initialFetch = async () => {
+      try {
+        await Promise.all([
+          fetchPositions(),
+          fetchTransactions()
+        ]);
+      } catch (error) {
+        console.error('Initial fetch failed:', error);
       }
+    };
+    initialFetch();
 
-      if (data.success) {
-        // Remove position from local state
+    // Set up polling intervals
+    positionInterval.current = setInterval(() => {
+      fetchPositions().catch(console.error);
+    }, refreshInterval);
+
+    transactionsInterval.current = setInterval(() => {
+      fetchTransactions().catch(console.error);
+    }, refreshInterval * 2);
+
+    // Cleanup function
+    return () => {
+      if (positionInterval.current) clearInterval(positionInterval.current);
+      if (transactionsInterval.current) clearInterval(transactionsInterval.current);
+    };
+  }, [user, refreshInterval, fetchPositions, fetchTransactions]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      isMounted.current = false;
+      if (positionInterval.current) clearInterval(positionInterval.current);
+      if (transactionsInterval.current) clearInterval(transactionsInterval.current);
+    };
+  }, []);
+
+  // Close a position with confirmation and proper error handling
+  const closePosition = useCallback(async (positionId: string): Promise<boolean> => {
+    if (!user?.token) {
+      toast.error('Authentication required to close positions');
+      return false;
+    }
+
+    // Find the position to close
+    const positionToClose = positions.find(pos => pos.id === positionId);
+    if (!positionToClose) {
+      toast.error('Position not found');
+      return false;
+    }
+
+    // Confirmation dialog
+    const confirmClose = window.confirm(`Are you sure you want to close this ${positionToClose.token} position?`);
+    if (!confirmClose) return false;
+
+    try {
+      setIsLoading(true);
+      
+      const response = await api.post<{ success: boolean; message?: string; error?: string }>(
+        '/api/trading/sell-position',
+        { positionId },
+        { headers: { 'Authorization': `Bearer ${user.token}` } }
+      );
+      
+      if (response.data?.success) {
+        // Optimistic update - remove the position immediately
         setPositions(prev => prev.filter(pos => pos.id !== positionId));
         
-        // Update position analysis
-        const remainingPositions = positions.filter(pos => pos.id !== positionId);
-        const analysis = calculatePositionAnalysis(remainingPositions);
-        setPositionAnalysis(analysis);
-
-        // Emit sell event with transaction details
+        // Emit position sold event
         tradingEventBus.emit('positionSold', {
-          ...foundPosition,
-          soldAmount: data.soldAmount,
-          timestamp: data.timestamp
+          ...positionToClose,
+          timestamp: new Date().toISOString()
         });
 
-        // Show success message
-        console.log(data.message);
+        // Refresh data in the background
+        await Promise.all([
+          fetchPositions(),
+          fetchTransactions()
+        ]);
+        
+        toast.success(response.data.message || `Successfully closed ${positionToClose.token} position`);
+        return true;
       } else {
-        throw new Error(data.error || 'Unknown error during position sale');
+        throw new Error(response.data?.message || 'Failed to close position');
       }
     } catch (error) {
       console.error('Error selling position', error);
     }
-  };
+  }, [user?.token, positions, setIsLoading, fetchPositions, fetchTransactions, tradingEventBus]);
 
-  // Diagnostic rendering to understand widget state
-  console.log('💬 Public Positions Widget Render:', {
-    positionsCount: positions.length
-  });
+  // Memoize position metrics to prevent unnecessary recalculations
+  const positionMetrics = useMemo(() => {
+    const totalValue = positions.reduce((sum, pos) => sum + pos.currentValue, 0);
+    const totalPnl = positions.reduce((sum, pos) => sum + pos.profitLoss, 0);
+    const winningPositions = positions.filter(pos => pos.profitLoss > 0).length;
+    
+    return {
+      totalValue,
+      totalPnl,
+      winRate: positions.length > 0 ? (winningPositions / positions.length) * 100 : 0,
+      totalPositions: positions.length,
+      lastUpdated
+    };
+  }, [positions, lastUpdated]);
+  
+  // Close a position with confirmation and proper error handling
+  const handleClosePosition = useCallback(async (positionId: string, percentage?: number): Promise<boolean> => {
+    if (!user?.token) {
+      toast.error('Authentication required to close positions');
+      return false;
+    }
+
+    // Find the position to close
+    const positionToClose = positions.find(pos => pos.id === positionId);
+    if (!positionToClose) {
+      toast.error('Position not found');
+      return false;
+    }
+    
+    const isPartial = percentage && percentage > 0 && percentage < 100;
+    const closeAmount = isPartial 
+      ? (positionToClose.amount * percentage / 100) 
+      : positionToClose.amount;
+    
+    // For UI confirmation - we don't need to show this since we now have the slider UI
+    // that shows exactly what will be closed
+    /*
+    const confirmClose = window.confirm(
+      `Are you sure you want to close ${isPartial ? percentage + '% of' : ''} this ${positionToClose.token} position?`
+    );
+    
+    if (!confirmClose) return false;
+    */
+
+    try {
+      setIsLoading(true);
+      
+      // Use the TradingApi to sell/close the position
+      const response = await TradingApi.sellPosition({
+        positionId,
+        token: positionToClose.token,
+        amount: positionToClose.amount,
+        type: positionToClose.type,
+        percentage: percentage // This will adjust the amount on the backend if needed
+      });
+      
+      if (response.success) {
+        // Optimistic update
+        if (isPartial) {
+          // For partial closes, update the position amount
+          setPositions(prev => prev.map(pos => 
+            pos.id === positionId 
+              ? { ...pos, amount: pos.amount - closeAmount } 
+              : pos
+          ));
+        } else {
+          // For full closes, remove the position
+          setPositions(prev => prev.filter(pos => pos.id !== positionId));
+        }
+        
+        // Emit position sold event
+        tradingEventBus.emit('positionSold', {
+          ...positionToClose,
+          amount: closeAmount,
+          percentage: percentage || 100,
+          isPartial: isPartial,
+          timestamp: new Date().toISOString()
+        });
+
+        // Refresh data in the background
+        await Promise.all([
+          fetchPositions(),
+          fetchTransactions()
+        ]);
+        
+        const successMessage = isPartial
+          ? `Successfully closed ${percentage}% of ${positionToClose.token} position`
+          : `Successfully closed ${positionToClose.token} position`;
+          
+        toast.success(response.message || successMessage);
+        return true;
+      } else {
+        throw new Error(response.error || 'Failed to close position');
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to close position';
+      console.error('Error closing position:', error);
+      toast.error(`Error: ${errorMessage}`);
+      return false;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [user?.token, positions, fetchPositions, fetchTransactions]);
 
   return (
     <div className="bg-white shadow-md rounded-lg p-4">
@@ -540,7 +618,6 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
         <button
           onClick={() => {
             setIsExpanded(!isExpanded);
-            onToggleExpand && onToggleExpand(!isExpanded);
           }}
           className="text-blue-500 hover:text-blue-700"
         >
@@ -553,33 +630,152 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
           <p className="text-sm text-gray-400">Trading activity will be displayed here</p>
         </div>
       ) : (
-        <div className={`transition-all duration-300 ${isExpanded ? 'max-h-96' : 'max-h-24'} overflow-hidden`}>
-          <table className="w-full">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="p-2 text-left">Token</th>
-                <th className="p-2 text-left">Type</th>
-                <th className="p-2 text-left">Amount</th>
-                <th className="p-2 text-left">Entry Price</th>
-                <th className="p-2 text-left">Current Price</th>
-                <th className="p-2 text-left">P/L %</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.map((position) => (
-                <tr key={position.id} className="border-b">
-                  <td className="p-2">{position.token}</td>
-                  <td className="p-2">{position.type}</td>
-                  <td className="p-2">{position.amount.toFixed(2)}</td>
-                  <td className="p-2">${position.entryPrice.toFixed(2)}</td>
-                  <td className="p-2">${position.currentPrice.toFixed(2)}</td>
-                  <td className={`p-2 ${position.profitLoss >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {position.profitLoss.toFixed(2)}%
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="overflow-hidden">
+          {positions.map((position) => (
+            <PositionCard 
+              key={position.id} 
+              position={position} 
+              onClose={handleClosePosition} 
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Position Card Component
+const PositionCard: React.FC<{ 
+  position: BasePosition | CompactPosition; 
+  onClose: (id: string, percentage?: number) => Promise<boolean> 
+}> = ({ position, onClose }) => {
+  const isLeverage = position.type === 'leverage';
+  const pnl = 'unrealizedPnl' in position ? position.unrealizedPnl || 0 : 0;
+  const pnlPercent = position.entryPrice > 0 
+    ? ((position.currentPrice - position.entryPrice) / position.entryPrice) * 100 
+    : 0;
+  const openTimestamp = 'openTimestamp' in position 
+    ? typeof position.openTimestamp === 'string' 
+      ? new Date(position.openTimestamp).getTime() 
+      : position.openTimestamp 
+    : Date.now();
+  
+  const [isClosing, setIsClosing] = useState(false);
+  const [closePercentage, setClosePercentage] = useState(100); // Default to full closure
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleClose = async () => {
+    try {
+      setIsLoading(true);
+      const success = await onClose(position.id, closePercentage);
+      if (success) {
+        tradingEventBus.emit('positionClosed', { 
+          positionId: position.id,
+          percentage: closePercentage
+        });
+        // Reset UI state after successful closure
+        setIsClosing(false);
+        setClosePercentage(100);
+      }
+    } catch (error) {
+      console.error('Error closing position:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const closeAmount = (position.amount * closePercentage / 100).toFixed(4);
+  const closeValue = (position.currentPrice * position.amount * closePercentage / 100).toFixed(2);
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-4 mb-3 border-l-4 border-blue-500">
+      <div className="flex justify-between items-start">
+        <div>
+          <h4 className="font-medium text-white">{position.token}</h4>
+          <div className="text-sm text-gray-400">
+            {position.amount.toFixed(4)} @ ${position.entryPrice.toFixed(2)}
+          </div>
+          {isLeverage && 'leverage' in position && (
+            <div className="text-xs text-yellow-400 mt-1">
+              Leverage: {position.leverage}x
+            </div>
+          )}
+          <div className="text-xs text-gray-500 mt-1">
+            {new Date(openTimestamp).toLocaleString()}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className={`text-sm font-medium ${
+            pnl >= 0 ? 'text-green-400' : 'text-red-400'
+          }`}>
+            ${pnl.toFixed(2)} ({pnlPercent.toFixed(2)}%)
+          </div>
+          <div className="text-xs text-gray-400">
+            ${(position.amount * position.currentPrice).toFixed(2)}
+          </div>
+          <div className="text-xs text-gray-500">
+            Current: ${position.currentPrice.toFixed(2)}
+          </div>
+        </div>
+      </div>
+      
+      {!isClosing ? (
+        <div className="mt-3 flex justify-end space-x-2">
+          <button
+            onClick={() => setIsClosing(true)}
+            className="text-xs bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded"
+          >
+            Close Position
+          </button>
+        </div>
+      ) : (
+        <div className="mt-3 border-t border-gray-700 pt-2">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm text-gray-300">
+              Close: <span className="font-medium">{closePercentage}%</span> 
+              <span className="text-xs text-gray-400 ml-1">({closeAmount} {position.token} ≈ ${closeValue})</span>
+            </div>
+            <button
+              onClick={() => setIsClosing(false)}
+              className="text-xs text-gray-400 hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+          
+          <div className="mb-3">
+            <input 
+              type="range" 
+              min="1" 
+              max="100" 
+              value={closePercentage} 
+              onChange={(e) => setClosePercentage(parseInt(e.target.value))}
+              className="w-full"
+            />
+            <div className="flex justify-between text-xs text-gray-500">
+              <span>1%</span>
+              <span>25%</span>
+              <span>50%</span>
+              <span>75%</span>
+              <span>100%</span>
+            </div>
+          </div>
+          
+          <div className="flex justify-end space-x-2">
+            <button
+              onClick={handleClose}
+              disabled={isLoading}
+              className={`text-xs ${isLoading ? 'bg-gray-600' : 'bg-red-600 hover:bg-red-700'} text-white px-3 py-1 rounded flex items-center`}
+            >
+              {isLoading && (
+                <svg className="animate-spin -ml-1 mr-2 h-3 w-3 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              )}
+              {isLoading ? 'Processing...' : 'Confirm Close'}
+            </button>
+          </div>
         </div>
       )}
     </div>
