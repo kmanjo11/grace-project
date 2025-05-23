@@ -42,8 +42,8 @@ class EnhancedConversationFlow:
         memory_system,
         gmgn_service,
         conversation_manager,
-        social_media_service=None,
-        interpreter
+        interpreter,
+        social_media_service=None
     ):
         """
         Initialize the enhanced conversation flow.
@@ -550,11 +550,11 @@ class EnhancedConversationFlow:
             
             # 6. Prepare messages for the interpreter - ensure proper format with 'type' field
             # Open Interpreter expects messages in a specific format with 'type' field
-            system_message = self.grace_core._get_grace_system_message()
-            
+            system_message = self.grace_core._get_grace_system_message() if hasattr(self.grace_core, '_get_grace_system_message') else ""
+
             # 7. Generate response with the interpreter
             self.logger.info("Generating response with enhanced context")
-            
+
             # Use our safe_call helper to handle both sync and async methods
             # Pass the enhanced prompt directly instead of a messages array
             response = await self._safe_call(self.interpreter.chat, enhanced_prompt)

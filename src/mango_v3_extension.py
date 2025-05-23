@@ -236,14 +236,16 @@ class MangoV3Client:
 
         return self._make_request("POST", "orders", data=data)
 
-    def confirm_trade(self, confirmation_id: str, user_identifier: str = None) -> Dict[str, Any]:
+    def confirm_trade(
+        self, confirmation_id: str, user_identifier: str = None
+    ) -> Dict[str, Any]:
         """
         Confirm and execute a trade based on the confirmation ID.
-        
+
         Args:
             confirmation_id: Trade confirmation ID (format: trade_action_token_amount_timestamp)
             user_identifier: User identifier
-            
+
         Returns:
             Dictionary with trade execution result
         """
@@ -254,14 +256,14 @@ class MangoV3Client:
                 return {
                     "success": False,
                     "error": "Invalid confirmation ID format",
-                    "code": "INVALID_CONFIRMATION_ID"
+                    "code": "INVALID_CONFIRMATION_ID",
                 }
-                
+
             # Extract trade parameters
             action = parts[1]  # 'buy' or 'sell'
-            token = parts[2]   # token symbol
+            token = parts[2]  # token symbol
             amount = float(parts[3])  # trade amount
-            
+
             # Validate parameters
             if action not in ["buy", "sell"]:
                 return {
@@ -269,12 +271,12 @@ class MangoV3Client:
                     "status": "error",
                     "error": f"Invalid action: {action}",
                     "code": "INVALID_ACTION",
-                    "confirmation_id": confirmation_id
+                    "confirmation_id": confirmation_id,
                 }
-                
+
             # Map to MangoV3 parameters
             side = action  # same format: 'buy' or 'sell'
-            
+
             # Get proper market name - validate token
             try:
                 # Check if token is valid and exists
@@ -284,24 +286,26 @@ class MangoV3Client:
                     # Try to get market info - if available would validate token exists
                     markets = self.get_markets()
                     valid_token = False
-                    
+
                     if isinstance(markets, list):
                         for m in markets:
                             if token.upper() in m.split("/"):
                                 market = m
                                 valid_token = True
                                 break
-                    
+
                     if not valid_token:
                         market = f"{token.upper()}/USDC"  # Default format
             except Exception as e:
-                self.logger.warning(f"Market validation failed: {e}, using default format")
+                self.logger.warning(
+                    f"Market validation failed: {e}, using default format"
+                )
                 market = f"{token.upper()}/USDC"  # Default format
-            
+
             # Detect if it's a leverage trade from the confirmation ID
             is_leverage = False
             leverage = 1.0  # Default to spot trade
-            
+
             # Check for leverage indicator in confirmation ID
             if len(parts) > 5 and parts[5].startswith("lev"):
                 is_leverage = True
@@ -309,9 +313,11 @@ class MangoV3Client:
                     leverage = float(parts[5].replace("lev", ""))
                 except:
                     leverage = 3.0  # Default leverage if parsing fails
-            
-            self.logger.info(f"Confirming trade: {side} {amount} {token} with ID {confirmation_id}")
-            
+
+            self.logger.info(
+                f"Confirming trade: {side} {amount} {token} with ID {confirmation_id}"
+            )
+
             # Execute the trade using place_leverage_trade
             result = self.place_leverage_trade(
                 market=market,
@@ -321,9 +327,9 @@ class MangoV3Client:
                 leverage=leverage,
                 reduce_only=False,
                 order_type="market",
-                client_id=f"confirm_{confirmation_id}"
+                client_id=f"confirm_{confirmation_id}",
             )
-            
+
             # Create a properly structured response that exactly matches GMGN format
             if result.get("success"):
                 # Format successful response to match GMGN's expected structure
@@ -332,18 +338,20 @@ class MangoV3Client:
                     "status": "success",
                     "platform": "mango_v3",
                     "confirmation_id": confirmation_id,
-                    "trade_id": result.get("order", {}).get("id") or f"mango_{int(time.time())}",
+                    "trade_id": result.get("order", {}).get("id")
+                    or f"mango_{int(time.time())}",
                     "user_id": user_identifier,
                     "execution_time": datetime.now().isoformat(),
                     "confirmation_details": {
                         "market": market,
                         "side": side,
                         "size": amount,
-                        "price": result.get("executed_price") or result.get("order", {}).get("price"),
+                        "price": result.get("executed_price")
+                        or result.get("order", {}).get("price"),
                         "leverage": leverage,
                         "order_type": "market",
-                        "order": result.get("order", {})
-                    }
+                        "order": result.get("order", {}),
+                    },
                 }
             else:
                 # Format error response to match GMGN's expected structure
@@ -357,9 +365,9 @@ class MangoV3Client:
                     "code": result.get("code", "EXECUTION_ERROR"),
                     "execution_time": datetime.now().isoformat(),
                 }
-                    
+
             return result
-            
+
         except Exception as e:
             self.logger.error(f"Trade confirmation failed: {str(e)}", exc_info=True)
             return {
@@ -368,7 +376,7 @@ class MangoV3Client:
                 "error": f"Trade confirmation failed: {str(e)}",
                 "code": "CONFIRMATION_ERROR",
                 "confirmation_id": confirmation_id,
-                "user_id": user_identifier
+                "user_id": user_identifier,
             }
 
     def withdraw_funds(self, coin: str, size: float, address: str) -> Dict[str, Any]:
