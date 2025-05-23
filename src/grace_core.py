@@ -416,8 +416,11 @@ def _register_interpreter_functions(self, interpreter_instance):
             logger.warning("Open Interpreter does not support function registration")
             logger.warning("Memory system not available, skipping memory pruning setup")
             return
-            
-    def _get_grace_system_message(self):
+        # Additional function registration logic would go here
+    except Exception as e:
+        logger.error(f"Error registering interpreter functions: {str(e)}")
+        
+def _get_grace_system_message(self):
         """Get the Grace system message from system_prompts.py."""
         # Get a comprehensive system message that includes all prompt components
         base_prompt = get_system_prompt("general")
