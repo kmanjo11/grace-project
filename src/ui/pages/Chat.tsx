@@ -4,6 +4,7 @@ import React, { useEffect, useState, FormEvent, useRef, useCallback } from 'reac
 import { api, API_ENDPOINTS } from '../api/apiClient';
 import { useAuth } from '../components/AuthContext';
 import { getAuthToken } from '../utils/authUtils';
+import { useChatStatePersistence } from '../components/ChatStatePersistence';
 
 interface ChatMessage {
   sender?: 'user' | 'grace';
@@ -39,6 +40,15 @@ export default function Chat() {
   const [sessionsLoaded, setSessionsLoaded] = useState<boolean>(false);
   // Use ref to avoid duplicate session creation
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Initialize chat state persistence hook
+  const {
+    initializeFromPersistedState,
+    getSavedDraftMessage,
+    updateDraftMessage,
+    syncScrollPosition,
+    getSavedScrollPosition
+  } = useChatStatePersistence(sessionId, sessions, messages, input);
 
   // Helper function to generate a simple topic from message content
   const generateSimpleTopicFromMessage = (message: string | undefined | null): string => {
@@ -95,6 +105,62 @@ export default function Chat() {
   
   // Track if component is mounted to prevent state updates after unmounting
   const isMountedRef = useRef(true);
+  
+  // Initialize from persisted state on component mount
+  useEffect(() => {
+    if (!sessionsLoaded && isAuthenticated) {
+      const restored = initializeFromPersistedState(setSessions, setSessionId);
+      if (restored) {
+        setSessionsLoaded(true);
+        console.log('Chat sessions restored from persisted state');
+      }
+    }
+  }, [sessionsLoaded, isAuthenticated, initializeFromPersistedState]);
+
+  // Restore draft message when session changes
+  useEffect(() => {
+    if (sessionId) {
+      const savedDraft = getSavedDraftMessage();
+      if (savedDraft && savedDraft !== input) {
+        setInput(savedDraft);
+      }
+    }
+  }, [sessionId, getSavedDraftMessage]);
+
+  // Save draft message as user types
+  useEffect(() => {
+    if (sessionId && input) {
+      updateDraftMessage(input);
+    }
+  }, [sessionId, input, updateDraftMessage]);
+  
+  // Auto-scroll to bottom when messages change or restore saved scroll position
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      // Check if we have a saved scroll position
+      const savedPosition = getSavedScrollPosition();
+      
+      if (savedPosition !== null) {
+        // Use setTimeout to ensure the DOM is fully rendered
+        setTimeout(() => {
+          const chatContainer = messagesEndRef.current?.parentElement;
+          if (chatContainer) {
+            chatContainer.scrollTop = savedPosition;
+          }
+        }, 100);
+      } else {
+        // Default to scrolling to bottom
+        messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
+  }, [messages, sessionId, getSavedScrollPosition]);
+  
+  // Save scroll position when user scrolls
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (sessionId) {
+      syncScrollPosition(e.currentTarget.scrollTop);
+    }
+  }, [sessionId, syncScrollPosition]);
   
   // Cleanup on unmount
   useEffect(() => {
@@ -728,7 +794,10 @@ export default function Chat() {
         )}
         
         <main className="flex-1 bg-black flex flex-col">
-          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          <div 
+            className="flex-1 overflow-y-auto p-6 space-y-4" 
+            onScroll={handleScroll}
+          >
             {messages.length === 0 && !loading && (
               <div className="text-center text-gray-500 my-8">
                 {isAuthenticated ? 'No messages yet. Start a conversation!' : 'Please log in to start chatting'}

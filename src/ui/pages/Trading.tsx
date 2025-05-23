@@ -1,6 +1,7 @@
 // src/ui/pages/Trading.tsx
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../components/AuthContext';
+import { useAppState } from '../context/AppStateContext';
 import MangoV3Service from '../../services/mangoV3Service';
 import { TokenData, UITrade, TradeForm } from '../api/tradingTypes';
 import { api, API_ENDPOINTS, ApiError, TradingApi } from '../api/apiClient';
@@ -112,8 +113,43 @@ const processMangoToken = (token: any): TokenData | null => {
 
 const Trading: React.FC = () => {
   const { user } = useAuth();
-  const [state, setState] = useState<TradingState>(initialState);
+  // Get access to the app state for persistence
+  const { state: appState, dispatch } = useAppState();
+  
+  // Initialize state with saved values from appState if available
+  const savedTradingState = appState.tradingState || {};
+  const [state, setState] = useState<TradingState>({
+    ...initialState,
+    // Restore any saved values
+    selectedToken: savedTradingState.selectedToken || initialState.selectedToken,
+    resolution: savedTradingState.resolution || initialState.resolution,
+    search: savedTradingState.search || initialState.search,
+    tradeForm: {
+      ...initialState.tradeForm,
+      ...(savedTradingState.tradeForm || {})
+    }
+  });
+  
   const abortController = useRef<AbortController | null>(null);
+
+  // Save state to global persistence whenever it changes
+  useEffect(() => {
+    // Don't update during initial load
+    if (state.tokens.length > 0 || state.selectedToken) {
+      // Save to global app state
+      dispatch({
+        type: 'SET_TRADING_STATE',
+        payload: {
+          selectedToken: state.selectedToken,
+          resolution: state.resolution,
+          search: state.search,
+          tradeForm: state.tradeForm,
+          // Save positions in a compatible format for persistence
+          positions: state.selectedToken ? [state.selectedToken] : []
+        }
+      });
+    }
+  }, [state.selectedToken, state.resolution, state.search, state.tradeForm, dispatch]);
 
   // Action creators with type safety
   const actions = useMemo(() => ({
@@ -409,7 +445,70 @@ const Trading: React.FC = () => {
     '1d': '1 day'
   }), []);
 
-  // Fetch tokens with debounce and error handling
+  // Fetch transaction history for the current user
+  const fetchTransactions = useCallback(async () => {
+    if (!user) return;
+    
+    try {
+      actions.setLoading({ transactions: true });
+      const response = await api.get(`${API_ENDPOINTS.MANGO.TRADES}?limit=10`);
+      
+      if (response && Array.isArray(response.data)) {
+        actions.setTransactions(response.data);
+      } else {
+        console.warn('Invalid transaction data format:', response);
+        actions.setTransactions([]);
+      }
+    } catch (error) {
+      console.error('Error fetching transactions:', error);
+      actions.setTransactions([]);
+    } finally {
+      actions.setLoading({ transactions: false });
+    }
+  }, [user, actions]);
+  
+  // Fetch detailed token information
+  const fetchTokenInfo = useCallback(async (symbol: string) => {
+    if (!symbol) return null;
+    
+    try {
+      const response = await api.get(`${API_ENDPOINTS.TRADING.TOKENS}/${symbol}`);
+      if (response && response.data) {
+        const processedToken = processMangoToken(response.data);
+        if (processedToken) {
+          // Update the selected token with fresh data
+          actions.selectToken(processedToken);
+          return processedToken;
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error(`Error fetching token info for ${symbol}:`, error);
+      return null;
+    }
+  }, [actions]);
+
+  // Hook into trading events
+  useEffect(() => {
+    // Listen for trade confirmation events to refresh data
+    const handleTradeConfirmed = (event: any) => {
+      console.log('Trade confirmed event received:', event);
+      // Refresh transactions
+      fetchTransactions();
+      // Refresh token data if needed
+      if (state.selectedToken && event.trade && event.trade.token === state.selectedToken.symbol) {
+        fetchTokenInfo(state.selectedToken.symbol);
+      }
+    };
+    
+    tradingEventBus.on('trade:confirmed', handleTradeConfirmed);
+    
+    return () => {
+      tradingEventBus.off('trade:confirmed', handleTradeConfirmed);
+    };
+  }, [state.selectedToken, fetchTransactions, fetchTokenInfo]);
+
+  // Fetch tokens with debounce
   const fetchTokens = useCallback(
     debounce(async (query: string) => {
       const searchQuery = query.trim();

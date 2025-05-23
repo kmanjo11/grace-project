@@ -2,9 +2,10 @@
 
 import React, { useState, useEffect, ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import LogoutButton from '../components/LogoutButton';
-import StatePersistenceManager, { preventUnintendedRefresh } from '../utils/StatePersistence';
 import { useAuth } from '../components/AuthContext';
+import { useAppState } from '../context/AppStateContext';
+import LogoutButton from '../components/LogoutButton';
+import { preventUnintendedRefresh } from '../utils/StatePersistence';
 
 // Import using relative URL instead of direct import
 const logoPath = '/assets/grace_logo_gold.png';
@@ -19,16 +20,20 @@ export default function Layout({ children }: LayoutProps) {
   const { user } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  // Use the AppState context
+  const { dispatch, hydrateFromStorage } = useAppState();
+  
   // Capture page state on path change
   useEffect(() => {
     if (user) {
-      StatePersistenceManager.captureSnapshot({
-        pageState: { lastVisitedPath: pathname }
+      dispatch({
+        type: 'SET_PAGE_STATE',
+        payload: { lastVisitedPath: pathname }
       });
     }
-  }, [pathname, user]);
+  }, [pathname, user, dispatch]);
 
-  // Prevent unintended refresh
+  // Prevent unintended refresh for unsaved changes
   useEffect(() => {
     window.addEventListener('beforeunload', preventUnintendedRefresh);
     return () => {
@@ -39,9 +44,9 @@ export default function Layout({ children }: LayoutProps) {
   // Hydrate state on initial load
   useEffect(() => {
     if (user) {
-      StatePersistenceManager.hydrateState(navigate);
+      hydrateFromStorage(navigate);
     }
-  }, [user, navigate]);
+  }, [user, navigate, hydrateFromStorage]);
 
   const navLinks = [
     { name: 'Chat', path: '/chat' },
