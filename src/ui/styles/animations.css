@@ -1,0 +1,28 @@
+/* Custom animations for state transitions */
+@keyframes fadeOut {
+  0% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.animate-fade-out {
+  animation: fadeOut 3s forwards;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse-slow {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* Custom border colors for the loading spinner */
+.border-gold {
+  border-color: #FFD700;
+}
+
+.text-gold {
+  color: #FFD700;
+}
