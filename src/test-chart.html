@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Chart Test</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #1e1e1e;
+            color: #d9d9d9;
+        }
+        #chart-container {
+            width: 100%;
+            height: 500px;
+            margin: 20px 0;
+            border: 1px solid #333;
+            border-radius: 4px;
+        }
+        .controls {
+            margin: 20px 0;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        button, select, input {
+            padding: 8px 16px;
+            background-color: #2b2b43;
+            color: #fff;
+            border: 1px solid #3a3a5a;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #3a3a5a;
+        }
+        .token-info {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #252538;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Trading Chart Test</h1>
+    
+    <div class="controls">
+        <input type="text" id="token-address" placeholder="Enter token address" value="So11111111111111111111111111111111111111112">
+        <select id="timeframe">
+            <option value="1m">1 Minute</option>
+            <option value="5m">5 Minutes</option>
+            <option value="15m" selected>15 Minutes</option>
+            <option value="1h">1 Hour</option>
+            <option value="4h">4 Hours</option>
+            <option value="1d">1 Day</option>
+        </select>
+        <button id="load-chart">Load Chart</button>
+    </div>
+    
+    <div id="chart-container"></div>
+    
+    <div class="token-info" id="token-info">
+        <h3>Token Information</h3>
+        <p>Select a token and click "Load Chart" to see data.</p>
+    </div>
+
+    <!-- Lightweight Charts Library -->
+    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
+    
+    <script>
+        // DOM Elements
+        const chartContainer = document.getElementById('chart-container');
+        const tokenAddressInput = document.getElementById('token-address');
+        const timeframeSelect = document.getElementById('timeframe');
+        const loadButton = document.getElementById('load-chart');
+        const tokenInfo = document.getElementById('token-info');
+        
+        // Chart variables
+        let chart = null;
+        let candlestickSeries = null;
+        let volumeSeries = null;
+        
+        // Initialize chart
+        function initChart() {
+            // Clear previous chart if it exists
+            if (chart) {
+                chart.remove();
+            }
+            
+            // Create new chart
+            chart = LightweightCharts.createChart(chartContainer, {
+                layout: {
+                    background: { type: 'solid', color: '#1E1E1E' },
+                    textColor: '#d9d9d9',
+                },
+                grid: {
+                    vertLines: { color: '#2b2b43' },
+                    horzLines: { color: '#2b2b43' },
+                },
+                width: chartContainer.clientWidth,
+                height: 500,
+                timeScale: {
+                    timeVisible: true,
+                    secondsVisible: false,
+                },
+            });
+            
+            // Add candlestick series
+            candlestickSeries = chart.addCandlestickSeries({
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderVisible: false,
+                wickUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+            });
+            
+            // Add volume series (placeholder, will be populated with data)
+            volumeSeries = chart.addHistogramSeries({
+                color: 'rgba(120, 120, 120, 0.5)',
+                priceFormat: {
+                    type: 'volume',
+                },
+                priceScaleId: 'volume',
+                scaleMargins: {
+                    top: 0.8,
+                    bottom: 0,
+                },
+            });
+            
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                if (chart) {
+                    chart.applyOptions({
+                        width: chartContainer.clientWidth,
+                    });
+                }
+            });
+        }
+        
+        // Fetch OHLCV data from Birdeye API
+        async function fetchOHLCV(address, timeframe) {
+            const apiKey = '11a2b1de83784e46986d67b3e71c99ed';
+            const url = `https://public-api.birdeye.so/defi/v3/ohlcv?address=${address}&type=${timeframe}&time_to=${Math.floor(Date.now() / 1000)}&limit=100`;
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'x-chain': 'solana',  // Required header for Birdeye
+                        'X-API-KEY': apiKey,
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    mode: 'cors',
+                    credentials: 'same-origin'
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    console.error('API Error Response:', data);
+                    throw new Error(`API request failed with status ${response.status}: ${data.message || 'Unknown error'}`);
+                }
+                
+                if (!data || !data.data || !Array.isArray(data.data.items)) {
+                    console.error('Unexpected response format:', data);
+                    throw new Error('Invalid response format from API');
+                }
+                
+                // Format data for the chart
+                const ohlcvData = data.data.items.map(item => ({
+                    time: item.unixTime,
+                    open: parseFloat(item.o),
+                    high: parseFloat(item.h),
+                    low: parseFloat(item.l),
+                    close: parseFloat(item.c),
+                    volume: parseFloat(item.v),
+                }));
+                
+                return ohlcvData;
+                
+            } catch (error) {
+                console.error('Error fetching OHLCV data:', error);
+                throw error;
+            }
+        }
+        
+        // Update chart with new data
+        async function updateChart() {
+            const address = tokenAddressInput.value.trim();
+            const timeframe = timeframeSelect.value;
+            
+            if (!address) {
+                alert('Please enter a valid token address');
+                return;
+            }
+            
+            try {
+                // Show loading state
+                loadButton.disabled = true;
+                loadButton.textContent = 'Loading...';
+                tokenInfo.innerHTML = '<h3>Loading data...</h3>';
+                
+                // Fetch data
+                const ohlcvData = await fetchOHLCV(address, timeframe);
+                
+                if (!chart) {
+                    initChart();
+                }
+                
+                // Update chart data
+                candlestickSeries.setData(ohlcvData.map(d => ({
+                    time: d.time,
+                    open: d.open,
+                    high: d.high,
+                    low: d.low,
+                    close: d.close,
+                })));
+                
+                // Update volume data
+                volumeSeries.setData(ohlcvData.map(d => ({
+                    time: d.time,
+                    value: d.volume,
+                    color: d.close >= d.open ? 'rgba(38, 166, 154, 0.8)' : 'rgba(239, 83, 80, 0.8)',
+                })));
+                
+                // Update token info
+                if (ohlcvData.length > 0) {
+                    const latest = ohlcvData[ohlcvData.length - 1];
+                    tokenInfo.innerHTML = `
+                        <h3>Token: ${address.substring(0, 6)}...${address.slice(-4)}</h3>
+                        <p>Timeframe: ${timeframe}</p>
+                        <p>Latest Price: $${latest.close.toFixed(6)}</p>
+                        <p>24h Change: ${((latest.close - ohlcvData[0].open) / ohlcvData[0].open * 100).toFixed(2)}%</p>
+                        <p>24h Volume: $${(ohlcvData.reduce((sum, d) => sum + d.volume, 0)).toFixed(2)}</p>
+                        <p>Data Points: ${ohlcvData.length}</p>
+                    `;
+                }
+                
+                // Fit content to view
+                chart.timeScale().fitContent();
+                
+            } catch (error) {
+                console.error('Error updating chart:', error);
+                tokenInfo.innerHTML = `
+                    <h3>Error</h3>
+                    <p>Failed to load data: ${error.message}</p>
+                    <p>Make sure your API key is valid and the token address is correct.</p>
+                `;
+            } finally {
+                loadButton.disabled = false;
+                loadButton.textContent = 'Load Chart';
+            }
+        }
+        
+        // Event Listeners
+        loadButton.addEventListener('click', updateChart);
+        
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', () => {
+            initChart();
+            // Load default chart
+            setTimeout(updateChart, 500);
+        });
+    </script>
+</body>
+</html>
