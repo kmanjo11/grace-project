@@ -24,15 +24,16 @@ try:
         TopicDetector,
         EntityExtractor,
         BackgroundTaskManager,
-        create_conversation_management_system
+        create_conversation_management_system,
     )
+
     logger.info("Successfully imported conversation_management using standard import")
 except ImportError:
     logger.warning("Standard import failed, trying alternative methods")
-    
+
     # Try to locate the module file
     potential_paths = [
-        # Root project directory 
+        # Root project directory
         project_root / "conversation_management.py",
         # Same directory as wrapper
         Path(__file__).parent / "conversation_management.py",
@@ -42,38 +43,44 @@ except ImportError:
         Path("/app/conversation_management.py"),
         Path("/app/src/conversation_management.py"),
     ]
-    
+
     module_path = None
     for path in potential_paths:
         if path.exists():
             module_path = path
             logger.info(f"Found conversation_management at: {module_path}")
             break
-    
+
     if module_path:
         # Load the module directly from file
-        spec = importlib.util.spec_from_file_location("conversation_management", module_path)
+        spec = importlib.util.spec_from_file_location(
+            "conversation_management", module_path
+        )
         conversation_management = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(conversation_management)
-        
+
         # Extract needed components
         ConversationManager = conversation_management.ConversationManager
         ConversationContext = conversation_management.ConversationContext
         TopicDetector = conversation_management.TopicDetector
         EntityExtractor = conversation_management.EntityExtractor
         BackgroundTaskManager = conversation_management.BackgroundTaskManager
-        create_conversation_management_system = conversation_management.create_conversation_management_system
-        
+        create_conversation_management_system = (
+            conversation_management.create_conversation_management_system
+        )
+
         logger.info("Successfully imported conversation_management from file")
     else:
         logger.error("Could not find conversation_management module in any location")
-        raise ImportError("Could not locate conversation_management.py in any expected location")
+        raise ImportError(
+            "Could not locate conversation_management.py in any expected location"
+        )
 
 __all__ = [
-    'ConversationManager',
-    'ConversationContext',
-    'TopicDetector',
-    'EntityExtractor',
-    'BackgroundTaskManager',
-    'create_conversation_management_system'
+    "ConversationManager",
+    "ConversationContext",
+    "TopicDetector",
+    "EntityExtractor",
+    "BackgroundTaskManager",
+    "create_conversation_management_system",
 ]

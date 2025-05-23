@@ -22,13 +22,17 @@ logger = logging.getLogger("GraceSocialMediaService")
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("GraceSocialMediaService")
-
 class SocialMediaService:
-    """Service for interacting with social media platforms using snscrape."""
+    """
+    Service for interacting with social media platforms using snscrape.
+    
+    Handles:
+    - User profile retrieval and analysis
+    - Sentiment analysis
+    - Community and entity tracking
+    - Trend analysis
+    - Caching and rate limiting
+    """
     
     def __init__(
         self,
@@ -47,31 +51,254 @@ class SocialMediaService:
         self.memory_system = memory_system
         self.cache_duration = cache_duration
         self.config = config or {}
-        self.cache = {}
-        self.community_seeds = {}
+        self.logger = logging.getLogger("SocialMediaService")
+        
+        # Initialize caches with TTL
+        self._user_profile_cache = {}
+        self._search_cache = {}
+        self._sentiment_cache = {}
+        self._community_cache = {}
+        
+        # Initialize snscrape scrapers
+        self.twitter_user_scraper = sntwitter.TwitterUserScraper
+        self.twitter_hashtag_scraper = sntwitter.TwitterHashtagScraper
+        self.twitter_search_scraper = sntwitter.TwitterSearchScraper
+        
+        # Initialize community and entity tracking
+        self.tracked_communities = {}
+        self.tracked_entities = {}
+        self.community_metrics = {}
+        self.entity_relationships = {}
+        
+        # Initialize metrics collection
+        self.metrics = {
+            'api_calls': 0,
+            'cache_hits': 0,
+            'errors': 0,
+            'last_updated': datetime.utcnow().isoformat()
+        }
+        
+        # Rate limiting
+        self.rate_limit = {
+            'last_request': 0,
+            'requests': 0,
+            'max_requests': 100,  # per minute
+            'window': 60  # seconds
+        }
         
         logger.info("Initialized Social Media service with snscrape")
-    
-    def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        
+    def get_user_profile(self, username: str) -> Dict[str, Any]:
         """
-        Get data from cache if available and not expired.
+        Get a user's profile information from Twitter.
         
         Args:
-            cache_key: Cache key
+            username: Twitter username
+        
+        Returns:
+            Dict[str, Any]: User profile information
+        """
+        # Create cache key
+        cache_key = f"user_profile_{username}"
+        
+        # Check cache
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data:
+            return cached_data
+        
+        try:
+            # Create scraper
+            scraper = self.twitter_user_scraper(username)
+            
+            # Get user profile
+            user_profile = scraper.get_object()
+            
+            # Process user profile
+            processed_profile = self._process_user_profile(user_profile)
+            
+            # Cache results
+            response = {
+                "username": username,
+                "profile": processed_profile
+            }
+            
+            self._add_to_cache(cache_key, response)
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error getting user profile: {str(e)}", exc_info=True)
+            return {"error": f"Error getting user profile: {str(e)}"}
+    
+    def analyze_sentiment(self, query: str, days: int = 7) -> Dict[str, Any]:
+        """
+        Analyze sentiment for a given query.
+        
+        Args:
+            query: Search query to analyze
+            days: Number of days to look back
             
         Returns:
-            Optional[Dict[str, Any]]: Cached data or None
-        """
-        if cache_key in self.cache:
-            cache_entry = self.cache[cache_key]
-            if datetime.now() < cache_entry["expires_at"]:
-                logger.info(f"Cache hit for key: {cache_key}")
-                return cache_entry["data"]
-            else:
-                logger.info(f"Cache expired for key: {cache_key}")
-                del self.cache[cache_key]
+            Dict with sentiment analysis results
+        ""
+        cache_key = f"sentiment_{query}_{days}"
         
-        return None
+        # Check cache
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return cached
+            
+        try:
+            # Search for tweets
+            since = (datetime.utcnow() - timedelta(days=days)).strftime('%Y-%m-%d')
+            search_query = f"{query} since:{since}"
+            
+            # Get tweets and analyze sentiment
+            tweets = self._search_twitter(search_query, count=100)
+            sentiment_scores = []
+            
+            for tweet in tweets:
+                # Simple sentiment analysis (can be replaced with more sophisticated model)
+                text = tweet.get('text', '').lower()
+                positive_words = sum(1 for word in ['good', 'great', 'awesome', 'amazing'] if word in text)
+                negative_words = sum(1 for word in ['bad', 'terrible', 'awful', 'worst'] if word in text)
+                
+                score = (positive_words - negative_words) / max(1, len(text.split()))
+                sentiment_scores.append(score)
+            
+            avg_sentiment = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
+            
+            result = {
+                'query': query,
+                'days': days,
+                'tweet_count': len(tweets),
+                'average_sentiment': avg_sentiment,
+                'sentiment_label': 'positive' if avg_sentiment > 0.1 else 'negative' if avg_sentiment < -0.1 else 'neutral',
+                'tweets_sample': tweets[:5]  # Return first 5 tweets as sample
+            }
+            
+            self._add_to_cache(cache_key, result)
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error in sentiment analysis: {str(e)}", exc_info=True)
+            return {"error": f"Error performing sentiment analysis: {str(e)}"}
+            
+    def get_trending_topics(self, limit: int = 10) -> Dict[str, Any]:
+        """
+        Get currently trending topics.
+        
+        Args:
+            limit: Maximum number of topics to return
+            
+        Returns:
+            Dict with trending topics
+        """
+        cache_key = f"trending_{limit}"
+        
+        # Check cache
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return cached
+            
+        try:
+            # In a real implementation, this would use Twitter's trending API
+            # For now, we'll return some example data
+            topics = [
+                {"name": "#Bitcoin", "tweet_volume": 150000, "url": "https://twitter.com/search?q=%23Bitcoin"},
+                {"name": "#Ethereum", "tweet_volume": 120000, "url": "https://twitter.com/search?q=%23Ethereum"},
+                {"name": "#Crypto", "tweet_volume": 100000, "url": "https://twitter.com/search?q=%23Crypto"},
+            ]
+            
+            result = {
+                'trending_topics': topics[:limit],
+                'as_of': datetime.utcnow().isoformat()
+            }
+            
+            self._add_to_cache(cache_key, result, ttl=300)  # Cache for 5 minutes
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error getting trending topics: {str(e)}", exc_info=True)
+            return {"error": f"Error getting trending topics: {str(e)}"}
+            
+    def get_influential_accounts(self, topic: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+        """
+        Get influential accounts for a topic.
+        
+        Args:
+            topic: Topic to find influential accounts for
+            limit: Maximum number of accounts to return
+            
+        Returns:
+            Dict with influential accounts
+        """
+        cache_key = f"influential_{topic or 'all'}_{limit}"
+        
+        # Check cache
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return cached
+            
+        try:
+            # In a real implementation, this would analyze user metrics and engagement
+            # For now, return example data
+            accounts = [
+                {
+                    'username': 'Bitcoin',
+                    'name': 'Bitcoin',
+                    'followers': 8000000,
+                    'description': 'The future of money',
+                    'influence_score': 95
+                },
+                {
+                    'username': 'VitalikButerin',
+                    'name': 'Vitalik Non-giver of Ether',
+                    'followers': 5000000,
+                    'description': 'Ethereum co-founder',
+                    'influence_score': 90
+                },
+            ]
+            
+            if topic:
+                accounts = [a for a in accounts if topic.lower() in a['description'].lower()]
+            
+            result = {
+                'topic': topic,
+                'accounts': accounts[:limit],
+                'total': len(accounts)
+            }
+            
+            self._add_to_cache(cache_key, result, ttl=3600)  # Cache for 1 hour
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error getting influential accounts: {str(e)}", exc_info=True)
+            return {"error": f"Error getting influential accounts: {str(e)}"}
+            
+    def get_tracked_communities(self) -> Dict[str, Any]:
+        """Get all tracked communities and their metrics."""
+        return {
+            'communities': list(self.tracked_communities.values()),
+            'last_updated': datetime.utcnow().isoformat()
+        }
+        
+    def get_tracked_entities(self, entity_type: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get tracked entities and their relationships.
+        
+        Args:
+            entity_type: Optional filter by entity type
+        """
+        entities = self.tracked_entities
+        if entity_type:
+            entities = {k: v for k, v in entities.items() if v.get('type') == entity_type}
+            
+        return {
+            'entities': entities,
+    
+    # Process user profile
+    processed_profile = self._process_user_profile(user_profile)
     
     def _add_to_cache(self, cache_key: str, data: Dict[str, Any], duration: Optional[int] = None) -> None:
         """
@@ -262,54 +489,166 @@ class SocialMediaService:
         
         Args:
             results: List of raw result objects from snscrape
-            search_type: Type of search (tweets, users, hashtags)
+            search_type: Type of search ('tweets', 'users', 'hashtags')
             
         Returns:
-            List[Dict[str, Any]]: Processed results with consistent structure
+            List of processed results as dictionaries
         """
         processed_results = []
         
         for result in results:
             try:
-                if search_type in ["tweets", "hashtags"]:
-                    # Handle tweet objects with null checks
-                    user = getattr(result, 'user', None)
-                    tweet_id = getattr(result, 'id', '')
+                if search_type == 'tweets':
+                    processed = self._process_tweet(result)
+                elif search_type == 'users':
+                    processed = self._process_user(result)
+                elif search_type == 'hashtags':
+                    processed = self._process_hashtag(result)
+                else:
+                    processed = {'raw_data': str(result), 'type': result.__class__.__name__}
+                
+                if processed:
+                    processed_results.append(processed)
                     
-                    # Get media information
-                    media = []
-                    if hasattr(result, 'media') and result.media:
-                        for m in result.media:
-                            if hasattr(m, 'previewUrl'):
-                                media.append({
-                                    'type': m.__class__.__name__,
-                                    'url': getattr(m, 'previewUrl', ''),
-                                    'full_url': getattr(m, 'fullUrl', '')
-                                })
-                    
-                    # Get quoted tweet if exists
-                    quoted_tweet = None
-                    if hasattr(result, 'quotedTweet') and result.quotedTweet:
-                        quoted_tweet = {
-                            'id': str(getattr(result.quotedTweet, 'id', '')),
-                            'username': getattr(getattr(result.quotedTweet, 'user', {}), 'username', '')
-                        }
-                    
-                    # Get retweet info if this is a retweet
-                    retweeted_tweet = None
-                    if hasattr(result, 'retweetedTweet') and result.retweetedTweet:
-                        retweeted_tweet = {
-                            'id': str(getattr(result.retweetedTweet, 'id', '')),
-                            'username': getattr(getattr(result.retweetedTweet, 'user', {}), 'username', '')
-                        }
-                    
-                    processed_result = {
-                        "id": str(tweet_id),
-                        "text": getattr(result, 'rawContent', ''),
-                        "username": getattr(user, 'username', '') if user else '',
-                        "name": getattr(user, 'displayname', '') if user else '',
-                        "date": getattr(result, 'date', '').isoformat() if hasattr(result, 'date') and result.date else '',
-                        "likes": getattr(result, 'likeCount', 0) or 0,
+            except Exception as e:
+                self.logger.error(f"Error processing {search_type} result: {str(e)}", exc_info=True)
+                continue
+                
+        return processed_results
+        
+    def _process_tweet(self, tweet) -> Dict[str, Any]:
+        """Process a single tweet into a dictionary."""
+        if not hasattr(tweet, 'user'):
+            return {}
+            
+        return {
+            'id': str(tweet.id),
+            'url': tweet.url,
+            'date': tweet.date.isoformat() if hasattr(tweet, 'date') and tweet.date else None,
+            'content': getattr(tweet, 'content', getattr(tweet, 'rawContent', '')),
+            'user': {
+                'username': tweet.user.username,
+                'display_name': tweet.user.displayname,
+                'verified': tweet.user.verified,
+                'followers': getattr(tweet.user, 'followersCount', 0),
+                'following': getattr(tweet.user, 'friendsCount', 0)
+            },
+            'metrics': {
+                'likes': getattr(tweet, 'likeCount', 0),
+                'retweets': getattr(tweet, 'retweetCount', 0),
+                'replies': getattr(tweet, 'replyCount', 0),
+                'quotes': getattr(tweet, 'quoteCount', 0)
+            },
+            'hashtags': [h for h in getattr(tweet, 'hashtags', [])],
+            'mentions': [m.username for m in getattr(tweet, 'mentionedUsers', []) if hasattr(m, 'username')],
+            'media': self._process_tweet_media(tweet)
+        }
+        
+    def _process_user(self, user) -> Dict[str, Any]:
+        """Process a single user profile into a dictionary."""
+        return {
+            'username': user.username,
+            'display_name': user.displayname,
+            'description': user.description,
+            'followers': user.followersCount,
+            'following': user.friendsCount,
+            'tweet_count': user.statusesCount,
+            'created_at': user.created.isoformat() if hasattr(user, 'created') and user.created else None,
+            'verified': user.verified,
+            'profile_image_url': getattr(user, 'profileImageUrl', ''),
+            'profile_banner_url': getattr(user, 'profileBannerUrl', '')
+        }
+        
+    def _process_hashtag(self, hashtag) -> Dict[str, Any]:
+        """Process a single hashtag into a dictionary."""
+        return {
+            'name': f"#{hashtag.name}",
+            'tweet_count': getattr(hashtag, 'tweetCount', 0),
+            'url': f"https://twitter.com/hashtag/{hashtag.name}"
+        }
+        
+    def _process_tweet_media(self, tweet) -> List[Dict[str, Any]]:
+        """Process media entities from a tweet."""
+        if not hasattr(tweet, 'media') or not tweet.media:
+            return []
+            
+        media = []
+        for item in tweet.media:
+            if hasattr(item, 'fullUrl'):
+                media.append({
+                    'type': 'photo',
+                    'url': item.fullUrl
+                })
+            elif hasattr(item, 'thumbnailUrl'):  # For videos
+                media.append({
+                    'type': 'video',
+                    'thumbnail_url': item.thumbnailUrl,
+                    'duration': getattr(item, 'duration', None)
+                })
+                
+        return media
+        
+    def _get_from_cache(self, cache_key: str) -> Optional[Any]:
+        """
+        Get data from cache if it exists and hasn't expired.
+        
+        Args:
+            cache_key: Cache key to retrieve
+            
+        Returns:
+            Cached data or None if not found or expired
+        """
+        if cache_key not in self._search_cache:
+            return None
+            
+        cache_entry = self._search_cache[cache_key]
+        current_time = time.time()
+        
+        # Check if cache entry has expired
+        if current_time - cache_entry['timestamp'] > cache_entry['ttl']:
+            del self._search_cache[cache_key]
+            return None
+            
+        self.metrics['cache_hits'] += 1
+        return cache_entry['data']
+    
+    def _add_to_cache(self, cache_key: str, data: Any, ttl: Optional[int] = None) -> None:
+        """
+        Add data to cache with TTL.
+        
+        Args:
+            cache_key: Cache key
+            data: Data to cache
+            ttl: Time to live in seconds (defaults to instance default)
+        """
+        self._search_cache[cache_key] = {
+            'data': data,
+            'timestamp': time.time(),
+            'ttl': ttl or self.cache_duration
+        }
+    
+    def _check_rate_limit(self) -> bool:
+        """
+        Check if we've hit the rate limit.
+        
+        Returns:
+            bool: True if under rate limit, False if rate limited
+        """
+        current_time = time.time()
+        
+        # Reset counter if window has passed
+        if current_time - self.rate_limit['last_request'] > self.rate_limit['window']:
+            self.rate_limit['requests'] = 0
+            self.rate_limit['last_request'] = current_time
+        
+        # Check if we've hit the limit
+        if self.rate_limit['requests'] >= self.rate_limit['max_requests']:
+            self.logger.warning("Rate limit reached. Please wait before making more requests.")
+            return False
+            
+        self.rate_limit['requests'] += 1
+        self.rate_limit['last_request'] = current_time
+        return True
                         "retweets": getattr(result, 'retweetCount', 0) or 0,
                         "replies": getattr(result, 'replyCount', 0) or 0,
                         "quotes": getattr(result, 'quoteCount', 0) or 0,
@@ -928,6 +1267,147 @@ class SocialMediaService:
             use_cache=use_cache
         )
     
+    async def get_feed(
+        self,
+        user_id: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+        include_media: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Get a personalized social media feed for a user.
+        
+        Args:
+            user_id: Optional user ID for personalized feed
+            limit: Maximum number of items to return (1-100)
+            offset: Pagination offset
+            include_media: Whether to include media in the feed
+            
+        Returns:
+            List[Dict[str, Any]]: List of feed items
+        """
+        try:
+            # Build a query based on user's interests if available
+            query_parts = []
+            
+            if user_id and hasattr(self, 'memory_system') and self.memory_system:
+                # Get user interests from memory
+                user_data = self.memory_system.retrieve(f"user:{user_id}")
+                if user_data and 'interests' in user_data:
+                    for interest in user_data['interests'][:3]:  # Top 3 interests
+                        query_parts.append(f"({interest})")
+            
+            # Fallback to trending topics if no user interests
+            if not query_parts:
+                query_parts = ["crypto", "blockchain", "web3"]
+            
+            # Build the query
+            query = " OR ".join(query_parts)
+            if include_media:
+                query += " filter:media"
+            
+            # Add language and other filters
+            query += " -is:retweet -is:reply lang:en"
+            
+            # Use TwitterSearchScraper to get the feed
+            scraper = sntwitter.TwitterSearchScraper(query)
+            
+            # Process and return results
+            results = []
+            count = 0
+            
+            for tweet in scraper.get_items():
+                if count >= offset + limit:
+                    break
+                    
+                if count >= offset:
+                    processed = self._process_tweet(tweet)
+                    if processed:
+                        results.append(processed)
+                
+                count += 1
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"Error getting social feed: {str(e)}", exc_info=True)
+            return []
+
+    async def get_connections(
+        self,
+        user_id: str,
+        connection_type: Optional[str] = None,
+        limit: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Get social connections (following/followers) for a user.
+        
+        Args:
+            user_id: User ID to get connections for
+            connection_type: Type of connections ('following', 'followers', 'mutual')
+            limit: Maximum number of connections to return (1-200)
+            
+        Returns:
+            Dict[str, Any]: Connections data
+        """
+        try:
+            # Get user info from memory or API
+            user_data = {}
+            if hasattr(self, 'memory_system') and self.memory_system:
+                user_data = self.memory_system.retrieve(f"user:{user_id}") or {}
+            
+            # Get username from user data or use a default
+            username = user_data.get('username', user_id)
+            
+            # Initialize result structure
+            result = {
+                'user_id': user_id,
+                'username': username,
+                'connection_type': connection_type or 'all',
+                'connections': [],
+                'count': 0
+            }
+            
+            # Get connections based on type
+            if connection_type in (None, 'following'):
+                scraper = sntwitter.TwitterUserScraper(username)
+                for i, user in enumerate(scraper.get_following()):
+                    if i >= limit:
+                        break
+                    result['connections'].append({
+                        'id': user.id,
+                        'username': user.username,
+                        'display_name': user.displayname,
+                        'type': 'following'
+                    })
+            
+            if connection_type in (None, 'followers'):
+                scraper = sntwitter.TwitterUserScraper(username)
+                for i, user in enumerate(scraper.get_followers()):
+                    if i >= limit:
+                        break
+                    result['connections'].append({
+                        'id': user.id,
+                        'username': user.username,
+                        'display_name': user.displayname,
+                        'type': 'followers'
+                    })
+            
+            # Update count
+            result['count'] = len(result['connections'])
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error getting connections: {str(e)}", exc_info=True)
+            return {
+                'error': str(e),
+                'user_id': user_id,
+                'connection_type': connection_type,
+                'connections': [],
+                'count': 0
+            }
+
     def execute_dynamic_function(self, function_name: str, **kwargs) -> Dict[str, Any]:
         """
         Execute a dynamic function based on name and parameters.
@@ -950,7 +1430,9 @@ class SocialMediaService:
                     "get_community_pulse",
                     "discover_community_changes",
                     "associate_with_entity",
-                    "track_entity_mentions"
+                    "track_entity_mentions",
+                    "get_feed",
+                    "get_connections"
                 ]
             }
         

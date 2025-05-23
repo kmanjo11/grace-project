@@ -19,6 +19,37 @@ export interface Trade {
   leverage: number;
 }
 
+export interface TradeExecutionResult {
+  success: boolean;
+  result?: {
+    status: 'pending' | 'confirmed' | 'confirmation_required' | 'failed';
+    confirmation_id?: string;
+    txHash?: string;
+    current_price?: number;
+    estimated_total?: number;
+    stop_loss_price?: number;
+    take_profit_price?: number;
+    smart_trading_applied?: boolean;
+    original_amount?: string;
+    adjusted_amount?: string;
+    error?: string;
+    platform?: string;
+    trade_id?: string;
+    confirmation_details?: {
+      market?: string;
+      side?: string;
+      size?: number;
+      price?: number;
+      leverage?: number;
+      order_type?: string;
+      order?: any;
+    };
+  };
+  status?: string;
+  error?: string;
+  requiresConfirmation?: boolean;
+}
+
 export interface TradeHistoryResponse {
   success: boolean;
   trades: Trade[];

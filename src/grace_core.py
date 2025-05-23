@@ -273,14 +273,19 @@ class GraceCore:
             gmgn_service=self.gmgn_service
         )
         
-    def _init_social_media_service(self):
-        """Initialize the Social Media service."""
-        logger.info("Initializing Social Media Service")
-        return SocialMediaService(
+    def _init_leverage_trade_manager(self):
+        """Initialize the Leverage Trade Manager."""
+        logger.info("Initializing Leverage Trade Manager")
+        return LeverageTradeManager(
+            mango_v3_client=self.gmgn_service.mango_v3,
             memory_system=self.memory_system,
-            config=self.config.get("social_media", {})
+            max_leverage=float(self.config.get("max_leverage", 10.0)),
+            min_margin_ratio=float(self.config.get("min_margin_ratio", 0.05)),
+            logger=logger
         )
         
+def _get_grace_system_message(self):
+    """Get the Grace system message from system_prompts.py."""
     # Get a comprehensive system message that includes all prompt components
     base_prompt = get_system_prompt("general")
     trading_prompt = get_system_prompt("trading")

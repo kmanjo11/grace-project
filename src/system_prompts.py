@@ -51,6 +51,7 @@ When handling deep research and analysis:
 8. Update knowledge base with new verified information
 """
 
+
 def get_system_prompt(context: str = "general") -> str:
     """Get the appropriate system prompt based on context."""
     if context == "trading":

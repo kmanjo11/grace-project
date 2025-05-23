@@ -1,23 +1,26 @@
 """
 Quick test script for Mango V3 Extension - Testing All Endpoints
 """
+
 import logging
-from mango_v3_extension import MangoV3Extension
+from mango_v3_extension import MangoV3Extension, MangoV3Client
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 def test_endpoints():
     """Test all available Mango V3 endpoints"""
-    
-    # Initialize with localhost
-    mango = MangoV3Extension(
-        base_url="http://localhost",
-        logger=logger
+
+    # Initialize MangoV3Client
+    client = MangoV3Client(
+        base_url="http://localhost", logger=logger  # Default Mango v3 API port
     )
-    client = mango.client
-    
+
+    # Initialize MangoV3Extension with the client
+    mango = MangoV3Extension(client=client, logger=logger)
+
     # Test all available GET endpoints
     endpoints = {
         "Get Positions": client.get_positions,
@@ -26,52 +29,41 @@ def test_endpoints():
         "Get All Markets": client.get_markets,
         "Get BTC Market": lambda: client.get_market_by_name("BTC-PERP"),
     }
-    
+
     results = {}
     for name, endpoint_func in endpoints.items():
         try:
             logger.info(f"Testing: {name}")
             response = endpoint_func()
-            results[name] = {
-                "success": True,
-                "response": response
-            }
+            results[name] = {"success": True, "response": response}
             logger.info(f"✅ {name}: {response}")
         except Exception as e:
-            results[name] = {
-                "success": False,
-                "error": str(e)
-            }
+            results[name] = {"success": False, "error": str(e)}
             logger.error(f"❌ {name} failed: {e}")
-    
+
     # Test extension methods
     extension_endpoints = {
         "Get Market Data": lambda: mango.get_market_data(),
-        "Get Portfolio Summary": mango.get_portfolio_summary
+        "Get Portfolio Summary": mango.get_portfolio_summary,
     }
-    
+
     for name, endpoint_func in extension_endpoints.items():
         try:
             logger.info(f"Testing Extension: {name}")
             response = endpoint_func()
-            results[name] = {
-                "success": True,
-                "response": response
-            }
+            results[name] = {"success": True, "response": response}
             logger.info(f"✅ {name}: {response}")
         except Exception as e:
-            results[name] = {
-                "success": False,
-                "error": str(e)
-            }
+            results[name] = {"success": False, "error": str(e)}
             logger.error(f"❌ {name} failed: {e}")
-    
+
     return results
+
 
 if __name__ == "__main__":
     logger.info("Starting Mango V3 endpoint tests...")
     results = test_endpoints()
-    
+
     # Summary
     logger.info("\n=== Test Summary ===")
     for name, result in results.items():

@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from uuid import uuid4
@@ -9,16 +8,20 @@ import json
 router = APIRouter()
 r = redis.Redis(host="grace-redis", port=6379, decode_responses=True)
 
+
 # User extraction placeholder
 def get_user_id(request: Request):
     return request.headers.get("x-user-id") or "testuser"
+
 
 class Message(BaseModel):
     message: str
     session_id: str
 
+
 class NewSessionResponse(BaseModel):
     session_id: str
+
 
 @router.post("/api/chat/session/new", response_model=NewSessionResponse)
 def create_session(request: Request):
@@ -29,6 +32,7 @@ def create_session(request: Request):
     r.sadd(f"user:{user_id}:sessions", session_id)
     r.hset(f"chat:{session_id}:meta", mapping=session_data)
     return {"session_id": session_id}
+
 
 @router.get("/api/chat/sessions")
 def list_sessions(request: Request):
@@ -41,10 +45,12 @@ def list_sessions(request: Request):
             result.append(meta)
     return sorted(result, key=lambda x: x.get("created", ""), reverse=True)
 
+
 @router.get("/api/chat/history/{session_id}")
 def get_history(session_id: str):
     raw = r.lrange(f"chat:{session_id}:messages", 0, -1)
     return [json.loads(m) for m in raw]
+
 
 @router.post("/api/chat/message")
 def handle_message(payload: Message, request: Request):
