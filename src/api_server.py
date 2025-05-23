@@ -18,7 +18,37 @@ import re
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import jwt
+import aiofiles  # For async file operations
 from functools import wraps
+# Custom JWT decorator implementation for Quart
+from functools import wraps
+from quart import request, jsonify, current_app
+
+# Custom jwt_required decorator for Quart
+def jwt_required():
+    def decorator(f):
+        @wraps(f)
+        async def decorated_function(*args, **kwargs):
+            # Check for token using our existing get_token_from_request function
+            token = await get_token_from_request()
+            if not token:
+                return jsonify({"error": "Missing authorization token"}), 401
+                
+            # Verify token using our existing verify_jwt_token function
+            result = verify_jwt_token(token)
+            if not result.get("valid", False):
+                return jsonify({"error": "Invalid or expired token"}), 401
+                
+            # Set user_id in request context for get_jwt_identity function
+            request.user_id = result.get("user_id")
+            
+            return await f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+# Replacement for get_jwt_identity
+def get_jwt_identity():
+    return request.user_id
 import asyncio  # Already imported, used for session persistence
 import shortuuid  # For generating session IDs if needed
 from quart import Quart, request, jsonify, current_app, Response

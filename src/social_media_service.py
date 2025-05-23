@@ -22,8 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("GraceSocialMediaService")
 
-# Configure logging
-logging.basicConfig(
 class SocialMediaService:
     """
     Service for interacting with social media platforms using snscrape.
@@ -90,6 +88,31 @@ class SocialMediaService:
         
         logger.info("Initialized Social Media service with snscrape")
         
+    def _get_from_cache(self, cache_key: str) -> Optional[Any]:
+        """
+        Get data from cache if it exists and has not expired.
+        
+        Args:
+            cache_key: Cache key to retrieve
+            
+        Returns:
+            Optional cached data or None if not found or expired
+        """
+        if cache_key not in self._search_cache:
+            return None
+            
+        cache_entry = self._search_cache[cache_key]
+        expiration_time = cache_entry.get('expiration_time', 0)
+        
+        # Check if cache has expired
+        if time.time() > expiration_time:
+            # Remove expired entry
+            del self._search_cache[cache_key]
+            return None
+            
+        self.metrics['cache_hits'] += 1
+        return cache_entry.get('data')
+        
     async def get_user_profile(self, username: str) -> Dict[str, Any]:
         """
         Get a user's profile information from Twitter.
@@ -146,7 +169,7 @@ class SocialMediaService:
             
         Returns:
             Dict with sentiment analysis results
-        ""
+        """
         cache_key = f"sentiment_{query}_{days}"
         
         # Check cache
@@ -283,7 +306,9 @@ class SocialMediaService:
             return {"error": f"Error getting influential accounts: {str(e)}"}
             
     async def get_tracked_communities(self) -> Dict[str, Any]:
-        """Get all tracked communities and their metrics."""
+        """
+        Get all tracked communities and their metrics.
+        """
         return {
             'communities': list(self.tracked_communities.values()),
             'last_updated': datetime.utcnow().isoformat()
@@ -301,10 +326,13 @@ class SocialMediaService:
             entities = {k: v for k, v in entities.items() if v.get('type') == entity_type}
             
         return {
-            'entities': entities,
+            'entities': entities
+        }
     
-    # Process user profile
-    processed_profile = self._process_user_profile(user_profile)
+    def _process_user_profile(self, user_profile):
+        """Process user profile data"""
+        # Process user profile (implementation would go here)
+        return user_profile
     
     def _add_to_cache(self, cache_key: str, data: Dict[str, Any], duration: Optional[int] = None) -> None:
         """
@@ -523,7 +551,9 @@ class SocialMediaService:
         return processed_results
         
     def _process_tweet(self, tweet) -> Dict[str, Any]:
-        """Process a single tweet into a dictionary."""
+        """
+        Process a single tweet into a dictionary.
+        """
         if not hasattr(tweet, 'user'):
             return {}
             
@@ -551,7 +581,9 @@ class SocialMediaService:
         }
         
     def _process_user(self, user) -> Dict[str, Any]:
-        """Process a single user profile into a dictionary."""
+        """
+        Process a single user profile into a dictionary.
+        """
         return {
             'username': user.username,
             'display_name': user.displayname,
@@ -566,7 +598,9 @@ class SocialMediaService:
         }
         
     def _process_hashtag(self, hashtag) -> Dict[str, Any]:
-        """Process a single hashtag into a dictionary."""
+        """
+        Process a single hashtag into a dictionary.
+        """
         return {
             'name': f"#{hashtag.name}",
             'tweet_count': getattr(hashtag, 'tweetCount', 0),
@@ -574,7 +608,9 @@ class SocialMediaService:
         }
         
     def _process_tweet_media(self, tweet) -> List[Dict[str, Any]]:
-        """Process media entities from a tweet."""
+        """
+        Process media entities from a tweet.
+        """
         if not hasattr(tweet, 'media') or not tweet.media:
             return []
             
@@ -596,7 +632,7 @@ class SocialMediaService:
         
     def _get_from_cache(self, cache_key: str) -> Optional[Any]:
         """
-        Get data from cache if it exists and hasn't expired.
+        Get data from cache if it exists and has not expired.
         
         Args:
             cache_key: Cache key to retrieve
@@ -635,7 +671,7 @@ class SocialMediaService:
     
     def _check_rate_limit(self) -> bool:
         """
-        Check if we've hit the rate limit.
+        Check if we have hit the rate limit.
         
         Returns:
             bool: True if under rate limit, False if rate limited
@@ -655,57 +691,11 @@ class SocialMediaService:
         self.rate_limit['requests'] += 1
         self.rate_limit['last_request'] = current_time
         return True
-                        "retweets": getattr(result, 'retweetCount', 0) or 0,
-                        "replies": getattr(result, 'replyCount', 0) or 0,
-                        "quotes": getattr(result, 'quoteCount', 0) or 0,
-                        "is_retweet": bool(retweeted_tweet),
-                        "is_quote": bool(quoted_tweet),
-                        "has_media": len(media) > 0,
-                        "media": media,
-                        "url": f"https://twitter.com/{getattr(user, 'username', '')}/status/{tweet_id}" if user else f"https://twitter.com/i/web/status/{tweet_id}",
-                        "language": getattr(result, 'lang', ''),
-                        "source": getattr(result, 'sourceLabel', ''),
-                        "quoted_tweet": quoted_tweet,
-                        "retweeted_tweet": retweeted_tweet,
-                        "sentiment": self._analyze_sentiment(getattr(result, 'rawContent', '')),
-                        "scraped_at": datetime.utcnow().isoformat()
-                    }
-                    
-                elif search_type == "users":
-                    # Handle user objects with null checks
-                    processed_result = {
-                        "id": str(getattr(result, 'id', '')),
-                        "username": getattr(result, 'username', ''),
-                        "name": getattr(result, 'displayname', ''),
-                        "bio": getattr(result, 'description', '') or "",
-                        "location": getattr(result, 'location', '') or "",
-                        "website": getattr(result, 'linkUrl', '') or "",
-                        "joined_date": getattr(result, 'created', '').isoformat() if hasattr(result, 'created') and result.created else "",
-                        "followers": getattr(result, 'followersCount', 0) or 0,
-                        "following": getattr(result, 'friendsCount', 0) or 0,
-                        "tweets": getattr(result, 'statusesCount', 0) or 0,
-                        "is_verified": getattr(result, 'verified', False) or False,
-                        "protected": getattr(result, 'protected', False) or False,
-                        "profile_image": (getattr(result, 'profileImageUrl', '') or '').replace('_normal', ''),  # Full-size image
-                        "banner_image": getattr(result, 'profileBannerUrl', '') or "",
-                        "url": f"https://twitter.com/{getattr(result, 'username', '')}",
-                        "scraped_at": datetime.utcnow().isoformat()
-                    }
-                else:
-                    # Fallback for unknown result types
-                    processed_result = {
-                        "raw_data": str(result),
-                        "type": result.__class__.__name__,
-                        "scraped_at": datetime.utcnow().isoformat()
-                    }
                 
-                processed_results.append(processed_result)
-                
-            except Exception as e:
-                logger.error(f"Error processing result: {str(e)}", exc_info=True)
-                continue
-        
-        return processed_results
+    def _process_search_result(self, result, search_type="tweets"):
+        """Process a search result based on its type"""
+        # This is a placeholder implementation
+        return {"type": search_type, "processed": True}
     
     @backoff.on_exception(
         backoff.expo,

@@ -1,15 +1,21 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useAppState } from '../context/AppStateContext';
+import StateBackupService from '../utils/StateBackupService';
+import { useAuth } from './AuthContext';
 
 interface StateLoaderProps {
   children: React.ReactNode;
 }
 
 const StateLoader: React.FC<StateLoaderProps> = ({ children }) => {
-  const { isStateLoading, isStateHydrated, isStateRecovered, isStateSyncing } = useAppState();
+  const { isStateLoading, isStateHydrated, isStateRecovered, isStateSyncing, dispatch } = useAppState();
+  const { user, isAuthenticated } = useAuth();
   const [showSyncNotice, setShowSyncNotice] = useState(false);
   const [showHydrationNotice, setShowHydrationNotice] = useState(false);
+  const [showRecoveryAttempt, setShowRecoveryAttempt] = useState(false);
   const isInitialMount = useRef(true);
+  const backupService = useRef<StateBackupService | null>(null);
+  const recoveryAttemptMade = useRef(false);
   
   // Handle sync notice display and auto-hide
   useEffect(() => {
@@ -21,6 +27,64 @@ const StateLoader: React.FC<StateLoaderProps> = ({ children }) => {
     }
   }, [isStateSyncing]);
   
+  // Initialize the state backup service
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      try {
+        // Initialize the backup service
+        const service = StateBackupService.getInstance();
+        backupService.current = service;
+        service.initialize().then(success => {
+          console.log(`State backup service initialized: ${success ? 'success' : 'fallback mode'}`);
+        });
+      } catch (error) {
+        console.error('Failed to initialize state backup service:', error);
+      }
+    }
+    
+    return () => {
+      // Clean up backup service on unmount
+      if (backupService.current) {
+        backupService.current.stopPeriodicBackup();
+      }
+    };
+  }, [isAuthenticated, user]);
+  
+  // Attempt recovery if needed
+  const attemptStateRecovery = useCallback(async () => {
+    if (!isStateHydrated && !isStateLoading && !recoveryAttemptMade.current) {
+      recoveryAttemptMade.current = true;
+      setShowRecoveryAttempt(true);
+      
+      try {
+        if (backupService.current) {
+          const recoveredState = await backupService.current.attemptRecovery();
+          if (recoveredState) {
+            console.log('Successfully recovered state from backup source');
+            dispatch({ type: 'HYDRATE_STATE', payload: recoveredState });
+            setShowHydrationNotice(true);
+            setTimeout(() => setShowHydrationNotice(false), 3000);
+          }
+        }
+      } catch (error) {
+        console.error('Error during state recovery attempt:', error);
+      } finally {
+        setShowRecoveryAttempt(false);
+      }
+    }
+  }, [dispatch, isStateHydrated, isStateLoading]);
+  
+  // Trigger recovery attempt if state is not hydrated
+  useEffect(() => {
+    if (isAuthenticated && !isStateHydrated && !isStateLoading) {
+      const timer = setTimeout(() => {
+        attemptStateRecovery();
+      }, 1000); // Wait 1 second before attempting recovery
+      
+      return () => clearTimeout(timer);
+    }
+  }, [isAuthenticated, isStateHydrated, isStateLoading, attemptStateRecovery]);
+
   // Handle hydration notice only for non-initial state hydrations
   useEffect(() => {
     // Skip the initial mount effect - this prevents showing notification on first load
@@ -37,13 +101,19 @@ const StateLoader: React.FC<StateLoaderProps> = ({ children }) => {
     }
   }, [isStateHydrated, isStateLoading]);
 
-  if (isStateLoading) {
+  if (isStateLoading || showRecoveryAttempt) {
     return (
       <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
         <div className="bg-gray-900 p-6 rounded-lg shadow-lg text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gold mx-auto mb-4"></div>
-          <h3 className="text-xl font-semibold text-gold mb-2">Loading Your Trading State</h3>
-          <p className="text-gray-400">Restoring your previous session...</p>
+          <h3 className="text-xl font-semibold text-gold mb-2">
+            {showRecoveryAttempt ? 'Recovering Your Data' : 'Loading Your Trading State'}
+          </h3>
+          <p className="text-gray-400">
+            {showRecoveryAttempt 
+              ? 'Attempting to recover your session data...' 
+              : 'Restoring your previous session...'}
+          </p>
         </div>
       </div>
     );

@@ -23,6 +23,41 @@ export interface DynamicStateSnapshot {
     tradingPositions?: any[];
     walletBalance?: number;
   };
+  
+  // Extended state properties
+  chatState?: {
+    currentSessionId?: string;
+    activeSessions?: string[];
+    sessions?: Record<string, any>;
+    draftMessages?: Record<string, string>;
+  };
+  
+  tradingState?: {
+    selectedToken?: any;
+    watchlist?: string[];
+    tradeHistory?: any[];
+    tradeForm?: any;
+    resolution?: string;
+    search?: string;
+    positions?: any[];
+  };
+  
+  walletState?: {
+    connectedWallets?: any[];
+    transactions?: any[];
+  };
+  
+  socialState?: {
+    posts?: any[];
+    following?: string[];
+    notifications?: any[];
+  };
+  
+  uiState?: {
+    darkMode?: boolean;
+    sidebarOpen?: boolean;
+    activeTabs?: Record<string, string>;
+  };
 }
 
 class StatePersistenceManager {

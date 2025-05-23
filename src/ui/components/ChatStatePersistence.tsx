@@ -109,18 +109,34 @@ export const useChatStatePersistence = (
   // Helper to load messages from cache - match the function in Chat.tsx
   const loadMessagesFromCache = (sid: string): ChatMessage[] => {
     if (!sid) return [];
+    
+    // Try multiple sources in order of preference
     try {
+      // 1. First check persistent global state
+      if (state.chatState?.sessions?.[sid]?.messages?.length > 0) {
+        console.log(`Restoring ${state.chatState.sessions[sid].messages.length} messages from global state for session ${sid}`);
+        return state.chatState.sessions[sid].messages.map(msg => ({
+          sender: msg.role === 'user' ? 'user' : 'grace',
+          text: msg.content || '',
+          timestamp: msg.timestamp || new Date().toISOString(),
+          user: msg.role === 'user' ? msg.content : undefined,
+          bot: msg.role === 'assistant' ? msg.content : undefined
+        }));
+      }
+      
+      // 2. Then check localStorage
       const savedMessages = localStorage.getItem(`messages_${sid}`);
       if (savedMessages) {
         const parsedMessages = JSON.parse(savedMessages);
         if (Array.isArray(parsedMessages) && parsedMessages.length > 0) {
-          console.log('Loaded cached messages for session:', sid);
+          console.log(`Restoring ${parsedMessages.length} messages from localStorage for session ${sid}`);
           return parsedMessages;
         }
       }
     } catch (e) {
-      console.error('Failed to load messages from cache:', e);
+      console.error('Error loading messages from cache:', e);
     }
+    
     return [];
   };
   
@@ -225,17 +241,56 @@ export const useChatStatePersistence = (
   const persistMessages = (sid: string, msgs: ChatMessage[]) => {
     if (!sid || !msgs) return;
     try {
+      console.log(`Persisting ${msgs.length} messages for session ${sid}`);
+      
       // Only store a limited number of messages to prevent localStorage overflows
-      const messagesToStore = msgs.slice(-50); // Store just the last 50 messages
+      const messagesToStore = msgs.slice(-100); // Store more messages (up to 100)
+      
+      // Store in localStorage as a backup
       localStorage.setItem(`messages_${sid}`, JSON.stringify(messagesToStore));
-      
-      // Store a timestamp with the messages to track freshness
       localStorage.setItem(`lastSynced_${sid}`, new Date().toISOString());
-      
-      // Always store the active session ID to ensure it's available when returning to the page
       localStorage.setItem('activeSessionId', sid);
+      
+      // Also store in global AppState for better persistence across refreshes
+      // Convert to the format expected by the AppState
+      const persistentMessages = messagesToStore.map(msg => ({
+        id: Math.random().toString(36).substring(2, 15),
+        content: msg.text || msg.user || msg.bot || '',
+        role: msg.sender === 'user' || msg.user ? 'user' : 'assistant',
+        timestamp: msg.timestamp || new Date().toISOString()
+      }));
+      
+      // Update chatContext for DynamicStateSnapshot compatibility
+      dispatch({
+        type: 'SET_CHAT_CONTEXT',
+        payload: {
+          currentConversationId: sid,
+          lastMessageTimestamp: new Date().getTime()
+        }
+      });
+      
+      // Update chat state in global AppState
+      dispatch({
+        type: 'SET_CHAT_STATE',
+        payload: {
+          currentSessionId: sid,
+          sessions: {
+            ...(state.chatState?.sessions || {}),
+            [sid]: {
+              id: sid,
+              session_id: sid,
+              messages: persistentMessages,
+              updated_at: new Date().toISOString(),
+              // Preserve existing metadata if available
+              ...(state.chatState?.sessions?.[sid] || {}),
+              // Update with latest message info
+              preview_message: messagesToStore[messagesToStore.length - 1]?.text || ''
+            }
+          }
+        }
+      });
     } catch (e) {
-      console.error('Failed to store messages in localStorage:', e);
+      console.error('Failed to store messages:', e);
     }
   };
   

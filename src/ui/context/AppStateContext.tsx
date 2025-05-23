@@ -296,13 +296,18 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
   
   // Save state to storage whenever it changes with debounce to prevent race conditions
   const debouncedSaveTimeout = useRef<number | null>(null);
+  const lastSavedTimestamp = useRef<number>(0);
   
   useEffect(() => {
     // Skip initial render to avoid overwriting with empty state
-    if (Object.keys(state.tradingState || {}).length > 0 || 
-        Object.keys(state.walletState || {}).length > 0 ||
-        Object.keys(state.chatContext || {}).length > 0) {
-      
+    // Only proceed if we have some meaningful state to save
+    const hasContent = 
+      Object.keys(state.tradingState || {}).length > 0 || 
+      Object.keys(state.walletState || {}).length > 0 ||
+      Object.keys(state.chatContext || {}).length > 0 ||
+      Object.keys(state.chatState?.sessions || {}).length > 0;
+    
+    if (hasContent) {
       // Clear any existing timeout to debounce frequent updates
       if (debouncedSaveTimeout.current !== null) {
         clearTimeout(debouncedSaveTimeout.current);
@@ -312,24 +317,40 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
       debouncedSaveTimeout.current = window.setTimeout(() => {
         // Only save if we're not currently processing an update from storage
         if (!isUpdatingFromStorage.current) {
-          // Ensure timestamp is updated
-          const stateToSave = {
-            ...state,
-            timestamp: Date.now()
-          };
-          
-          try {
-            // Convert to async/await pattern to properly handle Promise
-            (async () => {
-              try {
-                await StatePersistenceManager.captureSnapshot(stateToSave);
-                console.log('State saved to localStorage', new Date().toISOString());
-              } catch (error) {
-                console.error('Error saving state to localStorage:', error);
-              }
-            })();
-          } catch (error) {
-            console.error('Error in state persistence flow:', error);
+          // Don't save too frequently - at most once every 2 seconds
+          const now = Date.now();
+          if (now - lastSavedTimestamp.current > 2000) {
+            lastSavedTimestamp.current = now;
+            
+            // Ensure timestamp is updated
+            const stateToSave = {
+              ...state,
+              timestamp: now
+            };
+            
+            // Add metadata for debugging
+            if (state.chatContext?.currentConversationId) {
+              console.log(`Saving state with active conversation: ${state.chatContext.currentConversationId}`);
+            }
+            
+            try {
+              // Convert to async/await pattern to properly handle Promise
+              (async () => {
+                try {
+                  await StatePersistenceManager.captureSnapshot(stateToSave);
+                  console.log('State saved to localStorage', new Date().toISOString());
+                  
+                  // Also ensure the activeSessionId is set in localStorage if we have a current conversation
+                  if (state.chatContext?.currentConversationId) {
+                    localStorage.setItem('activeSessionId', state.chatContext.currentConversationId);
+                  }
+                } catch (error) {
+                  console.error('Error saving state to localStorage:', error);
+                }
+              })();
+            } catch (error) {
+              console.error('Error in state persistence flow:', error);
+            }
           }
         }
         debouncedSaveTimeout.current = null;
@@ -355,13 +376,41 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         setIsStateRecovered(true);
       }
       
-      // Apply stored state via dispatches
+      console.log('Hydrating state from storage:', storedState);
+      
+      // Apply stored state via dispatches in a specific order to ensure proper dependencies
       if (storedState.userSession) {
         dispatch({ type: 'SET_USER_SESSION', payload: storedState.userSession });
       }
       
+      // Enhanced chat context restoration
       if (storedState.chatContext) {
         dispatch({ type: 'SET_CHAT_CONTEXT', payload: storedState.chatContext });
+        
+        // Also restore the chat state if available
+        if (storedState.chatState) {
+          dispatch({ type: 'SET_CHAT_STATE', payload: storedState.chatState });
+        }
+      }
+      
+      // Also look for session-specific data in localStorage
+      const activeSessionId = localStorage.getItem('activeSessionId');
+      if (activeSessionId) {
+        // Try to load any active sessions from localStorage if they weren't in the state
+        try {
+          // Make sure the chat context includes the current session ID
+          if (!storedState.chatContext?.currentConversationId) {
+            dispatch({ 
+              type: 'SET_CHAT_CONTEXT', 
+              payload: { 
+                ...storedState.chatContext,
+                currentConversationId: activeSessionId 
+              } 
+            });
+          }
+        } catch (error) {
+          console.error('Error restoring active session:', error);
+        }
       }
       
       if (storedState.pageState) {
@@ -370,6 +419,23 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
       
       if (storedState.widgetStates) {
         dispatch({ type: 'SET_WIDGET_STATES', payload: storedState.widgetStates });
+      }
+      
+      // Restore additional state objects
+      if (storedState.tradingState) {
+        dispatch({ type: 'SET_TRADING_STATE', payload: storedState.tradingState });
+      }
+      
+      if (storedState.walletState) {
+        dispatch({ type: 'SET_WALLET_STATE', payload: storedState.walletState });
+      }
+      
+      if (storedState.socialState) {
+        dispatch({ type: 'SET_SOCIAL_STATE', payload: storedState.socialState });
+      }
+      
+      if (storedState.uiState) {
+        dispatch({ type: 'SET_UI_STATE', payload: storedState.uiState });
       }
       
       setIsStateHydrated(true);

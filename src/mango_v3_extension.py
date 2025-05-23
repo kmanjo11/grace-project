@@ -461,7 +461,8 @@ class MangoV3Extension:
     """
 
     def __init__(
-        self, client, memory_system=None, logger=None, transaction_confirmation=None
+        self, client=None, memory_system=None, logger=None, transaction_confirmation=None,
+        base_url=None, private_key_path=None
     ):
         """
         Initialize Mango V3 extension.
@@ -469,13 +470,30 @@ class MangoV3Extension:
         Args:
             client: Mango V3 client instance
             memory_system: Optional memory system for storing trade data
-            private_key_path: Path to private key file for authenticated requests
             logger: Optional logger
+            transaction_confirmation: Optional transaction confirmation handler
+            base_url: URL of the Mango V3 service (for direct initialization)
+            private_key_path: Path to private key file for authenticated requests
         """
         self.logger = logger or logging.getLogger(__name__)
-        self.client = client  # Use the provided client instance
         self.memory_system = memory_system
         self.transaction_confirmation = transaction_confirmation
+        
+        # Handle two initialization patterns:
+        # 1. Directly providing a client instance
+        # 2. Providing base_url and private_key_path to create a client instance
+        if client is not None:
+            self.client = client  # Use the provided client instance
+        elif base_url is not None:
+            # Create a new MangoV3Client instance
+            self.client = MangoV3Client(
+                base_url=base_url,
+                private_key_path=private_key_path,
+                logger=self.logger
+            )
+            self.logger.info(f"Created new MangoV3Client with base_url: {base_url}")
+        else:
+            raise ValueError("Either client or base_url must be provided")
 
     def get_market_data(self, market_name: Optional[str] = None) -> Dict[str, Any]:
         """

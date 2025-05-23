@@ -195,8 +195,17 @@ class MangoSpotMarket:
         self.conversation_aware = conversation_aware and GRACE_FRAMEWORK_AVAILABLE
 
         # Initialize components
+        # Ensure base_url is always defined, falling back to default if not in config
+        mango_url = self.config.get("mango_url")
+        if mango_url is None:
+            mango_url = "http://localhost:8000"
+        
+        self.logger = logging.getLogger("MangoSpotMarket")
+        self.logger.info(f"Initializing MangoV3Extension with base_url={mango_url}")
+        
+        # Create the MangoV3Extension with the guaranteed non-None base_url
         self.mango = MangoV3Extension(
-            base_url=self.config.get("mango_url", "http://localhost:8000"),
+            base_url=mango_url,
             private_key_path=self.config.get("private_key_path"),
             memory_system=self.memory_system,
         )

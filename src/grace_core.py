@@ -200,24 +200,95 @@ class GraceCore:
         )
         
     def _init_conversation_manager(self):
-        """Initialize the conversation management system."""
-        logger.info("Initializing Conversation Management System")
+        """Initialize the conversation management system with robust state persistence."""
+        logger.info("Initializing Conversation Management System with enhanced state persistence")
         conversation_dir = os.path.join(self.data_dir, "conversations")
         os.makedirs(conversation_dir, exist_ok=True)
-        # Create conversation manager asynchronously
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If we're already in an event loop, use run_until_complete
-            conversation_manager = loop.run_until_complete(
-                create_conversation_management_system(conversation_dir)
-            )
-        else:
-            # Otherwise, create a new event loop
-            conversation_manager = asyncio.run(
-                create_conversation_management_system(conversation_dir)
-            )
-
-        return conversation_manager
+        
+        # Create a state lock file to prevent race conditions
+        lock_file = os.path.join(conversation_dir, "state.lock")
+        
+        # Ensure we're not initializing during an existing operation
+        if os.path.exists(lock_file):
+            try:
+                # Check if lock is stale (more than 5 minutes old)
+                lock_time = os.path.getmtime(lock_file)
+                if time.time() - lock_time > 300:  # 5 minutes
+                    logger.warning("Found stale lock file, removing it")
+                    os.remove(lock_file)
+                else:
+                    logger.warning("Conversation system is currently being modified by another process")
+            except Exception as e:
+                logger.error(f"Error checking lock file: {e}")
+        
+        # Create the lock file to indicate we're initializing
+        try:
+            with open(lock_file, 'w') as f:
+                f.write(str(time.time()))
+        except Exception as e:
+            logger.error(f"Error creating lock file: {e}")
+        
+        try:
+            # Create conversation manager asynchronously with proper error handling
+            loop = asyncio.new_event_loop()  # Always create a new loop to avoid conflicts
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # Use a timeout to prevent hanging
+                conversation_manager = loop.run_until_complete(
+                    asyncio.wait_for(
+                        create_conversation_management_system(conversation_dir),
+                        timeout=30  # 30 second timeout for initialization
+                    )
+                )
+                logger.info("Conversation management system initialized successfully")
+            except asyncio.TimeoutError:
+                logger.error("Conversation manager initialization timed out")
+                raise RuntimeError("Conversation manager initialization timed out")
+            finally:
+                loop.close()
+                
+            # Validate the conversation manager was properly initialized
+            if not hasattr(conversation_manager, 'get_or_create_context'):
+                logger.error("Conversation manager was not properly initialized")
+                raise ValueError("Invalid conversation manager instance")
+                
+            # Verify storage is working by writing and reading a test value
+            test_ctx_id = str(uuid.uuid4())
+            test_context = conversation_manager.create_context("test_user", test_ctx_id)
+            
+            # Save the test context
+            if hasattr(conversation_manager, 'save_context') and callable(conversation_manager.save_context):
+                if asyncio.iscoroutinefunction(conversation_manager.save_context):
+                    # Handle async save_context
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(conversation_manager.save_context(test_context))
+                    finally:
+                        loop.close()
+                else:
+                    # Handle sync save_context
+                    conversation_manager.save_context(test_context)
+                    
+                logger.info("Verified conversation persistence is working correctly")
+            else:
+                logger.warning("Conversation manager doesn't have expected save_context method")
+                
+            return conversation_manager
+            
+        except Exception as e:
+            logger.error(f"Error initializing conversation manager: {str(e)}")
+            # Create a basic fallback conversation manager if initialization fails
+            from conversation_management import ConversationManager
+            return ConversationManager(conversation_dir)
+        finally:
+            # Always remove the lock file when done
+            try:
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+            except Exception as e:
+                logger.error(f"Error removing lock file: {e}")
 
     def _init_gmgn_service(self):
         """Initialize the GMGN service with Mango V3 as primary trading service."""
@@ -225,10 +296,18 @@ class GraceCore:
         
         # Initialize Mango spot market first
         from src.mango_spot_market import MangoSpotMarket
+        
+        # Ensure we have a valid mango_url, using a default if not present in config
+        mango_url = self.config.get("mango_v3_endpoint")
+        if not mango_url:
+            mango_url = "http://localhost:8000"  # Default fallback URL
+            logger.info(f"No Mango V3 endpoint configured, using default: {mango_url}")
+        
         mango_config = {
-            "mango_url": self.config.get("mango_v3_endpoint"),
+            "mango_url": mango_url,  # Guaranteed to have a value now
             "private_key_path": self.config.get("mango_private_key_path")
         }
+        
         mango_spot_market = MangoSpotMarket(
             config=mango_config,
             memory_system=self.memory_system
@@ -266,23 +345,37 @@ class GraceCore:
     def _init_transaction_confirmation(self):
         """Initialize the transaction confirmation system."""
         logger.info("Initializing Transaction Confirmation System")
-        # Assuming TransactionConfirmationSystem needs config, solana_wallet_manager, and gmgn_service
-        return TransactionConfirmationSystem(
-            config=self.config,
-            solana_wallet_manager=self.solana_wallet_manager,
-            gmgn_service=self.gmgn_service
-        )
-        
+        try:
+            return TransactionConfirmationSystem(
+                solana_manager=self.solana_wallet_manager,
+                config=self.config.get("transaction_confirmation", {})
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize Transaction Confirmation System: {str(e)}")
+            return None
+            
+    def _init_research_service(self):
+        """Initialize the Research Service."""
+        logger.info("Initializing Research Service")
+        try:
+            return ResearchService(
+                memory_system=self.memory_system,
+                config=self.config.get("research_service", {})
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize Research Service: {str(e)}")
+            return None
+
     def _init_leverage_trade_manager(self):
         """Initialize the Leverage Trade Manager."""
         logger.info("Initializing Leverage Trade Manager")
-        return LeverageTradeManager(
-            mango_v3_client=self.gmgn_service.mango_v3,
-            memory_system=self.memory_system,
-            max_leverage=float(self.config.get("max_leverage", 10.0)),
-            min_margin_ratio=float(self.config.get("min_margin_ratio", 0.05)),
-            logger=logger
-        )
+        try:
+            return LeverageTradeManager(
+                config=self.config.get("leverage_trading", {})
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize Leverage Trade Manager: {str(e)}")
+            return None
         
     def _init_social_media_service(self):
         """Initialize the Social Media Service."""
@@ -290,34 +383,60 @@ class GraceCore:
         try:
             return SocialMediaService(
                 memory_system=self.memory_system,
+                cache_duration=int(self.config.get("social_media_cache_duration", 3600)),
                 config=self.config.get("social_media", {})
             )
         except Exception as e:
-            logger.error(f"Failed to initialize Social Media Service: {e}")
+            logger.error(f"Failed to initialize Social Media Service: {str(e)}")
             return None
-        
-def _get_grace_system_message(self):
-    """Get the Grace system message from system_prompts.py."""
-    # Get a comprehensive system message that includes all prompt components
-    base_prompt = get_system_prompt("general")
-    trading_prompt = get_system_prompt("trading")
-    research_prompt = get_system_prompt("research")
-    
-    # Combine all prompts into a comprehensive system message
-    # We need to extract just the trading and research specific parts
-    trading_specific = trading_prompt.replace(base_prompt, "").strip()
-    research_specific = research_prompt.replace(base_prompt, "").strip()
-    
-    # Combine all components
-    system_message = f"{base_prompt}\n\n{trading_specific}\n\n{research_specific}"
-    
-    return system_message
             
-    logger.info("Setting up periodic memory pruning")
+    def _setup_memory_pruning(self):
+        """Set up periodic memory pruning."""
+        logger.info("Setting up periodic memory pruning")
         
-    # Define pruning interval (in seconds)
-    pruning_interval = self.config.get("memory_pruning_interval", 3600)  # Default: 1 hour
+        # Check if memory system is available
+        if not hasattr(self, 'memory_system') or not self.memory_system:
+            logger.warning("Memory system not available, skipping memory pruning setup")
+            return
+            
+        # Define pruning interval (in seconds)
+        pruning_interval = self.config.get("memory_pruning_interval", 3600)  # Default: 1 hour
         
+        def pruning_task():
+            """Task to periodically prune expired memories."""
+            while True:
+                try:
+                    logger.info("Running memory pruning task")
+                    self.memory_system.prune_expired_memories()
+                    logger.info("Memory pruning completed successfully")
+                except Exception as e:
+                    logger.error(f"Error during memory pruning: {str(e)}")
+                finally:
+                    # Sleep for the specified interval
+                    time.sleep(pruning_interval)
+        
+        # Start pruning thread
+        pruning_thread = threading.Thread(target=pruning_task, daemon=True)
+        pruning_thread.start()
+        logger.info(f"Memory pruning scheduled every {pruning_interval} seconds")
+
+    def _get_grace_system_message(self):
+        """Get the Grace system message from system_prompts.py."""
+        # Get a comprehensive system message that includes all prompt components
+        base_prompt = get_system_prompt("general")
+        trading_prompt = get_system_prompt("trading")
+        research_prompt = get_system_prompt("research")
+        
+        # Combine all prompts into a comprehensive system message
+        # We need to extract just the trading and research specific parts
+        trading_specific = trading_prompt.replace(base_prompt, "").strip()
+        research_specific = research_prompt.replace(base_prompt, "").strip()
+        
+        # Combine all components
+        system_message = f"{base_prompt}\n\n{trading_specific}\n\n{research_specific}"
+        
+        return system_message
+
     def pruning_task():
         """Task to periodically prune expired memories."""
         while True:
@@ -331,96 +450,95 @@ def _get_grace_system_message(self):
                 # Sleep for the specified interval
                 time.sleep(pruning_interval)
         
-    # Start pruning thread
-    pruning_thread = threading.Thread(target=pruning_task, daemon=True)
-    pruning_thread.start()
-    logger.info(f"Memory pruning scheduled every {pruning_interval} seconds")
+            # Start pruning thread
+            pruning_thread = threading.Thread(target=pruning_task, daemon=True)
+            pruning_thread.start()
+            logger.info(f"Memory pruning scheduled every {pruning_interval} seconds")
 
-def _init_agent_manager(self):
-    """Initialize the Agent Manager for the multi-agent framework."""
-    logger.info("Initializing Agent Manager")
-    # Create the agent manager with the necessary dependencies
-    from src.agent_framework import SystemAgentManager, AgentType, AgentPriority
+    def _init_agent_manager(self):
+        """Initialize the Agent Manager for the multi-agent framework."""
+        logger.info("Initializing Agent Manager")
+        # Create the agent manager with the necessary dependencies
+        from src.agent_framework import SystemAgentManager, AgentType, AgentPriority
+            
+        agent_manager = SystemAgentManager(
+            memory_system=self.memory_system,
+            api_services_manager=self.gmgn_service,  # Use the existing GMGN service
+            wallet_connection_system=self.solana_wallet_manager
+        )
+            
+        # Import the conversation manager for process_message tasks
+        from conversation_management import ConversationManager
+        conversation_storage_dir = os.path.join(self.data_dir, "conversations")
+        os.makedirs(conversation_storage_dir, exist_ok=True)
+        conversation_manager = ConversationManager(storage_dir=conversation_storage_dir)
+            
+        # Register specialized agents for specific task types
+        # Core message processing
+        agent_manager.register_agent_for_task_type("process_message", conversation_manager, AgentPriority.HIGH)
+            
+        # Memory operations
+        agent_manager.register_agent_for_task_type("query_memory", self.memory_system, AgentPriority.MEDIUM)
+        agent_manager.register_agent_for_task_type("add_memory", self.memory_system, AgentPriority.MEDIUM)
+        agent_manager.register_agent_for_task_type("remember", self.memory_system, AgentPriority.MEDIUM)
+            
+        # Trading operations
+        agent_manager.register_agent_for_task_type("execute_trade", self.gmgn_service, AgentPriority.HIGH)
+        agent_manager.register_agent_for_task_type("get_token_price", self.gmgn_service, AgentPriority.MEDIUM)
+        agent_manager.register_agent_for_task_type("price_check", self.gmgn_service, AgentPriority.MEDIUM)
+        agent_manager.register_agent_for_task_type("check_wallet_balance", self.gmgn_service, AgentPriority.MEDIUM)
+        agent_manager.register_agent_for_task_type("trade_preparation", self.gmgn_service, AgentPriority.HIGH)
+        agent_manager.register_agent_for_task_type("execute_swap", self.gmgn_service, AgentPriority.HIGH)
+        agent_manager.register_agent_for_task_type("monitor_smart_trading", self.gmgn_service, AgentPriority.LOW)
         
-    agent_manager = SystemAgentManager(
-        memory_system=self.memory_system,
-        api_services_manager=self.gmgn_service,  # Use the existing GMGN service
-        wallet_connection_system=self.solana_wallet_manager
-    )
+        # Create and register LeverageTradeAgent
+        from src.leverage_trade_agent import LeverageTradeAgent
+        leverage_trade_agent = LeverageTradeAgent(
+            agent_id="leverage_trade_agent",
+            leverage_trade_manager=self.leverage_trade_manager,
+            config=self.config
+        )
         
-    # Import the conversation manager for process_message tasks
-    from conversation_management import ConversationManager
-    conversation_storage_dir = os.path.join(self.data_dir, "conversations")
-    os.makedirs(conversation_storage_dir, exist_ok=True)
-    conversation_manager = ConversationManager(storage_dir=conversation_storage_dir)
-        
-    # Register specialized agents for specific task types
-    # Core message processing
-    agent_manager.register_agent_for_task_type("process_message", conversation_manager, AgentPriority.HIGH)
-        
-    # Memory operations
-    agent_manager.register_agent_for_task_type("query_memory", self.memory_system, AgentPriority.MEDIUM)
-    agent_manager.register_agent_for_task_type("add_memory", self.memory_system, AgentPriority.MEDIUM)
-    agent_manager.register_agent_for_task_type("remember", self.memory_system, AgentPriority.MEDIUM)
-        
-    # Trading operations
-    agent_manager.register_agent_for_task_type("execute_trade", self.gmgn_service, AgentPriority.HIGH)
-    agent_manager.register_agent_for_task_type("get_token_price", self.gmgn_service, AgentPriority.MEDIUM)
-    agent_manager.register_agent_for_task_type("price_check", self.gmgn_service, AgentPriority.MEDIUM)
-    agent_manager.register_agent_for_task_type("check_wallet_balance", self.gmgn_service, AgentPriority.MEDIUM)
-    agent_manager.register_agent_for_task_type("trade_preparation", self.gmgn_service, AgentPriority.HIGH)
-    agent_manager.register_agent_for_task_type("execute_swap", self.gmgn_service, AgentPriority.HIGH)
-    agent_manager.register_agent_for_task_type("monitor_smart_trading", self.gmgn_service, AgentPriority.LOW)
-    
-    # Create and register LeverageTradeAgent
-    from src.leverage_trade_agent import LeverageTradeAgent
-    leverage_trade_agent = LeverageTradeAgent(
-        agent_id="leverage_trade_agent",
-        leverage_trade_manager=self.leverage_trade_manager,
-        config=self.config
-    )
-    
-    # Register LeverageTradeAgent for leverage trading operations
-    agent_manager.register_agent(leverage_trade_agent)
-    agent_manager.register_agent_for_task_type("execute_leverage_trade", leverage_trade_agent, AgentPriority.HIGH)
-    agent_manager.register_agent_for_task_type("get_leverage_positions", leverage_trade_agent, AgentPriority.MEDIUM)
-    agent_manager.register_agent_for_task_type("update_leverage_trade", leverage_trade_agent, AgentPriority.HIGH)
-        
-    # Schedule smart trading monitoring task to run every 5 minutes
-    agent_manager.schedule_task(
-        task_type="monitor_smart_trading",
-        content={},  # No specific parameters needed
-        interval_seconds=300,  # 5 minutes
-        priority=AgentPriority.LOW
-    )
-    logger.info("Scheduled smart trading monitoring task to run every 5 minutes")
-        
-    # Community tracking operations
-    agent_manager.register_agent_for_task_type("get_community_pulse", self.research_service, AgentPriority.MEDIUM)
-        
-    # Start all agents
-    agent_manager.start_all_agents()
-        
-    # Log registered task types for debugging
-    logger.info(f"Registered task types: {list(agent_manager.task_type_to_agent.keys())}")
-        
-    return agent_manager
-        
-def _register_interpreter_functions(self, interpreter_instance):
-    """Register helper functions with Open Interpreter to allow direct calls to the agent framework."""
-    logger.info("Registering helper functions with Open Interpreter")
-        
-    try:
-        # Check if the interpreter supports function registration
-        if not hasattr(interpreter_instance, 'function') and not hasattr(interpreter_instance, 'register_function'):
-            logger.warning("Open Interpreter does not support function registration")
-            logger.warning("Memory system not available, skipping memory pruning setup")
-            return
-        # Additional function registration logic would go here
-    except Exception as e:
-        logger.error(f"Error registering interpreter functions: {str(e)}")
-        
-def _get_grace_system_message(self):
+        # Register LeverageTradeAgent for leverage trading operations
+        agent_manager.register_agent(leverage_trade_agent)
+        agent_manager.register_agent_for_task_type("execute_leverage_trade", leverage_trade_agent, AgentPriority.HIGH)
+        agent_manager.register_agent_for_task_type("get_leverage_positions", leverage_trade_agent, AgentPriority.MEDIUM)
+        agent_manager.register_agent_for_task_type("update_leverage_trade", leverage_trade_agent, AgentPriority.HIGH)
+            
+        # Schedule smart trading monitoring task to run every 5 minutes
+        agent_manager.schedule_task(
+            task_type="monitor_smart_trading",
+            content={},  # No specific parameters needed
+            interval_seconds=300,  # 5 minutes
+            priority=AgentPriority.LOW
+        )
+        logger.info("Scheduled smart trading monitoring task to run every 5 minutes")
+            
+        # Community tracking operations
+        agent_manager.register_agent_for_task_type("get_community_pulse", self.research_service, AgentPriority.MEDIUM)
+            
+        # Start all agents
+        agent_manager.start_all_agents()
+            
+        # Log registered task types for debugging
+        logger.info(f"Registered task types: {list(agent_manager.task_type_to_agent.keys())}")
+            
+        return agent_manager
+            
+    def _register_interpreter_functions(self, interpreter_instance):
+        """Register helper functions with Open Interpreter to allow direct calls to the agent framework."""
+        logger.info("Registering helper functions with Open Interpreter")
+            
+        try:
+            # Check if the interpreter supports function registration
+            if not hasattr(interpreter_instance, 'function') and not hasattr(interpreter_instance, 'register_function'):
+                logger.warning("Open Interpreter does not support function registration")
+                logger.warning("Memory system not available, skipping memory pruning setup")
+                return
+        except Exception as e:
+            logger.error(f"Error checking interpreter capabilities: {str(e)}")
+            
+    def _get_grace_system_message(self):
         """Get the Grace system message from system_prompts.py."""
         # Get a comprehensive system message that includes all prompt components
         base_prompt = get_system_prompt("general")

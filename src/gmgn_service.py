@@ -464,7 +464,7 @@ class GMGNService:
             if not is_contract:
                 # This would require a token lookup service
                 # For now, we'll assume it's a contract address
-                logger.warning(
+                self.logger.warning(
                     f"Token symbol lookup not implemented, assuming {token} is a contract address"
                 )
                 contract_address = token
@@ -512,14 +512,14 @@ class GMGNService:
 
                 return result
             else:
-                logger.error(f"API error: {response.status_code} - {response.text}")
+                self.logger.error(f"API error: {response.status_code} - {response.text}")
                 return {
                     "status": "error",
                     "message": f"API error: {response.status_code}",
                     "details": response.text,
                 }
         except Exception as e:
-            logger.error(f"Error getting token price: {str(e)}")
+            self.logger.error(f"Error getting token price: {str(e)}")
             return {
                 "status": "error",
                 "message": f"Error getting token price: {str(e)}",
@@ -640,7 +640,7 @@ class GMGNService:
                 "confirmation_id": f"trade_{action}_{token}_{amount}_{int(time.time())}",
             }
         except Exception as e:
-            logger.error(f"Error preparing trade: {str(e)}")
+            self.logger.error(f"Error preparing trade: {str(e)}")
             return {"status": "error", "message": f"Error preparing trade: {str(e)}"}
 
     def execute_swap(
@@ -1705,11 +1705,8 @@ class GMGNService:
 
                         # Get current price
                         price_data = self.get_token_price(token, "sol", "1d", uid)
-                        if (
-                            price_data.get("status") != "success"
-                            or "current_price" not in price_data
-                        ):
-                            logger.warning(
+                        if not price_data or price_data.get("status") != "success":
+                            self.logger.warning(
                                 f"Failed to get price for {token} for user {uid}"
                             )
                             continue
@@ -1893,13 +1890,13 @@ class GMGNService:
                                                     )
                 except Exception as user_err:
                     error_msg = f"Error processing user {uid}: {str(user_err)}"
-                    logger.error(error_msg)
+                    self.logger.error(error_msg)
                     results["errors"].append(error_msg)
 
             return results
         except Exception as e:
             error_msg = f"Error in smart trading monitoring: {str(e)}"
-            logger.error(error_msg, exc_info=True)
+            self.logger.error(error_msg, exc_info=True)
             results["status"] = "error"
             results["message"] = error_msg
             return results
@@ -1931,7 +1928,7 @@ class GMGNService:
                 "execution_time": datetime.now().isoformat(),
             }
         except Exception as e:
-            logger.error(f"Error confirming trade: {str(e)}")
+            self.logger.error(f"Error confirming trade: {str(e)}")
             return {"status": "error", "message": f"Error confirming trade: {str(e)}"}
 
 

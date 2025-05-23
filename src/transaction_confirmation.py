@@ -150,7 +150,6 @@ class TransactionConfirmationSystem:
             original_details.get(field) == new_details.get(field) 
             for field in critical_fields
         )
-    ):
         """
         Initialize the Transaction Confirmation System.
         

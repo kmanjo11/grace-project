@@ -531,14 +531,33 @@ const Trading: React.FC = () => {
 
       try {
         console.log('Fetching tokens from Mango V3 API...');
-        const response = await MangoV3Service.searchMarkets(searchQuery);
-        console.log('Received tokens from API:', response);
+        // Use empty string to get all markets when search is 3+ characters
+        // This ensures we search through all available tokens
+        const response = await MangoV3Service.searchMarkets(
+          searchQuery.length >= 3 ? searchQuery : ''
+        );
+        console.log(`Received ${response.length} tokens from API`);
         
-        const tokens = response
+        // Process all tokens
+        const allTokens = response
           .map(processMangoToken)
           .filter((token): token is TokenData => token !== null);
         
-        console.log('Processed tokens:', tokens);
+        // If search query is present, filter on client side for more flexible matching
+        const tokens = searchQuery.length >= 3 
+          ? allTokens.filter(token => {
+              const query = searchQuery.toLowerCase();
+              return (
+                token.symbol.toLowerCase().includes(query) ||
+                token.name.toLowerCase().includes(query) ||
+                token.baseCurrency?.toLowerCase().includes(query) ||
+                token.quoteCurrency?.toLowerCase().includes(query) ||
+                token.address?.toLowerCase().includes(query)
+              );
+            })
+          : allTokens;
+        
+        console.log(`Displaying ${tokens.length} tokens after filtering`);
         actions.setTokens(tokens);
         actions.setError(null);
       } catch (error) {
@@ -562,10 +581,63 @@ const Trading: React.FC = () => {
     const value = e.target.value;
     actions.setSearch(value);
     
-    if (value === '' || value.length >= 2) {
+    // Only fetch tokens if search is empty (to clear) or has at least 3 characters
+    if (value === '' || value.length >= 3) {
       fetchTokens(value);
     }
   }, [fetchTokens, actions]);
+
+  // Fetch wallet balances
+  const [walletBalances, setWalletBalances] = useState<{
+    balances: { [key: string]: number };
+    loading: boolean;
+    error: string | null;
+  }>({
+    balances: {},
+    loading: false,
+    error: null
+  });
+
+  // Fetch wallet balances
+  const fetchWalletBalances = useCallback(async () => {
+    if (!user) return;
+    
+    try {
+      setWalletBalances(prev => ({ ...prev, loading: true, error: null }));
+      
+      const response = await api.get(API_ENDPOINTS.WALLET.BALANCE);
+      
+      if (response.success && response.data) {
+        const balanceData = response.data;
+        const formattedBalances: { [key: string]: number } = {};
+        
+        // Format balances to a usable format
+        if (Array.isArray(balanceData.tokens)) {
+          balanceData.tokens.forEach((token: any) => {
+            if (token.symbol && typeof token.amount === 'number') {
+              formattedBalances[token.symbol.toUpperCase()] = token.amount;
+            }
+          });
+        }
+        
+        console.log('Wallet balances loaded:', formattedBalances);
+        setWalletBalances({
+          balances: formattedBalances,
+          loading: false,
+          error: null
+        });
+      } else {
+        throw new Error(response.error || 'Failed to load wallet balances');
+      }
+    } catch (error) {
+      console.error('Error fetching wallet balances:', error);
+      setWalletBalances(prev => ({
+        ...prev,
+        loading: false,
+        error: error instanceof Error ? error.message : 'Failed to load wallet balances'
+      }));
+    }
+  }, [user]);
 
   // Initial data fetch
   useEffect(() => {
@@ -605,6 +677,12 @@ const Trading: React.FC = () => {
               <div>
                 <div className="font-medium">{token.symbol}</div>
                 <div className="text-sm text-gray-400">{token.name}</div>
+                {/* Show trading pair information clearly */}
+                {token.baseCurrency && token.quoteCurrency && (
+                  <div className="text-xs text-blue-400 mt-1">
+                    {token.baseCurrency}/{token.quoteCurrency}
+                  </div>
+                )}
               </div>
               <div className="text-right">
                 <div>${token.price?.toFixed(6) || 'N/A'}</div>
@@ -633,6 +711,55 @@ const Trading: React.FC = () => {
     </div>
   );
 
+  // Check if user has enough balance for the trade
+  const checkWalletBalance = useCallback((token: string, amount: string): boolean => {
+    if (!amount || isNaN(parseFloat(amount))) return true; // Don't show error if amount is empty
+    
+    // Find the token in wallet balances
+    const tokenSymbol = token.toUpperCase();
+    const balance = walletBalances.balances[tokenSymbol] || 0;
+    
+    return parseFloat(amount) <= balance;
+  }, [walletBalances.balances]);
+  
+  // Render wallet balances section
+  const renderWalletBalances = () => {
+    const relevantBalances = Object.entries(walletBalances.balances)
+      .filter(([symbol]) => {
+        // Show all balances, but prioritize the selected token if available
+        if (state.selectedToken && state.selectedToken.symbol === symbol) return true;
+        // Only show non-zero balances or top 3 tokens
+        return true;
+      })
+      .sort((a, b) => b[1] - a[1]) // Sort by balance value, highest first
+      .slice(0, 5); // Show top 5 balances
+    
+    return (
+      <div className="mb-4 p-3 bg-gray-800 rounded-lg">
+        <h3 className="text-sm font-medium text-gray-400 mb-2">Wallet Balances</h3>
+        
+        {walletBalances.loading ? (
+          <div className="text-center py-1">
+            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500 mx-auto"></div>
+          </div>
+        ) : walletBalances.error ? (
+          <div className="text-xs text-red-400">{walletBalances.error}</div>
+        ) : relevantBalances.length > 0 ? (
+          <div className="space-y-1">
+            {relevantBalances.map(([symbol, amount]) => (
+              <div key={symbol} className="flex justify-between items-center">
+                <span className="text-sm font-medium">{symbol}</span>
+                <span className="text-sm text-gray-300">{amount.toFixed(6)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-gray-500">No balances available</div>
+        )}
+      </div>
+    );
+  };
+
   // Render trading form
   const renderTradingForm = () => (
     <div className="bg-gray-900 rounded-lg p-4">
@@ -653,15 +780,23 @@ const Trading: React.FC = () => {
           </div>
           
           <div className="space-y-4">
+            {/* Show wallet balances above the trading form */}
+            {renderWalletBalances()}
+            
             <div>
               <label className="block text-sm text-gray-400 mb-1">Amount</label>
               <input
                 type="number"
-                className="w-full p-2 bg-gray-800 text-white rounded"
+                className={`w-full p-2 ${state.selectedToken && !checkWalletBalance(state.selectedToken.symbol, state.tradeForm.amount) ? 'bg-red-900/30 border border-red-500' : 'bg-gray-800'} text-white rounded`}
                 value={state.tradeForm.amount}
                 onChange={(e) => actions.updateTradeForm({ amount: e.target.value })}
                 placeholder="0.0"
               />
+              {state.selectedToken && !checkWalletBalance(state.selectedToken.symbol, state.tradeForm.amount) && (
+                <div className="text-xs text-red-400 mt-1">
+                  Insufficient balance for {state.selectedToken.symbol}
+                </div>
+              )}
             </div>
             
             <div className="flex items-center justify-between">

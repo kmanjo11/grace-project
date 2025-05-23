@@ -627,37 +627,50 @@ class BackgroundTaskManager:
 
 
 class ConversationManager:
-    """
-    Manages conversations, including context, topics, and background tasks.
-    """
+    """Manages conversations and their contexts with enhanced state persistence."""
     
-    def __init__(
-        self,
-        storage_dir: str = "./conversation_data",
-        max_contexts_per_user: int = 10
-    ):
+    def __init__(self, storage_dir: str = "./conversation_data", max_contexts_per_user: int = 10):
         """
-        Initialize the conversation manager.
+        Initialize the conversation manager with improved state handling.
         
         Args:
             storage_dir: Directory to store conversation data
-            max_contexts_per_user: Maximum number of contexts to keep per user
+            max_contexts_per_user: Maximum number of active contexts per user
         """
         self.storage_dir = storage_dir
         self.max_contexts_per_user = max_contexts_per_user
-        os.makedirs(storage_dir, exist_ok=True)
-        
-        self.active_contexts = {}
         self.topic_detector = TopicDetector()
         self.entity_extractor = EntityExtractor()
         self.background_task_manager = BackgroundTaskManager()
+        self.active_contexts = {}  # user_id -> {context_id -> context}
+        self.context_locks = {}  # context_id -> lock
+        self.pending_operations = {}  # Track operations in progress
+        self._shutdown_requested = False
+        self._state_ready = False  # Flag to track if state is ready
+        
+        # Create storage directory if it doesn't exist
+        os.makedirs(storage_dir, exist_ok=True)
+        os.makedirs(os.path.join(storage_dir, "contexts"), exist_ok=True)
+        os.makedirs(os.path.join(storage_dir, "sessions"), exist_ok=True)
+        
+        # Create a directory for state snapshots and recovery
+        os.makedirs(os.path.join(storage_dir, "snapshots"), exist_ok=True)
         
         self.logger = logging.getLogger("GraceConversationManager")
+        
+        # Start background task for periodic state saving
+        self._start_periodic_state_persistence()
+        
+        # Load any existing contexts
+        self._load_existing_contexts()
+        
+        # Mark state as ready
+        self._state_ready = True
         self._lock = asyncio.Lock()
     
     async def create_context(self, user_id: str, session_id: str) -> ConversationContext:
         """
-        Create a new conversation context.
+        Create a new conversation context with state consistency checks.
         
         Args:
             user_id: User ID
@@ -666,19 +679,99 @@ class ConversationManager:
         Returns:
             ConversationContext: Created context
         """
-        context = ConversationContext(user_id, session_id)
+        # Wait for state to be ready before creating new contexts
+        if not self._state_ready:
+            self.logger.warning("Creating context before state is fully ready")
         
-        async with self._lock:
-            # Store in active contexts
-            if user_id not in self.active_contexts:
-                self.active_contexts[user_id] = {}
-            
-            self.active_contexts[user_id][context.context_id] = context
-            
-            # Prune old contexts if needed
-            await self._prune_old_contexts(user_id)
+        # Create the context
+        context = ConversationContext(user_id, session_id)
+        context_id = context.context_id
+        
+        # Initialize a lock for this context
+        self.context_locks[context_id] = asyncio.Lock()
+        
+        # Store in active contexts with proper initialization
+        if user_id not in self.active_contexts:
+            self.active_contexts[user_id] = {}
+        self.active_contexts[user_id][context_id] = context
+        
+        # Schedule an async save
+        asyncio.create_task(self._async_save_new_context(context))
         
         return context
+    
+    async def load_context(self, context_id: str) -> Optional[ConversationContext]:
+        """
+        Load a conversation context from disk with improved error handling and recovery.
+        
+        Args:
+            context_id: Context ID to load
+            
+        Returns:
+            ConversationContext: Loaded context or None if not found
+        """
+        if not self._state_ready:
+            self.logger.warning("Attempted to load context before state is ready")
+            await self._wait_for_state_ready()
+        
+        # Set operation as pending
+        operation_id = str(uuid.uuid4())
+        self.pending_operations[operation_id] = {
+            "type": "load",
+            "context_id": context_id,
+            "start_time": time.time()
+        }
+        
+        try:
+            # Define the context paths - primary and recovery locations
+            context_path = os.path.join(self.storage_dir, "contexts", f"{context_id}.json")
+            snapshot_path = os.path.join(self.storage_dir, "snapshots", f"{context_id}.json")
+            
+            # Try the primary path first
+            if os.path.exists(context_path):
+                try:
+                    with open(context_path, 'r') as f:
+                        context_data = json.load(f)
+                        context = ConversationContext.from_dict(context_data)
+                        
+                        # Add to active contexts if not already there
+                        if context.user_id not in self.active_contexts:
+                            self.active_contexts[context.user_id] = {}
+                        self.active_contexts[context.user_id][context_id] = context
+                        
+                        self.logger.debug(f"Loaded context {context_id} from primary storage")
+                        return context
+                except json.JSONDecodeError:
+                    self.logger.warning(f"JSON decode error for {context_id}, trying recovery snapshot")
+                except Exception as e:
+                    self.logger.error(f"Error loading context {context_id} from primary: {str(e)}")
+            
+            # If primary failed or doesn't exist, try the snapshot
+            if os.path.exists(snapshot_path):
+                try:
+                    with open(snapshot_path, 'r') as f:
+                        snapshot_data = json.load(f)
+                        context = ConversationContext.from_dict(snapshot_data)
+                        
+                        # Add to active contexts
+                        if context.user_id not in self.active_contexts:
+                            self.active_contexts[context.user_id] = {}
+                        self.active_contexts[context.user_id][context_id] = context
+                        
+                        # Save to primary path (repair)
+                        await self.save_context(context)
+                        
+                        self.logger.info(f"Recovered context {context_id} from snapshot")
+                        return context
+                except Exception as e:
+                    self.logger.error(f"Error loading context {context_id} from snapshot: {str(e)}")
+            
+            self.logger.warning(f"Context {context_id} not found in any storage location")
+            return None
+        finally:
+            # Remove the pending operation
+            if operation_id in self.pending_operations:
+                del self.pending_operations[operation_id]
     
     async def get_context(self, context_id: str, user_id: str) -> Optional[ConversationContext]:
         """
@@ -739,20 +832,88 @@ class ConversationManager:
     
     async def save_context(self, context: ConversationContext):
         """
-        Save a conversation context.
+        Save conversation context to disk with improved error handling and atomic writes.
         
         Args:
-            context: Context to save
+            context: Conversation context to save
         """
+        if not self._state_ready:
+            self.logger.warning("Attempted to save context before state is ready")
+            return
+            
+        # Generate paths for context and session files
+        context_path = os.path.join(self.storage_dir, "contexts", f"{context.context_id}.json")
+        session_path = os.path.join(self.storage_dir, "sessions", f"{context.session_id}.json")
+        
+        # Create temporary files for atomic writes
+        temp_context_path = f"{context_path}.tmp"
+        temp_session_path = f"{session_path}.tmp"
+        
+        # Acquire a lock for this context if needed
+        context_lock = self.context_locks.setdefault(context.context_id, asyncio.Lock())
+        
+        # Set operation as pending to prevent race conditions
+        operation_id = str(uuid.uuid4())
+        self.pending_operations[operation_id] = {
+            "type": "save",
+            "context_id": context.context_id,
+            "session_id": context.session_id,
+            "start_time": time.time()
+        }
+        
         try:
-            context_file = os.path.join(self.storage_dir, f"{context.user_id}_{context.context_id}.json")
-            
-            with open(context_file, "w") as f:
-                json.dump(context.to_dict(), f, indent=2)
-            
-            self.logger.info(f"Saved context {context.context_id}")
+            async with context_lock:
+                # Update last_updated time
+                context.last_updated = time.time()
+                
+                # Prepare context data
+                context_data = context.to_dict()
+                
+                # Create session metadata
+                session_data = {
+                    "user_id": context.user_id,
+                    "session_id": context.session_id,
+                    "context_id": context.context_id,
+                    "created_at": context.created_at,
+                    "last_updated": context.last_updated,
+                    "state": context.state,
+                    "active_topics": [topic["name"] for topic in context.active_topics[:3]],
+                    "message_count": len(context.history)
+                }
+                
+                # Write to temporary files first (atomic write pattern)
+                try:
+                    with open(temp_context_path, 'w') as f:
+                        json.dump(context_data, f, indent=2)
+                        
+                    with open(temp_session_path, 'w') as f:
+                        json.dump(session_data, f, indent=2)
+                    
+                    # Now rename the temp files to the actual files (atomic operation)
+                    os.replace(temp_context_path, context_path)
+                    os.replace(temp_session_path, session_path)
+                    
+                    # Also save a snapshot for recovery purposes
+                    await self._save_state_snapshot(context)
+                    
+                    self.logger.debug(f"Saved context {context.context_id} for session {context.session_id}")
+                except Exception as e:
+                    self.logger.error(f"Error during context save: {str(e)}")
+                    # Clean up temporary files if they exist
+                    for temp_file in [temp_context_path, temp_session_path]:
+                        if os.path.exists(temp_file):
+                            try:
+                                os.remove(temp_file)
+                            except:
+                                pass
+                    raise
         except Exception as e:
-            self.logger.error(f"Error saving context {context.context_id}: {str(e)}")
+            self.logger.error(f"Error saving context: {str(e)}")
+            raise
+        finally:
+            # Remove the pending operation
+            if operation_id in self.pending_operations:
+                del self.pending_operations[operation_id]
     
     async def process_message(
         self,
@@ -1137,4 +1298,121 @@ async def create_conversation_management_system(storage_dir: str = "./conversati
     """
     conversation_manager = ConversationManager(storage_dir)
     
+    # Allow time for initialization to complete
+    await asyncio.sleep(0.5)
+    
+    # Verify state is ready
+    if hasattr(conversation_manager, '_wait_for_state_ready'):
+        await conversation_manager._wait_for_state_ready()
+    
     return conversation_manager
+
+
+# Helper methods for ConversationManager class
+
+async def _async_save_new_context(self, context: ConversationContext):
+    """Helper method to asynchronously save a new context."""
+    try:
+        await self.save_context(context)
+    except Exception as e:
+        self.logger.error(f"Error in async save of new context: {str(e)}")
+
+def _start_periodic_state_persistence(self):
+    """Start a background task for periodic state persistence."""
+    async def periodic_save():
+        try:
+            while not self._shutdown_requested:
+                # Wait for some time
+                await asyncio.sleep(60)  # Save state every minute
+                
+                # Save all active contexts
+                for user_id, contexts in list(self.active_contexts.items()):
+                    for context_id, context in list(contexts.items()):
+                        try:
+                            await self.save_context(context)
+                        except Exception as e:
+                            self.logger.error(f"Error in periodic save for context {context_id}: {str(e)}")
+        except asyncio.CancelledError:
+            self.logger.info("Periodic state persistence task cancelled")
+        except Exception as e:
+            self.logger.error(f"Error in periodic state persistence: {str(e)}")
+    
+    # Start the background task
+    asyncio.create_task(periodic_save())
+    self.logger.info("Started periodic state persistence task")
+
+async def _save_state_snapshot(self, context: ConversationContext):
+    """Save a state snapshot for recovery purposes."""
+    snapshot_path = os.path.join(self.storage_dir, "snapshots", f"{context.context_id}.json")
+    
+    try:
+        # Create a snapshot file
+        with open(snapshot_path, 'w') as f:
+            json.dump(context.to_dict(), f, indent=2)
+    except Exception as e:
+        self.logger.error(f"Error saving state snapshot for {context.context_id}: {str(e)}")
+
+def _load_existing_contexts(self):
+    """Load existing contexts from storage during initialization."""
+    self.logger.info("Loading existing contexts from storage")
+    
+    try:
+        # Get all session files
+        sessions_dir = os.path.join(self.storage_dir, "sessions")
+        if not os.path.exists(sessions_dir):
+            self.logger.warning("Sessions directory does not exist")
+            return
+            
+        session_files = [f for f in os.listdir(sessions_dir) if f.endswith(".json")]
+        
+        # Load each session's context
+        for session_file in session_files:
+            try:
+                with open(os.path.join(sessions_dir, session_file), 'r') as f:
+                    session_data = json.load(f)
+                    
+                # Extract context_id and check if it's an active session
+                if session_data.get("state") == "active" and "context_id" in session_data:
+                    context_id = session_data["context_id"]
+                    user_id = session_data.get("user_id")
+                    
+                    if user_id:
+                        # Queue this context for async loading
+                        asyncio.create_task(self._async_load_context(context_id, user_id))
+            except Exception as e:
+                self.logger.error(f"Error loading session file {session_file}: {str(e)}")
+                
+        self.logger.info(f"Queued loading of existing contexts from {len(session_files)} session files")
+    except Exception as e:
+        self.logger.error(f"Error loading existing contexts: {str(e)}")
+
+async def _async_load_context(self, context_id: str, user_id: str):
+    """Asynchronously load a context and add it to active contexts."""
+    try:
+        context = await self.load_context(context_id)
+        if context:
+            # Add to active contexts if not already there
+            if user_id not in self.active_contexts:
+                self.active_contexts[user_id] = {}
+            self.active_contexts[user_id][context_id] = context
+    except Exception as e:
+        self.logger.error(f"Error in async load of context {context_id}: {str(e)}")
+
+async def _wait_for_state_ready(self, timeout: float = 30.0):
+    """Wait for the state to be ready with timeout."""
+    start_time = time.time()
+    while not self._state_ready and time.time() - start_time < timeout:
+        await asyncio.sleep(0.1)
+    
+    if not self._state_ready:
+        self.logger.warning(f"Timed out waiting for state to be ready after {timeout} seconds")
+    
+    return self._state_ready
+
+# Add the helper methods to the ConversationManager class
+ConversationManager._async_save_new_context = _async_save_new_context
+ConversationManager._start_periodic_state_persistence = _start_periodic_state_persistence
+ConversationManager._save_state_snapshot = _save_state_snapshot
+ConversationManager._load_existing_contexts = _load_existing_contexts
+ConversationManager._async_load_context = _async_load_context
+ConversationManager._wait_for_state_ready = _wait_for_state_ready
