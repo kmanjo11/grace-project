@@ -284,6 +284,18 @@ class GraceCore:
             logger=logger
         )
         
+    def _init_social_media_service(self):
+        """Initialize the Social Media Service."""
+        logger.info("Initializing Social Media Service")
+        try:
+            return SocialMediaService(
+                memory_system=self.memory_system,
+                config=self.config.get("social_media", {})
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize Social Media Service: {e}")
+            return None
+        
 def _get_grace_system_message(self):
     """Get the Grace system message from system_prompts.py."""
     # Get a comprehensive system message that includes all prompt components

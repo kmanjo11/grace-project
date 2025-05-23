@@ -1185,6 +1185,7 @@ class CommunityTrackerAgent(BaseAgent):
         agent_id: str,
         api_services_manager=None,
         memory_system=None,
+        social_media_service=None,
         task_queue: Optional[queue.PriorityQueue] = None,
         result_queue: Optional[queue.Queue] = None,
         config: Optional[Dict[str, Any]] = None,
@@ -1196,6 +1197,7 @@ class CommunityTrackerAgent(BaseAgent):
             agent_id: Unique identifier for the agent
             api_services_manager: API services manager
             memory_system: Memory system
+            social_media_service: Social media service for Twitter/social data
             task_queue: Queue for incoming tasks
             result_queue: Queue for task results
             config: Agent configuration
@@ -1210,6 +1212,7 @@ class CommunityTrackerAgent(BaseAgent):
 
         self.api_services_manager = api_services_manager
         self.memory_system = memory_system
+        self.social_media_service = social_media_service
 
         # Add supported task types
         self.supported_task_types.extend(
@@ -1218,10 +1221,13 @@ class CommunityTrackerAgent(BaseAgent):
                 "discover_community_changes",
                 "update_community_seeds",
                 "track_entity_mentions",
+                "get_trending_topics",
+                "get_influential_accounts",
+                "analyze_sentiment",
             ]
         )
 
-    def _process_task(self, task: AgentTask) -> Dict[str, Any]:
+    async def _process_task(self, task: AgentTask) -> Dict[str, Any]:
         """
         Process a task.
 
@@ -1231,18 +1237,28 @@ class CommunityTrackerAgent(BaseAgent):
         Returns:
             Dict: Task result
         """
-        if task.task_type == "get_community_insights":
-            return self._handle_get_community_insights(task)
-        elif task.task_type == "discover_community_changes":
-            return self._handle_discover_community_changes(task)
-        elif task.task_type == "update_community_seeds":
-            return self._handle_update_community_seeds(task)
-        elif task.task_type == "track_entity_mentions":
-            return self._handle_track_entity_mentions(task)
-        else:
-            raise ValueError(f"Unsupported task type: {task.task_type}")
+        try:
+            if task.task_type == "get_community_insights":
+                return await self._handle_get_community_insights(task)
+            elif task.task_type == "discover_community_changes":
+                return await self._handle_discover_community_changes(task)
+            elif task.task_type == "update_community_seeds":
+                return await self._handle_update_community_seeds(task)
+            elif task.task_type == "track_entity_mentions":
+                return await self._handle_track_entity_mentions(task)
+            elif task.task_type == "get_trending_topics":
+                return await self._handle_get_trending_topics(task)
+            elif task.task_type == "get_influential_accounts":
+                return await self._handle_get_influential_accounts(task)
+            elif task.task_type == "analyze_sentiment":
+                return await self._handle_analyze_sentiment(task)
+            else:
+                raise ValueError(f"Unsupported task type: {task.task_type}")
+        except Exception as e:
+            self.logger.error(f"Error processing task {task.task_type}: {str(e)}")
+            return {"status": "error", "error": str(e)}
 
-    def _handle_get_community_insights(self, task: AgentTask) -> Dict[str, Any]:
+    async def _handle_get_community_insights(self, task: AgentTask) -> Dict[str, Any]:
         """
         Handle a get_community_insights task.
 
@@ -1252,20 +1268,20 @@ class CommunityTrackerAgent(BaseAgent):
         Returns:
             Dict: Task result
         """
-        if not self.api_services_manager:
-            raise ValueError("API services manager not available")
+        if not self.social_media_service:
+            raise ValueError("Social media service not available")
 
         community = task.content.get("community")
 
         if not community:
             raise ValueError("Community is required")
 
-        # Get community insights
-        result = self.api_services_manager.get_community_insights(community)
+        # Get community insights using the social media service
+        result = await self.social_media_service.get_community_pulse(community)
 
         return {"community": community, "result": result}
 
-    def _handle_discover_community_changes(self, task: AgentTask) -> Dict[str, Any]:
+    async def _handle_discover_community_changes(self, task: AgentTask) -> Dict[str, Any]:
         """
         Handle a discover_community_changes task.
 
@@ -1275,22 +1291,26 @@ class CommunityTrackerAgent(BaseAgent):
         Returns:
             Dict: Task result
         """
-        if not self.api_services_manager:
-            raise ValueError("API services manager not available")
+        if not self.social_media_service:
+            raise ValueError("Social media service not available")
 
         community = task.content.get("community")
 
         if not community:
             raise ValueError("Community is required")
 
-        # Discover community changes
-        result = self.api_services_manager.twitter_service.discover_community_changes(
-            community
-        )
+        # Discover community changes using social media service
+        # Call the method directly from social_media_service
+        try:
+            result = await self.social_media_service.discover_community_changes(community)
+            return {"community": community, "result": result}
+        except AttributeError:
+            # If method doesn't exist, fall back to a search
+            self.logger.warning("discover_community_changes method not found, falling back to search")
+            result = await self.social_media_service.search_twitter(community)
+            return {"community": community, "result": result}
 
-        return {"community": community, "result": result}
-
-    def _handle_update_community_seeds(self, task: AgentTask) -> Dict[str, Any]:
+    async def _handle_update_community_seeds(self, task: AgentTask) -> Dict[str, Any]:
         """
         Handle an update_community_seeds task.
 
@@ -1300,8 +1320,8 @@ class CommunityTrackerAgent(BaseAgent):
         Returns:
             Dict: Task result
         """
-        if not self.api_services_manager:
-            raise ValueError("API services manager not available")
+        if not self.social_media_service:
+            raise ValueError("Social media service not available")
 
         community = task.content.get("community")
         add_handles = task.content.get("add_handles", [])
@@ -1310,19 +1330,27 @@ class CommunityTrackerAgent(BaseAgent):
         if not community:
             raise ValueError("Community is required")
 
-        # Update community seeds
-        result = self.api_services_manager.twitter_service.update_community_seeds(
-            community=community, add_handles=add_handles, remove_handles=remove_handles
-        )
+        # Update community seeds using social media service
+        try:
+            result = await self.social_media_service.update_community_seeds(
+                community=community, add_handles=add_handles, remove_handles=remove_handles
+            )
 
-        return {
-            "community": community,
-            "add_handles": add_handles,
-            "remove_handles": remove_handles,
-            "result": result,
-        }
+            return {
+                "community": community,
+                "add_handles": add_handles,
+                "remove_handles": remove_handles,
+                "result": result,
+            }
+        except AttributeError as e:
+            self.logger.error(f"Method not found in social media service: {str(e)}")
+            return {
+                "community": community,
+                "status": "error",
+                "error": "Community seed update functionality not available"
+            }
 
-    def _handle_track_entity_mentions(self, task: AgentTask) -> Dict[str, Any]:
+    async def _handle_track_entity_mentions(self, task: AgentTask) -> Dict[str, Any]:
         """
         Handle a track_entity_mentions task.
 
@@ -1332,33 +1360,139 @@ class CommunityTrackerAgent(BaseAgent):
         Returns:
             Dict: Task result
         """
-        if not self.api_services_manager:
-            raise ValueError("API services manager not available")
+        if not self.social_media_service:
+            raise ValueError("Social media service not available")
 
         entity = task.content.get("entity")
 
         if not entity:
             raise ValueError("Entity is required")
 
-        # Track entity mentions
+        # Track entity mentions using social media service
         # In a real implementation, this would set up continuous tracking
         # For now, just do a one-time search
-        result = self.api_services_manager.twitter_service.search_twitter(entity)
+        result = await self.social_media_service.search_twitter(entity)
 
-        # Associate with entity in memory if available
+        # Store in memory if available
         if self.memory_system:
             try:
-                self.api_services_manager.twitter_service.associate_with_entity(
-                    query=entity, entity=entity, memory_system=self.memory_system
+                # Create memory entry for this search
+                self.memory_system.add_to_short_term(
+                    user_id=task.content.get("user_id", "system"),
+                    text=f"Social media mentions for {entity}: {len(result.get('tweets', []))} mentions found",
+                    metadata={
+                        "type": "social_media_mentions",
+                        "entity": entity,
+                        "count": len(result.get("tweets", [])),
+                        "timestamp": datetime.now().isoformat()
+                    }
                 )
             except Exception as e:
-                self.logger.error("Error associating with entity: {str(e)}")
+                self.logger.error(f"Error storing entity mentions in memory: {str(e)}")
 
         return {
             "entity": entity,
             "mentions_count": len(result.get("tweets", [])),
             "result": result,
         }
+
+    async def _handle_get_trending_topics(self, task: AgentTask) -> Dict[str, Any]:
+        """
+        Handle a get_trending_topics task.
+
+        Args:
+            task: Task to process
+
+        Returns:
+            Dict: Task result
+        """
+        if not self.social_media_service:
+            raise ValueError("Social media service not available")
+
+        limit = task.content.get("limit", 10)
+
+        # Get trending topics using social media service
+        result = await self.social_media_service.get_trending_topics(limit=limit)
+
+        # Store in memory if available
+        if self.memory_system:
+            try:
+                self.memory_system.add_to_short_term(
+                    user_id=task.content.get("user_id", "system"),
+                    text=f"Retrieved {len(result.get('topics', []))} trending social media topics",
+                    metadata={
+                        "type": "trending_topics",
+                        "topics": result.get("topics", []),
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+            except Exception as e:
+                self.logger.error(f"Error storing trending topics in memory: {str(e)}")
+
+        return {"trending_topics": result, "count": len(result.get("topics", []))}
+
+    async def _handle_get_influential_accounts(self, task: AgentTask) -> Dict[str, Any]:
+        """
+        Handle a get_influential_accounts task.
+
+        Args:
+            task: Task to process
+
+        Returns:
+            Dict: Task result
+        """
+        if not self.social_media_service:
+            raise ValueError("Social media service not available")
+
+        topic = task.content.get("topic")
+        limit = task.content.get("limit", 20)
+
+        # Get influential accounts using social media service
+        result = await self.social_media_service.get_influential_accounts(topic=topic, limit=limit)
+
+        return {"topic": topic, "influential_accounts": result, "count": len(result.get("accounts", []))}
+
+    async def _handle_analyze_sentiment(self, task: AgentTask) -> Dict[str, Any]:
+        """
+        Handle an analyze_sentiment task.
+
+        Args:
+            task: Task to process
+
+        Returns:
+            Dict: Task result
+        """
+        if not self.social_media_service:
+            raise ValueError("Social media service not available")
+
+        query = task.content.get("query")
+        days = task.content.get("days", 7)
+
+        if not query:
+            raise ValueError("Query is required for sentiment analysis")
+
+        # Analyze sentiment using social media service
+        result = await self.social_media_service.analyze_sentiment(query=query, days=days)
+
+        # Store in memory if available
+        if self.memory_system:
+            try:
+                self.memory_system.add_to_short_term(
+                    user_id=task.content.get("user_id", "system"),
+                    text=f"Sentiment analysis for '{query}': {result.get('sentiment', 'neutral')}",
+                    metadata={
+                        "type": "sentiment_analysis",
+                        "query": query,
+                        "sentiment": result.get("sentiment"),
+                        "confidence": result.get("confidence"),
+                        "sample_size": result.get("sample_size"),
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+            except Exception as e:
+                self.logger.error(f"Error storing sentiment analysis in memory: {str(e)}")
+
+        return {"query": query, "days": days, "sentiment_analysis": result}
 
 
 class MemoryKeeperAgent(BaseAgent):

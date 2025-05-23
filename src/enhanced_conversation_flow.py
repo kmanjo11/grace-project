@@ -42,6 +42,7 @@ class EnhancedConversationFlow:
         memory_system,
         gmgn_service,
         conversation_manager,
+        social_media_service=None,
         interpreter
     ):
         """
@@ -58,6 +59,7 @@ class EnhancedConversationFlow:
         self.memory_system = memory_system
         self.gmgn_service = gmgn_service
         self.conversation_manager = conversation_manager
+        self.social_media_service = social_media_service
         self.interpreter = interpreter
         self.logger = logging.getLogger("EnhancedConversationFlow")
         
@@ -201,65 +203,39 @@ class EnhancedConversationFlow:
         Build a unified context object with all relevant information.
         This is the key to the enhanced conversation flow - gathering all context in one place.
         """
-        # 1. Get basic context information with safe attribute access
-        try:
-            context_id = getattr(context, 'context_id', str(time.time()))
-        except Exception as e:
-            self.logger.warning(f"Could not get context_id: {str(e)}")
-            context_id = str(time.time())
-            
-        try:
-            history = list(getattr(context, 'history', []))
-        except Exception as e:
-            self.logger.warning(f"Could not get conversation history: {str(e)}")
-            history = []
-            
-        try:
-            active_topics = getattr(context, 'active_topics', [])
-        except Exception as e:
-            self.logger.warning(f"Could not get active topics: {str(e)}")
-            active_topics = []
-            
-        try:
-            entities = getattr(context, 'entities', {})
-        except Exception as e:
-            self.logger.warning(f"Could not get entities: {str(e)}")
-            entities = {}
-            
-        try:
-            background_tasks = getattr(context, 'background_tasks', {})
-        except Exception as e:
-            self.logger.warning(f"Could not get background tasks: {str(e)}")
-            background_tasks = {}
+        # 1. Get relevant memories
+        memories = await self._retrieve_relevant_memories(user_id, message)
         
-        # Build the unified context with safe values
+        # 2. Get conversation history
+        history = context.history if hasattr(context, 'history') else []
+        
+        # 3. Get active topics
+        active_topics = context.get_active_topics() if hasattr(context, 'get_active_topics') else []
+        
+        # 4. Get relevant financial data for active topics
+        financial_data = await self._retrieve_financial_data(user_id, message, active_topics)
+        
+        # 5. Get relevant social media data if available
+        social_data = await self._retrieve_social_media_data(user_id, message, active_topics) if self.social_media_service else {}
+        
+        # 6. Get user profile
+        user_profile = await self._get_user_profile(user_id)
+        
+        # Build the unified context
         unified_context = {
             "user_id": user_id,
             "session_id": session_id,
-            "context_id": context_id,
+            "context_id": context.context_id if hasattr(context, 'context_id') else str(uuid.uuid4()),
             "message": message,
-            "timestamp": time.time(),
-            "conversation_history": history,
+            "history": history,
+            "memories": memories,
             "active_topics": active_topics,
-            "entities": entities,
-            "background_tasks": background_tasks
+            "financial_data": financial_data,
+            "social_data": social_data,
+            "user_profile": user_profile,
+            "processing_result": processing_result,
+            "timestamp": time.time()
         }
-        
-        # 2. Retrieve relevant memories from ChromaDB
-        memories = await self._retrieve_relevant_memories(user_id, message)
-        unified_context["memories"] = memories
-        
-        # 3. Retrieve relevant financial data based on context
-        financial_data = await self._retrieve_financial_data(user_id, message, context.active_topics)
-        unified_context["financial_data"] = financial_data
-        
-        # 4. Get user profile information
-        user_profile = self._get_user_profile(user_id)
-        unified_context["user_profile"] = user_profile
-        
-        # 5. Get background tasks status
-        background_tasks = context.background_tasks
-        unified_context["background_tasks"] = background_tasks
         
         return unified_context
     
@@ -415,6 +391,59 @@ class EnhancedConversationFlow:
         
         return financial_data
     
+    async def _retrieve_social_media_data(self, user_id: str, message: str, active_topics):
+        """Retrieve relevant social media data based on the message and active topics."""
+        social_data = {}
+        
+        try:
+            # Check if any topics are related to social media
+            social_media_related = False
+            for topic in active_topics:
+                if isinstance(topic, dict) and "name" in topic:
+                    if topic["name"] in ["social", "media", "twitter", "facebook", "instagram"]:
+                        social_media_related = True
+                        break
+            
+            # If social media related, get social media data
+            if social_media_related or "social" in message.lower():
+                try:
+                    social_media_data = await self._safe_call(
+                        self.social_media_service.get_social_media_data,
+                        user_id=user_id
+                    )
+                    if social_media_data:
+                        social_data["social_media_data"] = social_media_data
+                except Exception as e:
+                    self.logger.error(f"Error getting social media data: {str(e)}")
+            
+            # Get social media sentiment if relevant
+            sentiment_related = False
+            for topic in active_topics:
+                if isinstance(topic, dict) and "name" in topic:
+                    if topic["name"] in ["sentiment", "market", "news"]:
+                        sentiment_related = True
+                        break
+            
+            if sentiment_related:
+                sentiment_data = {}
+                try:
+                    sentiment = await self._safe_call(
+                        self.social_media_service.get_social_media_sentiment,
+                        user_id=user_id
+                    )
+                    if sentiment:
+                        sentiment_data["social_media_sentiment"] = sentiment
+                except Exception as e:
+                    self.logger.error(f"Error getting social media sentiment: {str(e)}")
+                
+                if sentiment_data:
+                    social_data["sentiment_data"] = sentiment_data
+            
+        except Exception as e:
+            self.logger.error(f"Error retrieving social media data: {str(e)}")
+        
+        return social_data
+    
     def _extract_token_symbols(self, message: str):
         """Extract potential token symbols from the message."""
         # Common crypto tokens
@@ -450,7 +479,7 @@ class EnhancedConversationFlow:
             self.logger.error(traceback.format_exc())
             return None
     
-    def _get_user_profile(self, user_id: str):
+    async def _get_user_profile(self, user_id: str):
         """Get the user profile information."""
         try:
             if hasattr(self.grace_core, 'user_profile_system'):
@@ -470,40 +499,54 @@ class EnhancedConversationFlow:
             unified_context: The unified context object containing all relevant information
             message: Optional original message text (if not included in unified_context)
         """
-        try:
-            # 1. Format the conversation history
-            formatted_history = self._format_conversation_history(
-                unified_context.get("conversation_history", [])
-            )
+        # Use message from unified_context if not provided
+        if message is None and "message" in unified_context:
+            message = unified_context["message"]
             
-            # 2. Format the memories
-            formatted_memories = self._format_memories(
-                unified_context.get("memories", [])
-            )
-            
-            # 3. Format the financial data
-            formatted_financial_data = self._format_financial_data(
-                unified_context.get("financial_data", {})
-            )
-            
-            # 4. Format active topics
-            formatted_topics = self._format_topics(
-                unified_context.get("active_topics", [])
-            )
-            
-            # 5. Combine all context elements into an enhanced prompt
-            enhanced_prompt = f"""
-User message: {unified_context['message']}
-
-{formatted_memories}
-
-{formatted_financial_data}
-
-Active topics in this conversation: {formatted_topics}
-
-Recent conversation history:
-{formatted_history}
-"""
+        # Extract components for the prompt
+        history = unified_context.get("history", [])
+        memories = unified_context.get("memories", [])
+        financial_data = unified_context.get("financial_data", {})
+        social_data = unified_context.get("social_data", {})
+        active_topics = unified_context.get("active_topics", [])
+        
+        # 1. Format the conversation history
+        formatted_history = self._format_conversation_history(history)
+        
+        # 2. Format the memories
+        formatted_memories = self._format_memories(memories)
+        
+        # 3. Format the financial data
+        formatted_financial_data = self._format_financial_data(financial_data)
+        
+        # 4. Format social media data
+        formatted_social_data = self._format_social_media_data(social_data)
+        
+        # 5. Format active topics
+        formatted_topics = self._format_topics(active_topics)
+        
+        # Build the prompt with all context sections
+        prompt = f"""
+        [CONVERSATION HISTORY]
+        {formatted_history}
+        
+        [USER MEMORIES]
+        {formatted_memories}
+        
+        [FINANCIAL DATA]
+        {formatted_financial_data}
+        
+        [SOCIAL MEDIA INSIGHTS]
+        {formatted_social_data}
+        
+        [ACTIVE TOPICS]
+        {formatted_topics}
+        
+        [CURRENT MESSAGE]
+        User: {message}
+        
+        Based on the above context, generate a helpful response.
+        """
             
             # 6. Prepare messages for the interpreter - ensure proper format with 'type' field
             # Open Interpreter expects messages in a specific format with 'type' field
@@ -726,10 +769,50 @@ Recent conversation history:
     def _format_topics(self, topics):
         """Format the active topics for inclusion in the prompt."""
         if not topics:
-            return "No specific topics detected."
+            return "No active topics"
+            
+        return ", ".join([t.get('name', t) if isinstance(t, dict) else t for t in topics])
         
-        topic_names = [topic["name"] for topic in topics[:3]]
-        return ", ".join(topic_names)
+    def _format_social_media_data(self, social_data):
+        """Format the social media data for inclusion in the prompt."""
+        if not social_data:
+            return "No relevant social media data available."
+            
+        formatted_data = ["Relevant social media insights:"]
+        
+        # Format trending topics
+        if social_data.get("trending_topics"):
+            topics = social_data["trending_topics"].get("topics", [])
+            if topics:
+                formatted_data.append("\nTrending Topics:")
+                for i, topic in enumerate(topics[:5], 1):
+                    if isinstance(topic, dict) and 'name' in topic:
+                        formatted_data.append(f"  {i}. {topic['name']}")
+                    elif isinstance(topic, str):
+                        formatted_data.append(f"  {i}. {topic}")
+        
+        # Format sentiment analysis
+        if social_data.get("sentiment_analysis"):
+            formatted_data.append("\nSentiment Analysis:")
+            for term, analysis in social_data["sentiment_analysis"].items():
+                sentiment = analysis.get("sentiment", "neutral")
+                confidence = analysis.get("confidence", 0.0)
+                sample_size = analysis.get("sample_size", 0)
+                formatted_data.append(f"  {term}: {sentiment.capitalize()} (confidence: {confidence:.2f}, based on {sample_size} posts)")
+        
+        # Format influential accounts
+        if social_data.get("influential_accounts"):
+            formatted_data.append("\nInfluential Accounts:")
+            for entity, accounts_data in social_data["influential_accounts"].items():
+                formatted_data.append(f"  For {entity}:")
+                accounts = accounts_data.get("accounts", [])
+                for i, account in enumerate(accounts[:3], 1):
+                    if isinstance(account, dict):
+                        username = account.get('username', 'Unknown')
+                        followers = account.get('followers', 0)
+                        formatted_data.append(f"    {i}. @{username} ({followers:,} followers)")
+        
+        return "\n".join(formatted_data) if len(formatted_data) > 1 else "No relevant social media data available."
     
     async def _execute_actions_from_response(self, response, unified_context):
         """

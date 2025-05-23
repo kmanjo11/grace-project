@@ -50,6 +50,12 @@ export interface AppState {
     positions?: any[];
   };
   
+  // Social media feed settings
+  xfeed?: {
+    followedAccounts: string[];
+    lastUpdated?: number;
+  };
+  
   // Wallet state extensions
   walletState?: {
     connectedWallets?: any[];
@@ -129,6 +135,10 @@ const initialState: AppState = {
   uiState: {
     darkMode: true,
     sidebarOpen: true,
+  },
+  xfeed: {
+    followedAccounts: [],
+    lastUpdated: undefined
   }
 };
 
@@ -143,11 +153,11 @@ type ActionType =
   | { type: 'SET_PAGE_STATE'; payload: any }
   | { type: 'SET_WIDGET_STATES'; payload: any }
   | { type: 'SET_USER_SESSION'; payload: any }
+  | { type: 'UPDATE_XFEED'; payload: any }
   | { type: 'HYDRATE_STATE'; payload: AppState }
   | { type: 'RESET_STATE' }
   | { type: 'HYDRATE'; payload: AppState }
-  | { type: 'RESET' }
-  | { type: 'RESET'; payload: any };
+  | { type: 'RESET' };
 
 // State reducer
 function appStateReducer(state: AppState, action: ActionType): AppState {
@@ -170,6 +180,15 @@ function appStateReducer(state: AppState, action: ActionType): AppState {
       return { ...state, chatContext: { ...state.chatContext, ...action.payload } };
     case 'SET_USER_SESSION':
       return { ...state, userSession: { ...state.userSession, ...action.payload } };
+    case 'UPDATE_XFEED':
+      return {
+        ...state,
+        xfeed: {
+          ...state.xfeed,
+          ...action.payload,
+          lastUpdated: Date.now()
+        }
+      };
     case 'HYDRATE_STATE':
       return { ...action.payload };
     case 'RESET_STATE':

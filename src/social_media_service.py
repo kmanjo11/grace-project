@@ -7,11 +7,13 @@ It provides a dynamic approach for function generation based on user requests.
 
 import logging
 import time
+import asyncio
 from typing import Dict, List, Optional, Any, Union, Iterator
 from datetime import datetime, timedelta
 import snscrape.modules.twitter as sntwitter
 from snscrape.base import ScraperException
 import backoff  # For exponential backoff on rate limits
+from concurrent.futures import ThreadPoolExecutor
 
 # Configure logging
 logging.basicConfig(
@@ -88,7 +90,7 @@ class SocialMediaService:
         
         logger.info("Initialized Social Media service with snscrape")
         
-    def get_user_profile(self, username: str) -> Dict[str, Any]:
+    async def get_user_profile(self, username: str) -> Dict[str, Any]:
         """
         Get a user's profile information from Twitter.
         
@@ -107,11 +109,15 @@ class SocialMediaService:
             return cached_data
         
         try:
-            # Create scraper
-            scraper = self.twitter_user_scraper(username)
-            
-            # Get user profile
-            user_profile = scraper.get_object()
+            # Run scraper in a thread pool to avoid blocking the event loop
+            def scrape_user():
+                scraper = self.twitter_user_scraper(username)
+                return scraper.get_object()
+                
+            # Execute in thread pool
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as executor:
+                user_profile = await loop.run_in_executor(executor, scrape_user)
             
             # Process user profile
             processed_profile = self._process_user_profile(user_profile)
@@ -130,7 +136,7 @@ class SocialMediaService:
             logger.error(f"Error getting user profile: {str(e)}", exc_info=True)
             return {"error": f"Error getting user profile: {str(e)}"}
     
-    def analyze_sentiment(self, query: str, days: int = 7) -> Dict[str, Any]:
+    async def analyze_sentiment(self, query: str, days: int = 7) -> Dict[str, Any]:
         """
         Analyze sentiment for a given query.
         
@@ -184,7 +190,7 @@ class SocialMediaService:
             self.logger.error(f"Error in sentiment analysis: {str(e)}", exc_info=True)
             return {"error": f"Error performing sentiment analysis: {str(e)}"}
             
-    def get_trending_topics(self, limit: int = 10) -> Dict[str, Any]:
+    async def get_trending_topics(self, limit: int = 10) -> Dict[str, Any]:
         """
         Get currently trending topics.
         
@@ -222,7 +228,7 @@ class SocialMediaService:
             self.logger.error(f"Error getting trending topics: {str(e)}", exc_info=True)
             return {"error": f"Error getting trending topics: {str(e)}"}
             
-    def get_influential_accounts(self, topic: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+    async def get_influential_accounts(self, topic: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
         """
         Get influential accounts for a topic.
         
@@ -276,7 +282,7 @@ class SocialMediaService:
             self.logger.error(f"Error getting influential accounts: {str(e)}", exc_info=True)
             return {"error": f"Error getting influential accounts: {str(e)}"}
             
-    def get_tracked_communities(self) -> Dict[str, Any]:
+    async def get_tracked_communities(self) -> Dict[str, Any]:
         """Get all tracked communities and their metrics."""
         return {
             'communities': list(self.tracked_communities.values()),
@@ -325,7 +331,7 @@ class SocialMediaService:
         max_tries=3,
         max_time=30
     )
-    def search_twitter(
+    async def search_twitter(
         self,
         query: str,
         search_type: str = "tweets",
@@ -371,13 +377,13 @@ class SocialMediaService:
             
             # Create appropriate scraper based on search type
             if search_type == "tweets":
-                scraper = sntwitter.TwitterSearchScraper(search_query, top=True)
+                scraper = self.twitter_search_scraper(search_query, top=True)
             elif search_type == "users":
-                scraper = sntwitter.TwitterUserScraper(query)
+                scraper = self.twitter_user_scraper(query)
             elif search_type == "hashtags":
                 if not query.startswith("#"):
                     query = f"#{query}"
-                scraper = sntwitter.TwitterHashtagScraper(query[1:])  # Remove # for the scraper
+                scraper = self.twitter_hashtag_scraper(query[1:])  # Remove # for the scraper
             else:
                 raise ValueError(f"Unsupported search type: {search_type}")
             
@@ -387,7 +393,7 @@ class SocialMediaService:
                     break
                 results.append(item)
                 # Add small delay between requests to be nice to the API
-                time.sleep(0.1)
+                await asyncio.sleep(0.1)
             
             # Process results
             processed_results = self._process_search_results(results, search_type)
@@ -859,7 +865,7 @@ class SocialMediaService:
         max_tries=3,
         max_time=30
     )
-    def get_user_tweets(
+    async def get_user_tweets(
         self,
         username: str,
         count: int = 20,
@@ -936,7 +942,7 @@ class SocialMediaService:
                         break
                     tweets.append(tweet)
                     # Add small delay between requests
-                    time.sleep(0.1)
+                    await asyncio.sleep(0.1)
             except Exception as e:
                 logger.warning(f"Error fetching tweets for @{username}: {str(e)}")
             
@@ -1095,7 +1101,7 @@ class SocialMediaService:
             "seed_count": len(self.community_seeds.get(community, []))
         }
     
-    def get_community_pulse(self, community: str, count: int = 5, use_cache: bool = True) -> Dict[str, Any]:
+    async def get_community_pulse(self, community: str, count: int = 5, use_cache: bool = True) -> Dict[str, Any]:
         """
         Get community pulse.
         
@@ -1408,7 +1414,7 @@ class SocialMediaService:
                 'count': 0
             }
 
-    def execute_dynamic_function(self, function_name: str, **kwargs) -> Dict[str, Any]:
+    async def execute_dynamic_function(self, function_name: str, **kwargs) -> Dict[str, Any]:
         """
         Execute a dynamic function based on name and parameters.
         
@@ -1437,7 +1443,16 @@ class SocialMediaService:
             }
         
         try:
-            result = getattr(self, function_name)(**kwargs)
+            method = getattr(self, function_name)
+            # Check if method is async
+            if asyncio.iscoroutinefunction(method):
+                result = await method(**kwargs)
+            else:
+                # Run sync method in thread pool
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor() as executor:
+                    result = await loop.run_in_executor(executor, lambda: method(**kwargs))
+                    
             return {"success": True, "result": result}
         except Exception as e:
             return {"success": False, "error": str(e)}
