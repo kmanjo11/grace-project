@@ -1319,15 +1319,21 @@ async def _async_save_new_context(self, context: ConversationContext):
 
 def _start_periodic_state_persistence(self):
     """Start a background task for periodic state persistence."""
+    self.logger.info("Setting up periodic state persistence")
+    
+    # Instead of creating an asyncio task immediately, we'll store the coroutine
+    # for later execution when an event loop is available
     async def periodic_save():
         try:
-            while not self._shutdown_requested:
-                # Wait for some time
-                await asyncio.sleep(60)  # Save state every minute
+            while True:
+                # Save all active contexts every 5 minutes
+                await asyncio.sleep(300)  # 5 minutes
                 
-                # Save all active contexts
-                for user_id, contexts in list(self.active_contexts.items()):
-                    for context_id, context in list(contexts.items()):
+                self.logger.info("Running periodic state persistence")
+                
+                # Save each active context
+                for user_id, contexts in self.active_contexts.items():
+                    for context_id, context in contexts.items():
                         try:
                             await self.save_context(context)
                         except Exception as e:
@@ -1337,9 +1343,27 @@ def _start_periodic_state_persistence(self):
         except Exception as e:
             self.logger.error(f"Error in periodic state persistence: {str(e)}")
     
-    # Start the background task
-    asyncio.create_task(periodic_save())
-    self.logger.info("Started periodic state persistence task")
+    # Store the coroutine for later scheduling instead of creating a task immediately
+    self._persistence_coroutine = periodic_save
+    self.logger.info("Prepared periodic state persistence function")
+    
+    # We'll create a method to start the task when an event loop is available
+    def schedule_persistence_task():
+        loop = asyncio.get_event_loop_policy().get_event_loop()
+        if loop.is_running():
+            self._persistence_task = loop.create_task(self._persistence_coroutine())
+            self.logger.info("Started periodic state persistence task")
+        else:
+            self.logger.warning("No running event loop, persistence task not scheduled")
+    
+    # Try to schedule now if possible, otherwise it will be scheduled later
+    try:
+        schedule_persistence_task()
+    except RuntimeError:
+        self.logger.info("Will schedule persistence task when event loop is available")
+    
+    # Store the scheduler function for later use
+    self._schedule_persistence_task = schedule_persistence_task
 
 async def _save_state_snapshot(self, context: ConversationContext):
     """Save a state snapshot for recovery purposes."""
