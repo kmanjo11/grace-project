@@ -17,9 +17,8 @@ from functools import wraps
 from typing import Dict, Any, Optional
 
 # Third-party imports
-import aiofiles
 import jwt
-from quart import Quart, request, jsonify, current_app, send_file
+from quart import Quart, request, jsonify, current_app, send_file, Response
 from quart_cors import cors
 
 # Configure logging
@@ -63,8 +62,24 @@ def get_jwt_identity():
 # Import chat_sessions_quart blueprint for chat functionality
 try:
     from chat_sessions_quart import chat_blueprint
+    from grace_core import GraceCore
 except ImportError:
     from src.chat_sessions_quart import chat_blueprint
+    from src.grace_core import GraceCore
+
+# Initialize Grace core instance
+# Use environment variables or defaults for configuration
+config_path = os.environ.get('GRACE_CONFIG_PATH', None)
+data_dir = os.environ.get('GRACE_DATA_DIR', os.path.join(os.path.dirname(__file__), '..', 'data'))
+encryption_key = os.environ.get('FERNET_KEY', None)
+
+# Initialize the Grace core with proper configuration
+grace_instance = GraceCore(
+    config_path=config_path,
+    data_dir=data_dir,
+    encryption_key=encryption_key,
+    test_mode=os.environ.get('GRACE_TEST_MODE', '').lower() == 'true'
+)
 
 # Initialize Quart app
 app = Quart(__name__)
@@ -196,9 +211,16 @@ async def save_sessions():
                     serialized[key] = value
             serialized_sessions[token] = serialized
 
-        # Write to file
-        async with aiofiles.open(SESSIONS_FILE, mode="w") as f:
-            await f.write(json.dumps(serialized_sessions, indent=2))
+        # Use async with loop.run_in_executor for non-blocking file I/O
+        def write_file():
+            os.makedirs(os.path.dirname(SESSIONS_FILE), exist_ok=True)
+            with open(SESSIONS_FILE, "w") as f:
+                json.dump(serialized_sessions, f, indent=2)
+
+        # Run the file write in a thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, write_file)
+        logger.info(f"Saved {len(active_sessions)} sessions to {SESSIONS_FILE}")
     except Exception as e:
         logger.error(f"Error saving sessions: {e}")
 
@@ -206,33 +228,48 @@ async def save_sessions():
 async def load_sessions():
     """Load persistent sessions from storage"""
     try:
-        if os.path.exists(SESSIONS_FILE):
-            async with aiofiles.open(SESSIONS_FILE, mode="r") as f:
-                content = await f.read()
-                loaded_sessions = json.loads(content)
+        if not os.path.exists(SESSIONS_FILE):
+            logger.info(f"Sessions file {SESSIONS_FILE} not found, starting with empty sessions")
+            return {}
+            
+        # Use async with loop.run_in_executor for non-blocking file I/O
+        def read_file():
+            with open(SESSIONS_FILE, "r") as f:
+                return json.load(f)
+                
+        # Run the file read in a thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        loaded_sessions = await loop.run_in_executor(None, read_file)
+        
+        # Restore sessions with proper datetime conversion
+        restored_sessions = {}
+        for token, session_data in loaded_sessions.items():
+            restored_session = {}
+            for key, value in session_data.items():
+                try:
+                    restored_session[key] = (
+                        datetime.fromisoformat(value)
+                        if "time" in key.lower()
+                        else value
+                    )
+                except ValueError:
+                    restored_session[key] = value
+                    
+            # Only restore sessions that haven't expired
+            if (
+                "exp" in restored_session
+                and isinstance(restored_session["exp"], str)
+                and datetime.fromisoformat(restored_session["exp"]) < datetime.now()
+            ):
+                continue
 
-                # Restore sessions with proper datetime conversion
-                for token, session_data in loaded_sessions.items():
-                    restored_session = {}
-                    for key, value in session_data.items():
-                        try:
-                            restored_session[key] = (
-                                datetime.fromisoformat(value)
-                                if "time" in key.lower()
-                                else value
-                            )
-                        except ValueError:
-                            restored_session[key] = value
+            restored_sessions[token] = restored_session
 
-                    # Only restore sessions that haven't expired
-                    if (
-                        "exp" in restored_session
-                        and datetime.fromisoformat(restored_session["exp"])
-                        > datetime.utcnow()
-                    ):
-                        active_sessions[token] = restored_session
+        logger.info(f"Loaded {len(restored_sessions)} sessions from {SESSIONS_FILE}")
+        return restored_sessions
     except Exception as e:
         logger.error(f"Error loading sessions: {e}")
+        return {}
 
 
 # Refresh Token Endpoint
