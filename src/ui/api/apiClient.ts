@@ -335,51 +335,75 @@ export const TradingApi = {
   },
 
   /**
-   * Get user's spot positions
-   * @returns User's spot positions
+   * Get user's leverage positions from Mango V3
+   * @returns User's leverage positions with success/error status
    */
-  async getUserSpotPositions(): Promise<UserPositionsResponse> {
+  async getUserLeveragePositions(): Promise<UserPositionsResponse> {
     try {
-      const response = await api.get<BasePosition[]>(API_ENDPOINTS.USER.SPOT_POSITIONS);
-      if (!response.success) {
-        throw new Error(response.error || 'Failed to fetch spot positions');
+      const response = await api.get<UserPositionsResponse>(API_ENDPOINTS.USER.LEVERAGE_POSITIONS);
+      
+      // If response already has the right format, return it directly
+      if (response.data && typeof response.data === 'object' && 'success' in response.data) {
+        return response.data as UserPositionsResponse;
       }
+      
+      // Otherwise format according to Mango V3 spec
       return {
-        positions: response.data || [],
-        metadata: {} // No metadata for spot positions
+        success: true,
+        positions: Array.isArray(response.data) ? response.data : [],
+        metadata: {
+          total_positions: Array.isArray(response.data) ? response.data.length : 0,
+          timestamp: new Date().toISOString()
+        }
       };
     } catch (error) {
-      console.error('Error fetching spot positions:', error);
-      throw error;
+      console.error('Error fetching leverage positions:', error);
+      return {
+        success: false,
+        positions: [],
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to fetch leverage positions',
+          code: 'POSITION_FETCH_ERROR'
+        }
+      };
     }
   },
 
   /**
-   * Get user's leverage positions
-   * @returns User's leverage positions
+   * Get user's spot positions from wallet balances
+   * @returns User's spot positions with success/error status
    */
-  async getUserLeveragePositions(): Promise<UserPositionsResponse> {
+  async getUserSpotPositions(): Promise<UserPositionsResponse> {
     try {
-      const response = await api.get<{positions: BasePosition[], metadata?: any}>(API_ENDPOINTS.USER.LEVERAGE_POSITIONS);
-      if (!response.success) {
-        throw new Error(response.error || 'Failed to fetch leverage positions');
+      const response = await api.get<UserPositionsResponse>(API_ENDPOINTS.USER.SPOT_POSITIONS);
+      
+      // If response already has the right format, return it directly
+      if (response.data && typeof response.data === 'object' && 'success' in response.data) {
+        return response.data as UserPositionsResponse;
       }
       
-      // Handle both array response and object with positions array
-      const positions = Array.isArray(response.data) 
-        ? response.data 
-        : (response.data?.positions || []);
-        
+      // Otherwise format according to Mango V3 spec
       return {
-        positions: positions,
-        metadata: Array.isArray(response.data) ? {} : (response.data?.metadata || {})
+        success: true,
+        positions: Array.isArray(response.data) ? response.data : [],
+        metadata: {
+          total_positions: Array.isArray(response.data) ? response.data.length : 0,
+          timestamp: new Date().toISOString()
+        }
       };
     } catch (error) {
-      console.error('Error fetching leverage positions:', error);
-      throw error;
+      console.error('Error fetching spot positions:', error);
+      return {
+        success: false,
+        positions: [],
+        error: {
+          message: error instanceof Error ? error.message : 'Failed to fetch spot positions',
+          code: 'POSITION_FETCH_ERROR'
+        }
+      };
     }
   },
-  
+
   /**
    * Get position history for a user with pagination and filtering
    * @param params Query parameters for filtering position history

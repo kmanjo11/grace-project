@@ -843,7 +843,7 @@ class EnhancedConversationFlow:
                 return
             
             # Extract potential actions using regex patterns and considering active topics
-            actions = self._extract_actions_from_text(response, unified_context)
+            actions = await self._extract_actions_from_text(response, unified_context)
             
             if not actions:
                 self.logger.debug("No actions detected in response")
@@ -859,7 +859,7 @@ class EnhancedConversationFlow:
             self.logger.error(f"Error executing actions from response: {str(e)}")
             self.logger.error(traceback.format_exc())
     
-    def _extract_actions_from_text(self, text, unified_context=None):
+    async def _extract_actions_from_text(self, text, unified_context=None):
         """
         Extract potential actions from response text using regex patterns.
         

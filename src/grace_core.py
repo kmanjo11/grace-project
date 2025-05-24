@@ -1206,6 +1206,9 @@ You are designed to work with a specialized agent framework that handles crypto 
             except Exception as e:
                 logger.error(f"Failed to configure Open Interpreter: {e}")
                 raise
+        except Exception as e:
+            logger.error(f"Error initializing Open Interpreter core: {e}")
+            raise
 
     def _update_research_service_interpreter(self):
         """Update the research service with the interpreter after it's initialized."""
@@ -1222,7 +1225,6 @@ You are designed to work with a specialized agent framework that handles crypto 
         """Initialize the enhanced conversation flow for improved context handling."""
         logger.info("Initializing Enhanced Conversation Flow")
         
-# ... (rest of the code remains the same)
         # Import the enhanced conversation flow
         try:
             from src.enhanced_conversation_flow import EnhancedConversationFlow

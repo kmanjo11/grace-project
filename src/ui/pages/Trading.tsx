@@ -2,8 +2,8 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../components/AuthContext';
 import { useAppState } from '../context/AppStateContext';
-import MangoV3Service from '../../services/mangoV3Service';
-import { TokenData, UITrade, TradeForm } from '../api/tradingTypes';
+import MangoV3Service, { MarketData } from '../../services/mangoV3Service';
+import { UITrade, TradeForm } from '../../types/trading';
 import { api, API_ENDPOINTS, ApiError, TradingApi } from '../api/apiClient';
 import PriceChart from '../components/PriceChart';
 import ErrorBoundary from '../components/ErrorBoundary';
@@ -18,8 +18,8 @@ const DEFAULT_TAKE_PROFIT = 10;
 
 // Types
 type TradingState = {
-  tokens: TokenData[];
-  selectedToken: TokenData | null;
+  tokens: MarketData[];
+  selectedToken: MarketData | null;
   transactions: UITrade[];
   isLoading: {
     tokens: boolean;
@@ -55,8 +55,8 @@ const initialState: TradingState = {
   },
 };
 
-// Process Mango token data with validation
-const processMangoToken = (token: any): TokenData | null => {
+// Process Mango token data with validation to create proper MarketData objects
+const processMangoToken = (token: any): MarketData | null => {
   try {
     if (!token || typeof token !== 'object') {
       console.warn('Invalid token data:', token);
@@ -70,41 +70,38 @@ const processMangoToken = (token: any): TokenData | null => {
       return null;
     }
     
-    const symbol = String(token.symbol || token.baseCurrency || '').toUpperCase().trim();
-    if (!symbol) {
-      console.warn('Token missing symbol:', token);
-      return null;
-    }
+    // Extract basic token data
+    const baseCurrency = String(token.baseCurrency || token.symbol || '').toUpperCase().trim();
+    const quoteCurrency = String(token.quoteCurrency || 'USDC').toUpperCase().trim();
     
-    const name = String(token.name || token.baseCurrency || symbol).trim();
+    // Create a name using the market pattern if available, otherwise use the base currency
+    const name = token.name || `${baseCurrency}-${quoteCurrency}`;
+    
+    // Use provided price or default to 0 if not available or invalid
     const price = typeof token.price === 'number' && !isNaN(token.price) ? token.price : 0;
     
-    // Additional validation for trading pairs
-    const baseCurrency = String(token.baseCurrency || '').toUpperCase().trim();
-    const quoteCurrency = String(token.quoteCurrency || '').toUpperCase().trim();
-    
-    if (!baseCurrency || !quoteCurrency) {
-      console.warn('Token missing currency pair info:', token);
-      return null;
-    }
-    
-    return {
-      address,
-      symbol,
-      name,
-      price,
-      change_24h: 0, // Will be updated from market data
-      volume_24h: 0, // Will be updated from market data
-      market_cap: 0, // Will be updated from market data
-      decimals: typeof token.decimals === 'number' && !isNaN(token.decimals) ? token.decimals : 9,
-      logoURI: token.logoURI || '',
-      marketId: token.marketId || token.address || '',
-      source: 'mango',
-      canTrade: true,
-      canChart: true,
-      baseCurrency,
-      quoteCurrency,
+    // Create a MarketData object with only the properties defined in the interface
+    const marketData: MarketData = {
+      name: name,
+      address: address,
+      baseCurrency: baseCurrency,
+      quoteCurrency: quoteCurrency,
+      price: price,
+      marketId: token.marketId || ''
     };
+    
+    // Add optional properties if available
+    if (token.symbol) marketData.symbol = token.symbol.toUpperCase().trim();
+    if (token.logoURI) marketData.logoURI = token.logoURI;
+    if (token.decimals !== undefined) marketData.decimals = token.decimals;
+    
+    // Store any additional data in the marketData object using its index signature
+    // This ensures compatibility while preserving extra information
+    marketData['source'] = 'mango';
+    marketData['canTrade'] = true;
+    marketData['canChart'] = true;
+    
+    return marketData;
   } catch (error) {
     console.error('Error processing token:', error, token);
     return null;
@@ -153,12 +150,12 @@ const Trading: React.FC = () => {
 
   // Action creators with type safety
   const actions = useMemo(() => ({
-    setTokens: (tokens: TokenData[]) => {
+    setTokens: (tokens: MarketData[]) => {
       console.log('Setting tokens:', tokens);
       setState(prev => ({ ...prev, tokens }));
     },
-    selectToken: (token: TokenData | null) => {
-      console.log('Selecting token:', token?.symbol);
+    selectToken: (token: MarketData | null) => {
+      console.log('Selecting token:', token?.name);
       setState(prev => ({ ...prev, selectedToken: token }));
     },
     setTransactions: (transactions: UITrade[]) => {
@@ -335,7 +332,7 @@ const Trading: React.FC = () => {
   }, [state.selectedToken, state.tradeForm, actions]);
 
   // Handle token selection with data loading
-  const handleTokenSelect = useCallback(async (token: TokenData) => {
+  const handleTokenSelect = useCallback(async (token: MarketData) => {
     if (!token?.address) {
       const errorMsg = 'Invalid token: Missing address';
       console.error(errorMsg, token);
@@ -343,7 +340,7 @@ const Trading: React.FC = () => {
       return;
     }
     
-    console.log(`Selected token: ${token.symbol} (${token.address})`);
+    console.log(`Selected token: ${token.name} (${token.address})`);
     
     // Update UI state
     actions.selectToken(token);
@@ -361,9 +358,13 @@ const Trading: React.FC = () => {
       console.log(`- Resolution: ${state.resolution || '1h'}`);
       console.log(`- Time range: ${new Date(startTime * 1000).toISOString()} to ${new Date(endTime * 1000).toISOString()}`);
       
-      // Load token price data
+      // Load token price data - use market name for OHLCV request, not address
+      // Per Mango V3 API: /api/markets/{market_name}/candles
+      const marketName = token.name || `${token.baseCurrency}-${token.quoteCurrency}` || token.address;
+      console.log(`Using market name for OHLCV request: ${marketName}`);
+      
       const priceData = await MangoV3Service.getOHLCV(
-        token.address,
+        marketName,
         state.resolution || '1h',
         startTime,
         endTime
@@ -541,7 +542,7 @@ const Trading: React.FC = () => {
         // Process all tokens
         const allTokens = response
           .map(processMangoToken)
-          .filter((token): token is TokenData => token !== null);
+          .filter((token): token is MarketData => token !== null);
         
         // If search query is present, filter on client side for more flexible matching
         const tokens = searchQuery.length >= 3 

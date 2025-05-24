@@ -35,6 +35,11 @@ export interface TokenData {
   quoteCurrency?: string;
   baseMint?: string;
   quoteMint?: string;
+  
+  // UI and service specific fields
+  source?: 'mango' | 'birdeye' | 'both';
+  canTrade?: boolean;
+  canChart?: boolean;
 }
 
 // Trade types

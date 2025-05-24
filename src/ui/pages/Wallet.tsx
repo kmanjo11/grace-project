@@ -585,6 +585,15 @@ export default function Wallet() {
         ) : (
           <p className="text-gray-400">Loading wallet info...</p>
         )}
+        
+        {/* Lightweight Positions Widget */}
+        <div className="mt-6 border border-red-800 rounded p-4">
+          <h2 className="text-xl font-mono text-red-300 mb-4">Your Trading Positions</h2>
+          <LightweightPositionsWidget 
+            initialExpanded={true}
+            refreshInterval={60000} 
+          />
+        </div>
       </div>
   );
 }

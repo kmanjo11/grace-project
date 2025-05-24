@@ -320,10 +320,21 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
 
     try {
       // Use TradingApi methods that match your API types
-      const [spotResponse, leverageResponse] = await Promise.all([
-        TradingApi.getUserSpotPositions(),
-        TradingApi.getUserLeveragePositions()
-      ]);
+      // Wrap in try-catch to prevent Promise.all from failing completely if one request fails
+      let spotResponse = { positions: [] };
+      let leverageResponse = { positions: [] };
+      
+      try {
+        spotResponse = await TradingApi.getUserSpotPositions();
+      } catch (spotError) {
+        console.error('Error fetching spot positions:', spotError);
+      }
+      
+      try {
+        leverageResponse = await TradingApi.getUserLeveragePositions();
+      } catch (leverageError) {
+        console.error('Error fetching leverage positions:', leverageError);
+      }
 
       if (!isMounted.current) return;
 
@@ -371,6 +382,9 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
       
     } catch (error) {
       console.error('Error fetching positions:', error);
+      
+      // Set empty positions array to ensure component still renders
+      setPositions([]);
       
       if (!isRetry) {
         const errorMessage = error instanceof Error ? error.message : 'Failed to fetch positions';
@@ -612,22 +626,22 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
   }, [user?.token, positions, fetchPositions, fetchTransactions]);
 
   return (
-    <div className="bg-white shadow-md rounded-lg p-4">
+    <div className="bg-gray-800 shadow-md rounded-lg p-4 border border-gray-700">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-lg font-semibold">Public Trading Positions</h2>
+        <h2 className="text-lg font-semibold text-red-300">Public Trading Positions</h2>
         <button
           onClick={() => {
             setIsExpanded(!isExpanded);
           }}
-          className="text-blue-500 hover:text-blue-700"
+          className="text-red-400 hover:text-red-300 text-sm bg-red-900/30 px-2 py-1 rounded border border-red-800"
         >
           {isExpanded ? 'Collapse' : 'Expand'}
         </button>
       </div>
       {positions.length === 0 ? (
-        <div className="text-center py-4">
-          <p className="text-gray-500 mb-2">No public positions available</p>
-          <p className="text-sm text-gray-400">Trading activity will be displayed here</p>
+        <div className="text-center py-4 border border-gray-700 rounded bg-gray-900/50 p-4">
+          <p className="text-gray-300 mb-2">No trading positions available</p>
+          <p className="text-sm text-gray-400">Your active trades will appear here</p>
         </div>
       ) : (
         <div className="overflow-hidden">
@@ -688,7 +702,7 @@ const PositionCard: React.FC<{
   const closeValue = (position.currentPrice * position.amount * closePercentage / 100).toFixed(2);
 
   return (
-    <div className="bg-gray-800 rounded-lg p-4 mb-3 border-l-4 border-blue-500">
+    <div className="bg-gray-900 rounded-lg p-4 mb-3 border-l-4 border-red-500 border border-gray-700">
       <div className="flex justify-between items-start">
         <div>
           <h4 className="font-medium text-white">{position.token}</h4>

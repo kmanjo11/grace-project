@@ -16,11 +16,11 @@ import {
   TOKEN_KEY
 } from '../utils/authUtils';
 
-// Lightweight session persistence utility
+// Improved session persistence utility to avoid conflicts with form state
 const SessionPersistence = {
   STORAGE_KEY: 'GRACE_SESSION_SNAPSHOT',
   
-  // Safely capture session snapshot
+  // Safely capture session snapshot with minimal data to avoid interference
   captureSnapshot(user: User | null, token: string | null) {
     try {
       if (!user || !token) {
@@ -28,6 +28,8 @@ const SessionPersistence = {
         return;
       }
 
+      // Store only essential user identification data
+      // Avoid storing complete state that might conflict with forms
       const snapshot = {
         timestamp: Date.now(),
         user: {
@@ -35,34 +37,45 @@ const SessionPersistence = {
           username: user.username,
           email: user.email
         },
-        token: token
+        // Don't store the actual token, just indicate authentication
+        authenticated: true
       };
 
-      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(snapshot));
+      // Use sessionStorage instead of localStorage to avoid persisting between browser sessions
+      // This helps prevent stale data from affecting forms on future visits
+      sessionStorage.setItem(this.STORAGE_KEY, JSON.stringify(snapshot));
     } catch (error) {
       console.warn('Failed to capture session snapshot', error);
+      // Silently fail - don't let snapshot errors affect the application
     }
   },
 
-  // Retrieve session snapshot
+  // Retrieve session snapshot with validation
   retrieveSnapshot(): { user: User | null, token: string | null } {
     try {
-      const snapshotStr = localStorage.getItem(this.STORAGE_KEY);
+      const snapshotStr = sessionStorage.getItem(this.STORAGE_KEY);
       if (!snapshotStr) return { user: null, token: null };
 
       const snapshot = JSON.parse(snapshotStr);
       
-      // Validate snapshot (optional: add expiration check)
-      if (snapshot && snapshot.user && snapshot.token) {
+      // Validate snapshot with expiration check (30 minutes)
+      const MAX_AGE = 30 * 60 * 1000; // 30 minutes in milliseconds
+      const isExpired = (Date.now() - (snapshot.timestamp || 0)) > MAX_AGE;
+      
+      if (snapshot && snapshot.user && !isExpired) {
         return {
           user: snapshot.user,
-          token: snapshot.token
+          // Get actual token from authUtils to ensure consistency
+          token: getAuthToken()
         };
       }
 
+      // Clear expired snapshot
+      if (isExpired) this.clearSnapshot();
       return { user: null, token: null };
     } catch (error) {
       console.warn('Failed to retrieve session snapshot', error);
+      this.clearSnapshot(); // Clear invalid snapshot
       return { user: null, token: null };
     }
   },
@@ -70,7 +83,7 @@ const SessionPersistence = {
   // Clear session snapshot
   clearSnapshot() {
     try {
-      localStorage.removeItem(this.STORAGE_KEY);
+      sessionStorage.removeItem(this.STORAGE_KEY);
     } catch (error) {
       console.warn('Failed to clear session snapshot', error);
     }
@@ -118,9 +131,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Combined effect to handle authentication verification
+  // Combined effect to handle authentication verification with safeguards
   // This is a single effect to avoid race conditions from multiple effects
   useEffect(() => {
+    // Create a request identifier to handle race conditions with concurrent requests
+    const requestId = Date.now();
+    let isMounted = true;
+    
     const verifyAuthentication = async () => {
       // Skip verification if we just logged in to avoid race conditions
       if (skipNextVerification) {
@@ -130,11 +147,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       
       if (!token) {
-        setLoading(false);
+        if (isMounted) setLoading(false);
         return;
       }
 
       try {
+        // Introduce a small delay to avoid blocking UI rendering
+        // This prevents form rendering issues during verification
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        // Early exit if component unmounted during the delay
+        if (!isMounted) return;
+        
         // Check if token is expired using standardized function
         if (isTokenExpired()) {
           // Token expired, attempt to refresh
@@ -146,6 +170,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Verify token using apiClient with proper endpoint constant
           const { success, data } = await api.get(API_ENDPOINTS.AUTH.VERIFY_TOKEN);
           
+          // Early exit if component unmounted during API call
+          if (!isMounted) return;
+          
           if (!success) throw new Error('Token verification failed');
           
           // Extract user data from the backend response
@@ -154,24 +181,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(newUser);
             setIsAuthenticated(true);
 
-            // Capture session snapshot
+            // Capture session snapshot - won't interfere with form rendering now
             SessionPersistence.captureSnapshot(newUser, token);
           } else {
             throw new Error('Invalid user data');
           }
         }
       } catch (error) {
+        // Only proceed if this is still the active request
+        if (!isMounted) return;
+        
         // Any error in verification flow leads to logout
         clearAuthTokens();
         setToken(null);
         setUser(null);
         setIsAuthenticated(false);
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     };
     
     verifyAuthentication();
+    
+    // Cleanup function to prevent race conditions
+    return () => {
+      isMounted = false;
+    };
   }, [token]); // Only depend on token to avoid race conditions
 
   // Enhanced logging utility for authentication events
@@ -270,8 +305,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Using ternary to correctly handle all cases including false values
       const rememberMe = data.remember_me !== undefined ? data.remember_me : true; // Default to true for persistent login
       
-      // Store token with remember me preference
-      storeAuthToken(data.token, rememberMe);
+      // Use setTimeout to move token storage to next tick
+      // This prevents it from blocking UI rendering
+      setTimeout(() => {
+        // Store token with remember me preference
+        storeAuthToken(data.token, rememberMe);
+        
+        // Capture minimal session data after successful login
+        // Only capture basic data to avoid form interference
+        if (data.user) {
+          SessionPersistence.captureSnapshot(data.user, data.token);
+        }
+      }, 0);
       
       // Set flag to skip next verification cycle to avoid race condition
       setSkipNextVerification(true);
@@ -283,7 +328,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       console.error('Login failed:', error instanceof Error ? error.message : 'Unknown error');
       // Ensure auth state is reset if login fails
-      clearAuthTokens();
+      setTimeout(() => {
+        clearAuthTokens();
+        SessionPersistence.clearSnapshot();
+      }, 0);
       setToken(null);
       setUser(null);
       setIsAuthenticated(false);

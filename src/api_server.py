@@ -26,13 +26,13 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("GraceAPI")  # Named logger for consistency with GraceCore
 
 # Custom jwt_required decorator for Quart
 def jwt_required():
     def handle_error(e):
         # Log the error and return an appropriate response
-        logger.error(f"Error: {str(e)}", exc_info=True)
+        logger.error("Error: %s", str(e), exc_info=True)
         return jsonify({"success": False, "error": str(e)})
 
     def decorator(f):
@@ -220,16 +220,16 @@ async def save_sessions():
         # Run the file write in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, write_file)
-        logger.info(f"Saved {len(active_sessions)} sessions to {SESSIONS_FILE}")
+        logger.info("Saved %d sessions to %s", len(active_sessions), SESSIONS_FILE)
     except Exception as e:
-        logger.error(f"Error saving sessions: {e}")
+        logger.error("Error saving sessions: %s", e)
 
 
 async def load_sessions():
     """Load persistent sessions from storage"""
     try:
         if not os.path.exists(SESSIONS_FILE):
-            logger.info(f"Sessions file {SESSIONS_FILE} not found, starting with empty sessions")
+            logger.info("Sessions file %s not found, starting with empty sessions", SESSIONS_FILE)
             return {}
             
         # Use async with loop.run_in_executor for non-blocking file I/O
@@ -265,10 +265,10 @@ async def load_sessions():
 
             restored_sessions[token] = restored_session
 
-        logger.info(f"Loaded {len(restored_sessions)} sessions from {SESSIONS_FILE}")
+        logger.info("Loaded %d sessions from %s", len(restored_sessions), SESSIONS_FILE)
         return restored_sessions
     except Exception as e:
-        logger.error(f"Error loading sessions: {e}")
+        logger.error("Error loading sessions: %s", e)
         return {}
 
 
@@ -3336,14 +3336,14 @@ async def static_files(path):
                 # Use send_file with explicit mimetype
                 return await send_file(asset_path, mimetype=mime_type)
             else:
-                logger.info(f"Asset not found at: {asset_path}")
+                logger.info("Asset not found at: %s", asset_path)
         except Exception as e:
-            logger.error(f"Error serving {asset_path}: {str(e)}")
+            logger.error("Error serving %s: %s", asset_path, str(e))
             continue
 
     # If the asset wasn't found, try to serve index.html for SPA routing
     logger.info(
-        f"Asset not found in any location, serving index.html for SPA routing: {path}"
+        "Asset not found in any location, serving index.html for SPA routing: %s", path
     )
     return await index()
 
@@ -3356,7 +3356,7 @@ async def startup():
     global active_sessions
     # Load sessions asynchronously
     active_sessions = await load_sessions()
-    logger.info(f"Loaded {len(active_sessions)} sessions from persistent storage")
+    logger.info("Loaded %d sessions from persistent storage", len(active_sessions))
 
     # Start periodic session saving task
     app.background_tasks.add(asyncio.create_task(periodic_session_save()))
@@ -3369,7 +3369,7 @@ async def shutdown():
     # Save sessions before server stops
     logger.info("Saving sessions before shutdown...")
     await save_sessions()
-    logger.info(f"Saved {len(active_sessions)} sessions on shutdown")
+    logger.info("Saved %d sessions on shutdown", len(active_sessions))
 
 
 if __name__ == "__main__":
