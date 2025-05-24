@@ -10,8 +10,7 @@ import {
   CandlestickSeriesPartialOptions,
   ISeriesApi as ISeriesApiExtended
 } from 'lightweight-charts';
-import MangoV3Service, { OHLCVData, MangoV3Error } from '../../services/mangoV3Service';
-import { TokenData } from '../api/tradingTypes';
+import MangoV3Service, { OHLCVData, MangoV3Error, MarketData } from '../../services/mangoV3Service';
 import ErrorBoundary from './ErrorBoundary';
 
 // Extend the IChartApi to include our enhanced addCandlestickSeries
@@ -26,8 +25,8 @@ type CandlestickDataPoint = CandlestickData<Time>;
 
 interface PriceChartProps {
   tokenAddress: string;
-  onTokenSelect?: (token: TokenData) => void;
-  selectedToken?: TokenData | null;
+  onTokenSelect?: (token: MarketData) => void;
+  selectedToken?: MarketData | null;
   resolution: string;
   onResolutionChange: (resolution: string) => void;
   onError?: (error: string | null) => void;
@@ -49,26 +48,33 @@ interface ChartCacheEntry {
   timestamp: number;
   timeFrom?: number;
   timeTo?: number;
+  marketName?: string; // Store the resolved market name for reference
 }
 
 const chartDataCache = new Map<string, ChartCacheEntry>();
 const CACHE_TTL = 30000; // 30 seconds cache
 
+// Market type suffixes to try in order of preference
+const MARKET_TYPES = ['-PERP', '-USDC', '/USDC', '/USD', '-USD'];
+
+// We'll fetch popular tokens dynamically instead of using a hardcoded list
+
 /**
  * Fetches OHLCV data with caching and time range support
- * @param marketName - The market identifier (e.g., 'BTC-PERP')
+ * @param tokenAddress - The token address to look up
  * @param resolution - Resolution string (e.g., '1h', '4h')
  * @param timeFrom - Optional start time in seconds (Unix timestamp)
  * @param timeTo - Optional end time in seconds (Unix timestamp)
  * @returns Promise with OHLCV data
  */
 async function fetchWithCache(
-  marketName: string, 
+  tokenAddress: string, 
   resolution: string,
   timeFrom?: number,
   timeTo?: number
 ): Promise<OHLCVData[]> {
-  const cacheKey = `${marketName}:${resolution}:${timeFrom || 'all'}:${timeTo || 'all'}`;
+  // Initial cache key based on inputs
+  let cacheKey = `${tokenAddress}:${resolution}:${timeFrom || 'all'}:${timeTo || 'all'}`;
   const now = Date.now();
 
   // Try to get from cache first
@@ -85,24 +91,125 @@ async function fetchWithCache(
     // Default to 24 hours if no time range provided
     const endTime = timeTo || Math.floor(Date.now() / 1000);
     const startTime = timeFrom || (endTime - 24 * 60 * 60);
+    
+    // Handle token symbols directly - if input is a token symbol like 'SOL', 
+    // we need to convert it to a market name like 'SOL-PERP' or 'SOL-USDC'
+    let marketName = tokenAddress; // Default to using the token address as is
+    let marketFound = false;
+    
+    const tokenUpperCase = tokenAddress.toUpperCase();
+    
+    try {
+      // APPROACH 1: Try common market formats for the token
+      if (tokenUpperCase === 'USDC') {
+        // USDC is usually a quote currency, try several base currencies
+        const baseOptions = ['BTC', 'SOL', 'ETH'];
+        for (const base of baseOptions) {
+          try {
+            const testMarket = `${base}-USDC`;
+            const markets = await MangoV3Service.searchMarkets(testMarket);
+            if (markets.some(m => m.name === testMarket)) {
+              marketName = testMarket;
+              marketFound = true;
+              break;
+            }
+          } catch (e) {
+            console.error(`Error checking market ${base}-USDC:`, e);
+          }
+        }
+      } else {
+        // For other tokens, try each market type suffix
+        for (const suffix of MARKET_TYPES) {
+          try {
+            const testMarket = `${tokenUpperCase}${suffix}`;
+            const markets = await MangoV3Service.searchMarkets(testMarket);
+            if (markets.some(m => m.name === testMarket)) {
+              marketName = testMarket;
+              marketFound = true;
+              console.log(`Found market by direct mapping: ${marketName}`);
+              break;
+            }
+          } catch (e) {
+            // Continue to next market type
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error in APPROACH 1:', error);
+    }
+    
+    // APPROACH 2: If direct mapping didn't work, try searching by token name/address
+    if (!marketFound) {
+      try {
+        // Search for markets that match this token address or symbol
+        const markets = await MangoV3Service.searchMarkets(tokenAddress);
+        
+        if (markets.length > 0) {
+          // First try to match by address
+          let market = markets.find(m => 
+            m.address?.toLowerCase() === tokenAddress.toLowerCase()
+          );
+          
+          // If no match by address, try by base currency (token symbol)
+          if (!market) {
+            market = markets.find(m => 
+              m.baseCurrency?.toLowerCase() === tokenAddress.toLowerCase()
+            );
+          }
+          
+          // If still no match, prefer perpetual markets first, then USDC pairs
+          if (!market) {
+            // Look for perpetual markets first
+            market = markets.find(m => m.name?.includes('-PERP'));
+            
+            // Then try USDC pairs
+            if (!market) {
+              market = markets.find(m => m.name?.includes('-USDC') || m.name?.includes('/USDC'));
+            }
+            
+            // If still nothing, just take the first market
+            if (!market && markets.length > 0) {
+              market = markets[0];
+            }
+          }
+          
+          if (market && market.name) {
+            marketName = market.name;
+            marketFound = true;
+            console.log(`Found market ${marketName} for token ${tokenAddress}`);
+          }
+        }
+      } catch (error) {
+        console.error('Error in APPROACH 2:', error);
+      }
+    }
+    
+    // Update cache key to include the resolved market name for better caching
+    cacheKey = `${tokenAddress}:${marketName}:${resolution}:${timeFrom || 'all'}:${timeTo || 'all'}`;
 
-    // Use MangoV3Service to fetch data
-    const data = await MangoV3Service.getOHLCV(
-      marketName,
-      resolution, // MangoV3Service handles resolution mapping
-      startTime,
-      endTime
-    );
-
-    // Cache the result
-    chartDataCache.set(cacheKey, {
-      data,
-      timestamp: now,
-      timeFrom: startTime,
-      timeTo: endTime
-    });
-
-    return data;
+    try {
+      // Use MangoV3Service to fetch data with the correct market name
+      const data = await MangoV3Service.getOHLCV(
+        marketName,
+        resolution,
+        startTime,
+        endTime
+      );
+      
+      // Store in cache
+      chartDataCache.set(cacheKey, {
+        data,
+        timestamp: now,
+        timeFrom: startTime,
+        timeTo: endTime,
+        marketName
+      });
+      
+      return data;
+    } catch (error) {
+      console.error('Error fetching OHLCV data:', error);
+      throw error;
+    }
   } catch (error) {
     console.error('Error in fetchWithCache:', error);
     throw error;
@@ -119,15 +226,13 @@ const PriceChart: React.FC<PriceChartProps> = ({
   onLoading: propOnLoading,
 }) => {
   // State management
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Resolution is now fully controlled by parent
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [searchResults, setSearchResults] = useState<TokenData[]>([]);
-  const [showSearchResults, setShowSearchResults] = useState<boolean>(false);
-  const [localSelectedToken, setLocalSelectedToken] = useState<TokenData | null>(
-    propSelectedToken || null
-  );
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const [searchResults, setSearchResults] = useState<MarketData[]>([]);
+  const [localSelectedToken, setLocalSelectedToken] = useState<MarketData | null>(propSelectedToken || null);
+  const [popularTokens, setPopularTokens] = useState<MarketData[]>([]);
 
   // Notify parent of loading state changes
   useEffect(() => {
@@ -311,15 +416,91 @@ const PriceChart: React.FC<PriceChartProps> = ({
     }
   }, [tokenAddress, resolution, fetchChartData]);
 
+  // Fetch popular tokens on component mount
+  useEffect(() => {
+    fetchPopularTokens();
+  }, []);
+
+  // Fetch popular tokens from MangoV3
+  const fetchPopularTokens = useCallback(async () => {
+    try {
+      // Get ALL markets for dynamic popular token list
+      const markets = await MangoV3Service.searchMarkets('');
+      
+      // Use MarketData directly - filter for valid markets
+      const tokens = markets
+        .filter(market => market.baseCurrency && market.quoteCurrency)
+        // Ensure all required fields have values
+        .map(market => ({
+          ...market,
+          // Ensure these fields always have values
+          price: market.price || 0,
+          marketId: market.marketId || market.address
+        }));
+      
+      // Get top tokens with unique base currency (to avoid duplicates)
+      const uniqueBaseTokens = Array.from(new Map(tokens.map(token => 
+        [token.baseCurrency, token]
+      )).values());
+      
+      // Get the top 10 popular tokens
+      setPopularTokens(uniqueBaseTokens.slice(0, 10));
+    } catch (err) {
+      console.error('Error fetching popular tokens:', err);
+    }
+  }, []);
+
   // Handle search input changes
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setSearchQuery(value);
-    // TODO: Implement search functionality
+    
+    // Always fetch all tokens but only show dropdown when 3+ characters
+    if (value.length >= 3) {
+      setIsLoading(true);
+      setShowSearchResults(true);
+      
+      // Get ALL markets by passing empty string, for complete list
+      MangoV3Service.searchMarkets('')
+        .then(markets => {
+          // Use MarketData directly - filter for valid markets
+          const tokens = markets
+            .filter(market => market.baseCurrency && market.quoteCurrency)
+            // Ensure all required fields have values
+            .map(market => ({
+              ...market,
+              // Ensure these fields always have values
+              price: market.price || 0,
+              marketId: market.marketId || market.address
+            }));
+          
+          // Filter by query on client side
+          const query = value.toLowerCase().trim();
+          const filteredTokens = tokens.filter(token => 
+            // Use baseCurrency instead of symbol (MarketData doesn't have symbol property)
+            (token.baseCurrency && token.baseCurrency.toLowerCase().includes(query)) ||
+            (token.name && token.name.toLowerCase().includes(query)) ||
+            (token.quoteCurrency && token.quoteCurrency.toLowerCase().includes(query)) ||
+            (token.address && token.address.toLowerCase().includes(query))
+          );
+          
+          setSearchResults(filteredTokens);
+          setIsLoading(false);
+        })
+        .catch(err => {
+          console.error('Market search error:', err);
+          setSearchResults([]);
+          setIsLoading(false);
+        });
+    } else {
+      // When search is empty, show the popular tokens instead
+      setShowSearchResults(popularTokens.length > 0);
+      setSearchResults(popularTokens);
+    }
   };
 
   // Handle token selection from search results
-  const handleTokenSelect = (token: TokenData) => {
+  const handleTokenSelect = (token: MarketData) => {
     setLocalSelectedToken(token);
     setShowSearchResults(false);
     if (onTokenSelect) {
@@ -350,13 +531,24 @@ const PriceChart: React.FC<PriceChartProps> = ({
             type="text"
             value={searchQuery}
             onChange={handleSearchChange}
-            onFocus={() => setShowSearchResults(true)}
+            onFocus={() => {
+              // Show popular tokens by default when focused and no search text
+              if (!searchQuery && popularTokens.length > 0) {
+                setSearchResults(popularTokens);
+                setShowSearchResults(true);
+              } else if (searchQuery.length >= 3) {
+                setShowSearchResults(true);
+              }
+            }}
             onBlur={() => setTimeout(() => setShowSearchResults(false), 200)}
             placeholder="Search for a token..."
             className="w-full p-2 rounded bg-gray-800 text-white"
           />
           {showSearchResults && searchResults.length > 0 && (
             <div className="absolute z-10 mt-1 w-full bg-gray-800 rounded-md shadow-lg max-h-60 overflow-auto">
+              {searchQuery.length < 3 && popularTokens.length > 0 && (
+                <div className="px-2 py-1 text-xs text-gray-400 border-b border-gray-700">Popular Tokens</div>
+              )}
               {searchResults.map((token) => (
                 <div
                   key={token.address}
@@ -371,9 +563,9 @@ const PriceChart: React.FC<PriceChartProps> = ({
                     />
                   )}
                   <div>
-                    <div className="font-medium">{token.name || 'Unknown Token'}</div>
+                    <div className="font-medium">{token.symbol}</div>
                     <div className="text-sm text-gray-400">
-                      {token.symbol || (token.address ? token.address.slice(0, 8) : 'N/A')}
+                      {token.name || (token.address ? token.address.slice(0, 8) : 'N/A')}
                     </div>
                   </div>
                 </div>

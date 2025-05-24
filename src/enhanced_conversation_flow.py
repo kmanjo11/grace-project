@@ -546,7 +546,11 @@ class EnhancedConversationFlow:
         User: {message}
         
         Based on the above context, generate a helpful response.
-        """  
+        """
+        try:
+            # Set the enhanced prompt
+            enhanced_prompt = prompt
+            
             # 6. Prepare messages for the interpreter - ensure proper format with 'type' field
             # Open Interpreter expects messages in a specific format with 'type' field
             system_message = self.grace_core._get_grace_system_message() if hasattr(self.grace_core, '_get_grace_system_message') else ""

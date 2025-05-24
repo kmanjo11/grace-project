@@ -12,6 +12,10 @@ import re
 from src.user_profile import UserProfileSystem
 
 
+# Configure logging for the memory system
+import logging
+logger = logging.getLogger("MemorySystem")
+
 class MemorySystem:
     """
     Grace's three-layer memory system with ChromaDB integration.
@@ -153,6 +157,54 @@ class MemorySystem:
         )
 
         return memory_id
+
+    def prune_expired_memories(self):
+        """
+        Prune expired memories based on TTL values.
+        
+        Removes short-term and medium-term memories that have exceeded their TTL.
+        Long-term memories are not automatically pruned.
+        """
+        logger.info("Starting memory pruning process")
+        current_time = time.time()
+        pruned_count = 0
+        
+        # Get all user collections
+        for collection_name, collection in self.user_collections.items():
+            try:
+                # Query all items from the collection
+                results = collection.get(include=["metadatas"])
+                if not results or "ids" not in results:
+                    continue
+                    
+                # Find expired memories to remove
+                expired_ids = []
+                for i, metadata in enumerate(results["metadatas"]):
+                    if "memory_type" not in metadata or "timestamp" not in metadata:
+                        continue
+                        
+                    memory_type = metadata["memory_type"]
+                    timestamp = metadata["timestamp"]
+                    
+                    # Calculate age and check if expired
+                    age = current_time - timestamp
+                    
+                    if memory_type == "short_term" and age > self.short_term_ttl:
+                        expired_ids.append(results["ids"][i])
+                    elif memory_type == "medium_term" and age > self.medium_term_ttl:
+                        expired_ids.append(results["ids"][i])
+                
+                # Remove expired memories
+                if expired_ids:
+                    collection.delete(ids=expired_ids)
+                    pruned_count += len(expired_ids)
+                    logger.info(f"Pruned {len(expired_ids)} expired memories from collection {collection_name}")
+            
+            except Exception as e:
+                logger.error(f"Error pruning memories from collection {collection_name}: {str(e)}")
+        
+        logger.info(f"Memory pruning completed: removed {pruned_count} expired memories")
+        return pruned_count
 
     def process_grace_learn_command(self, user_id: str, command: str) -> Dict[str, Any]:
         """

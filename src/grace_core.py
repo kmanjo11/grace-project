@@ -83,6 +83,7 @@ class GraceCore:
         self.conversation_manager = self._init_conversation_manager()
         self.gmgn_service = self._init_gmgn_service()
         self.solana_wallet_manager = self._init_solana_wallet_manager() # Needs to be initialized before transaction_confirmation
+        self.internal_wallet_manager = self._init_internal_wallet_manager() # Initialize internal wallet manager
         self.transaction_confirmation = self._init_transaction_confirmation()
         self.research_service = self._init_research_service() # Initialize Research Service
         self.leverage_trade_manager = self._init_leverage_trade_manager() # Initialize Leverage Trade Manager
@@ -97,7 +98,9 @@ class GraceCore:
                 self.interpreter = self._init_interpreter_core()
                 self.interpreter_core = self.interpreter  # For backward compatibility
                 # Update the research service with the interpreter now that it's available
-                self._update_research_service_interpreter()
+                if hasattr(self, 'research_service') and self.research_service and self.interpreter:
+                    self.research_service.interpreter = self.interpreter
+                    logger.info("Updating Research Service with interpreter")
                 logger.info("Successfully initialized Open Interpreter")
             except Exception as e:
                 logger.error(f"Failed to initialize Open Interpreter: {str(e)}")
@@ -296,6 +299,7 @@ class GraceCore:
         
         # Initialize Mango spot market first
         from src.mango_spot_market import MangoSpotMarket
+        from src.trading_service_selector import TradingServiceSelector
         
         # Ensure we have a valid mango_url, using a default if not present in config
         mango_url = self.config.get("mango_v3_endpoint")
@@ -308,12 +312,7 @@ class GraceCore:
             "private_key_path": self.config.get("mango_private_key_path")
         }
         
-        mango_spot_market = MangoSpotMarket(
-            config=mango_config,
-            memory_system=self.memory_system
-        )
-        
-        # Initialize GMGN with Mango spot market
+        # Initialize GMGN with standard config
         gmgn_config = {
             "trade_endpoint": self.config.get("gmgn_router_endpoint"),
             # Charts must stay with GMGN for consistent display and data format
@@ -321,16 +320,55 @@ class GraceCore:
             "solana_rpc_url": self.config.get("solana_rpc_url"),
             "solana_network": self.config.get("solana_network")
         }
+        
+        # Initialize the trading service selector (sets up both services)
+        logger.info("Initializing Trading Service Selector with Mango V3 as primary")
+        trading_service_selector = TradingServiceSelector(
+            config={
+                "mango": mango_config,
+                "gmgn": gmgn_config
+            },
+            memory_system=self.memory_system
+        )
+        
+        # Initialize the GMGN service directly as well for backward compatibility
         gmgn_service = GMGNService(
             memory_system=self.memory_system,
             config=gmgn_config
         )
         
-        # Attach Mango spot market to GMGN
-        gmgn_service.mango_spot_market = mango_spot_market
+        # Store both services on the instance
+        self.trading_service_selector = trading_service_selector
+        
+        # Log that we've set up the trading service selector
+        logger.info("Trading Service Selector initialized with Mango V3 as primary service")
         
         return gmgn_service
 
+    def _init_internal_wallet_manager(self):
+        """Initialize the internal wallet manager for seamless wallet integration with Mango V3."""
+        logger.info("Initializing Internal Wallet Manager for Mango V3 integration")
+        
+        try:
+            from src.wallet_connection import InternalWalletManager
+            
+            # Create wallet manager with proper configuration
+            internal_wallet_manager = InternalWalletManager(
+                secure_data_manager=self.secure_data_manager,
+                data_dir=self.data_dir,
+                solana_rpc_url=self.config.get("solana_rpc_url", "https://api.mainnet-beta.solana.com")
+            )
+            
+            logger.info("Internal Wallet Manager successfully initialized")
+            return internal_wallet_manager
+            
+        except ImportError as e:
+            logger.error(f"Failed to import InternalWalletManager: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Error initializing internal wallet manager: {str(e)}")
+            return None
+            
     def _init_solana_wallet_manager(self):
         """Initialize the Solana wallet manager."""
         logger.info("Initializing Solana Wallet Manager")
@@ -1168,20 +1206,23 @@ You are designed to work with a specialized agent framework that handles crypto 
             except Exception as e:
                 logger.error(f"Failed to configure Open Interpreter: {e}")
                 raise
-        except Exception as e:
-            logger.error(f"Failed to initialize Open Interpreter: {e}")
-            raise
 
     def _update_research_service_interpreter(self):
         """Update the research service with the interpreter after it's initialized."""
-        if hasattr(self, 'research_service') and hasattr(self, 'interpreter') and self.interpreter is not None:
+        if hasattr(self, 'research_service') and self.research_service and hasattr(self, 'interpreter') and self.interpreter is not None:
             logger.info("Updating Research Service with interpreter")
             self.research_service.interpreter = self.interpreter
-            
+        else:
+            if not hasattr(self, 'research_service') or not self.research_service:
+                logger.error("Research service not initialized, cannot update with interpreter")
+            if not hasattr(self, 'interpreter') or self.interpreter is None:
+                logger.error("Interpreter not initialized, cannot update research service")
+
     def _init_enhanced_conversation_flow(self):
         """Initialize the enhanced conversation flow for improved context handling."""
         logger.info("Initializing Enhanced Conversation Flow")
         
+# ... (rest of the code remains the same)
         # Import the enhanced conversation flow
         try:
             from src.enhanced_conversation_flow import EnhancedConversationFlow

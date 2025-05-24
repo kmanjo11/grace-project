@@ -12,9 +12,9 @@ interface AxiosError extends Error {
 
 /**
  * Base URL for Mango V3 API
- * @default 'http://localhost:8080'
+ * @default 'http://localhost:8000'
  */
-const MANGO_V3_BASE_URL = process.env.REACT_APP_MANGO_V3_BASE_URL || 'http://localhost:8080';
+const MANGO_V3_BASE_URL = process.env.REACT_APP_MANGO_V3_BASE_URL || 'http://localhost:8000';
 
 /**
  * Time in seconds for different resolution aliases
