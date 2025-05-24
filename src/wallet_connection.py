@@ -77,6 +77,90 @@ class InternalWalletManager:
             self.logger.error(f"Error generating wallet: {str(e)}")
             raise
 
+    async def get_user_wallet(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get wallet data for a specific user, ensuring funds can be properly seen and managed.
+        
+        Args:
+            user_id: Unique user identifier
+            
+        Returns:
+            User wallet data or None if not found
+        """
+        try:
+            # In a production system, this would check a database
+            # For this implementation, we'll check a simple in-memory store
+            user_dir = os.path.join(self.data_dir, "users", user_id)
+            wallet_file = os.path.join(user_dir, "wallet.json")
+            
+            if os.path.exists(wallet_file):
+                with open(wallet_file, 'r') as f:
+                    wallet_data = json.load(f)
+                self.logger.info(f"Retrieved wallet for user {user_id}")
+                return wallet_data
+            else:
+                self.logger.warning(f"No wallet found for user {user_id}")
+                return None
+        except Exception as e:
+            self.logger.error(f"Error retrieving user wallet: {str(e)}")
+            return None
+    
+    async def update_wallet_balance(self, user_id: str, token: str, amount: float, operation: str = "add") -> bool:
+        """
+        Update wallet balance for a specific user and token. This ensures funds are properly 
+        reflected in the internal wallet system after trading operations.
+        
+        Args:
+            user_id: Unique user identifier
+            token: Token symbol (e.g., "sol", "usdc")
+            amount: Amount to add/subtract
+            operation: "add" or "subtract"
+            
+        Returns:
+            Success status
+        """
+        try:
+            # Standardize token name
+            token = token.lower()
+            
+            # Get current wallet data
+            wallet_data = await self.get_user_wallet(user_id)
+            if not wallet_data:
+                self.logger.warning(f"Cannot update balance - no wallet for user {user_id}")
+                return False
+                
+            # Get current balance
+            current_balance = wallet_data.get("balance", {}).get(token, 0.0)
+            
+            # Calculate new balance
+            if operation.lower() == "add":
+                new_balance = current_balance + amount
+            elif operation.lower() == "subtract":
+                new_balance = max(0, current_balance - amount)  # Prevent negative balance
+            else:
+                self.logger.error(f"Invalid operation: {operation}")
+                return False
+                
+            # Update balance in wallet data
+            if "balance" not in wallet_data:
+                wallet_data["balance"] = {}
+            wallet_data["balance"][token] = new_balance
+            
+            # Save updated wallet data
+            user_dir = os.path.join(self.data_dir, "users", user_id)
+            os.makedirs(user_dir, exist_ok=True)
+            wallet_file = os.path.join(user_dir, "wallet.json")
+            
+            with open(wallet_file, 'w') as f:
+                json.dump(wallet_data, f, indent=2)
+                
+            self.logger.info(f"Updated {token} balance for user {user_id}: {current_balance} -> {new_balance}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error updating wallet balance: {str(e)}")
+            return False
+    
     def get_wallet_balance(self, public_key: str) -> Dict[str, float]:
         """
         Get wallet balance from Solana network.

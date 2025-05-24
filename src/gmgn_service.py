@@ -1127,13 +1127,20 @@ class GMGNService:
         Returns:
             Dict[str, Any]: Task result
         """
-        task_type = task_content.get("type")
+        # Extract task type - check both 'type' and 'task_type' fields for compatibility
+        task_type = task_content.get("type") or task_content.get("task_type")
+        
+        # Ensure task_type is a string or set a default for logging
+        if task_type is None:
+            task_type = "unknown"
+            self.logger.warning(f"Task received without a type specification: {task_content}")
+        
         self.logger.info(f"Processing task of type: {task_type}")
 
         if task_type == "get_token_price" or task_type == "price_check":
             token = task_content.get("token_symbol")
             if not token:
-                logger.error("Token symbol is required for price check")
+                self.logger.error("Token symbol is required for price check")
                 return {"status": "error", "message": "Token symbol is required"}
 
             chain = task_content.get("chain", "sol")
@@ -1151,7 +1158,7 @@ class GMGNService:
             user_id = task_content.get("user_id")
 
             if not user_id and not wallet_address:
-                logger.error(
+                self.logger.error(
                     "Either user_id or wallet_address is required for wallet balance check"
                 )
                 return {
@@ -1171,7 +1178,7 @@ class GMGNService:
             user_id = task_content.get("user_id")
 
             if not action or not amount or not token:
-                logger.error(
+                self.logger.error(
                     "Action, amount, and token are required for trade execution"
                 )
                 return {
@@ -1180,7 +1187,7 @@ class GMGNService:
                 }
 
             if not user_id:
-                logger.error("User ID is required for trade execution")
+                self.logger.error("User ID is required for trade execution")
                 return {"status": "error", "message": "User ID is required"}
 
             result = self.execute_trade(action, amount, token, user_id)
@@ -1195,7 +1202,7 @@ class GMGNService:
             user_id = task_content.get("user_id")
 
             if not amount or not from_token or not to_token:
-                logger.error(
+                self.logger.error(
                     "Amount, from_token, and to_token are required for swap execution"
                 )
                 return {
@@ -1204,7 +1211,7 @@ class GMGNService:
                 }
 
             if not user_id:
-                logger.error("User ID is required for swap execution")
+                self.logger.error("User ID is required for swap execution")
                 return {"status": "error", "message": "User ID is required"}
 
             result = self.execute_swap(amount, from_token, to_token, user_id)
@@ -1219,7 +1226,7 @@ class GMGNService:
             user_id = task_content.get("user_id")
 
             if not from_token or not to_token or not amount:
-                logger.error(
+                self.logger.error(
                     "From token, to token, and amount are required for trade preparation"
                 )
                 return {
@@ -1263,10 +1270,18 @@ class GMGNService:
             user_id = task_content.get("user_id")
 
             # Call the smart trading monitor
-            result = self.monitor_smart_trading_positions(user_id)
-            return result
+            try:
+                self.logger.info(f"Executing smart trading monitor for user_id: {user_id if user_id else 'all users'}")
+                result = self.monitor_smart_trading_positions(user_id)
+                # Ensure result has proper status
+                if isinstance(result, dict) and "status" not in result:
+                    result["status"] = "success"
+                return result
+            except Exception as e:
+                self.logger.error(f"Error in monitor_smart_trading task: {str(e)}", exc_info=True)
+                return {"status": "error", "message": f"Smart trading monitor error: {str(e)}"}
 
-        logger.warning(f"Unknown task type: {task_type}")
+        self.logger.warning(f"Unknown task type: {task_type}")
         return {"status": "error", "message": f"Unknown task type: {task_type}"}
 
     def get_mango_v3_market_data(
@@ -1282,7 +1297,7 @@ class GMGNService:
             try:
                 return self.mango_v3.get_market_data(market_name)
             except Exception as e:
-                logger.warning(f"Error getting Mango V3 market data: {e}")
+                self.logger.warning(f"Error getting Mango V3 market data: {e}")
         return {}
 
     def get_mango_v3_portfolio(self) -> Dict[str, Any]:
@@ -1295,7 +1310,7 @@ class GMGNService:
             try:
                 return self.mango_v3.get_portfolio_summary()
             except Exception as e:
-                logger.warning(f"Error getting Mango V3 portfolio data: {e}")
+                self.logger.warning(f"Error getting Mango V3 portfolio data: {e}")
         return {}
 
     def place_mango_v3_leverage_trade(
@@ -1338,13 +1353,13 @@ class GMGNService:
                             expiry=None,  # Permanent memory
                         )
                     except Exception as e:
-                        logger.warning(
+                        self.logger.warning(
                             f"Failed to create memory for Mango V3 trade: {e}"
                         )
 
                 return result
             except Exception as e:
-                logger.error(f"Error placing Mango V3 leverage trade: {e}")
+                self.logger.error(f"Error placing Mango V3 leverage trade: {e}")
                 return {"success": False, "error": str(e)}
         return {"success": False, "error": "Mango V3 extension not enabled"}
 
