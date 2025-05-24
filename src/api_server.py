@@ -4,28 +4,31 @@ API Server for Grace UI
 This module provides the API endpoints for the Grace UI to interact with the Grace Core.
 """
 
-import os
-import sys
-import json
-
-# import time  # Uncomment if needed in the future
-# import uuid  # Uncomment if needed in the future
-import logging
 import asyncio
-
-# import traceback  # Uncomment if needed in the future
-import re
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+import datetime
+import json
 import jwt
-import aiofiles  # For async file operations
+import logging
+import os
+import time
+from pathlib import Path
+import uuid
+from uuid import uuid4
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional, Union, Callable
 from functools import wraps
 # Custom JWT decorator implementation for Quart
 from functools import wraps
-from quart import request, jsonify, current_app
+from quart import Quart, request, jsonify, current_app
+from quart_cors import cors
 
 # Custom jwt_required decorator for Quart
 def jwt_required():
+    def handle_error(e):
+        # Log the error and return an appropriate response
+        logger.error(f"Error: {str(e)}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)})
+
     def decorator(f):
         @wraps(f)
         async def decorated_function(*args, **kwargs):
@@ -49,71 +52,6 @@ def jwt_required():
 # Replacement for get_jwt_identity
 def get_jwt_identity():
     return request.user_id
-import asyncio  # Already imported, used for session persistence
-import shortuuid  # For generating session IDs if needed
-from quart import Quart, request, jsonify, current_app, Response
-from quart.helpers import send_file
-from quart_cors import cors
-
-# Fix imports to work when run directly from src directory
-try:
-    # When imported from parent directory
-    # from src.transaction_confirmation import TransactionConfirmationSystem  # Uncomment if needed in the future
-    # from src.enhanced_conversation_flow import EnhancedConversationFlow  # Uncomment if needed in the future
-    from src.password_recovery import PasswordRecoverySystem
-    from src.grace_core import GraceCore
-except ImportError:
-    # When run directly from src directory
-    from transaction_confirmation import TransactionConfirmationSystem
-
-    # from enhanced_conversation_flow import EnhancedConversationFlow  # Uncomment if needed in the future
-    from password_recovery import PasswordRecoverySystem
-    from grace_core import GraceCore
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("GraceAPI")
-
-
-# --- Grace Core Initialization ---
-# Initialize Grace Core eagerly when the server starts
-try:
-    logger.info("Initializing Grace Core for API Server...")
-    # Determine data directory relative to this script's location
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_data_dir = os.path.join(script_dir, "data")
-    data_dir = os.environ.get("GRACE_DATA_DIR", default_data_dir)
-    chroma_dir = os.environ.get("GRACE_CHROMA_DIR", os.path.join(data_dir, "chromadb"))
-    os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(chroma_dir, exist_ok=True)
-    # Assuming config.py handles config loading or uses defaults if no path given
-    grace_instance = GraceCore(data_dir=data_dir)
-    logger.info("Grace Core initialized successfully for API Server.")
-except Exception as e:
-    logger.error(f"FATAL: Failed to initialize Grace Core: {str(e)}", exc_info=True)
-    grace_instance = None  # Set to None if initialization fails
-# --------------------------------
-
-# Initialize Password Recovery System
-try:
-    logger.info("Initializing Password Recovery System...")
-    recovery_system = PasswordRecoverySystem(
-        recovery_tokens_file=os.path.join(data_dir, "recovery_tokens.json"),
-        token_expiry_hours=24,
-        smtp_host=os.environ.get("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.environ.get("SMTP_PORT", "587")),
-        smtp_username=os.environ.get("SMTP_USERNAME", ""),
-        smtp_password=os.environ.get("SMTP_PASSWORD", ""),
-        from_email=os.environ.get("FROM_EMAIL", "noreply@grace.app"),
-    )
-    logger.info("Password Recovery System initialized successfully.")
-except Exception as e:
-    logger.error(
-        f"Failed to initialize Password Recovery System: {str(e)}", exc_info=True
-    )
-    recovery_system = None
 
 # Import chat_sessions_quart blueprint for chat functionality
 try:
@@ -1022,7 +960,7 @@ async def process_chat_message():  # Renamed from process_message
 
     # If no session_id provided, generate one
     if not session_id:
-        session_id = shortuuid.uuid()
+        session_id = str(uuid.uuid4())
         logger.info(f"No session_id provided, generating new one: {session_id}")
 
     try:
@@ -1234,7 +1172,7 @@ async def get_active_trading_positions():
         # Simulate fetching active positions from a trading system
         active_positions = [
             {
-                "id": str(uuid4()),
+                "id": str(uuid.uuid4()),
                 "token": "SOL",
                 "type": "leverage",
                 "amount": 100.50,
@@ -1244,7 +1182,7 @@ async def get_active_trading_positions():
                 "openTimestamp": datetime.utcnow().isoformat(),
             },
             {
-                "id": str(uuid4()),
+                "id": str(uuid.uuid4()),
                 "token": "USDC",
                 "type": "spot",
                 "amount": 500.00,
@@ -1992,12 +1930,11 @@ async def get_trading_tokens():
         return jsonify(result), 401
 
     try:
-        # Get available tokens for trading
         tokens = [
             {"symbol": "SOL", "name": "Solana", "logo": "/assets/tokens/sol.png"},
             {"symbol": "USDC", "name": "USD Coin", "logo": "/assets/tokens/usdc.png"},
-            {"symbol": "WIF", "name": "Dogwifhat", "logo": "/assets/tokens/wif.png"},
             {"symbol": "BONK", "name": "Bonk", "logo": "/assets/tokens/bonk.png"},
+            {"symbol": "WIF", "name": "Dogwifhat", "logo": "/assets/tokens/wif.png"},
             {"symbol": "JTO", "name": "Jito", "logo": "/assets/tokens/jto.png"},
         ]
 
@@ -2009,27 +1946,48 @@ async def get_trading_tokens():
 
 @app.route("/api/trading/price-chart", methods=["GET"])
 async def get_price_chart():
-    """Get price chart data for a token."""
+    """Get price chart data for a token using Mango V3 service."""
     result = await verify_token_and_get_user_id()
     if not result.get("success"):
         return jsonify(result), 401
 
     token = request.args.get("token", "SOL")
-    timeframe = request.args.get("timeframe", "1d")
+    timeframe = request.args.get("timeframe", "1h")
 
     try:
-        # IMPORTANT: Chart functionality must stay with GMGN, do not move to Mango V3
-        # This ensures consistent chart display across the application
+        # Use Mango V3 for chart data
         try:
+            # Determine the appropriate market name based on token
+            token_upper = token.upper()
+            market_name = f"{token_upper}-PERP"  # Try PERP market first
+            
+            # Get OHLCV data from Mango V3 extension
             chart_data = await run_grace_sync(
-                grace_instance.gmgn_service.get_token_price,  # Using GMGN's price/chart endpoint
-                token,
-                "sol",
-                timeframe,
+                grace_instance.mango_v3_extension.get_candles,
+                market_name,
+                60  # Default to 1m candles, frontend will aggregate as needed
             )
+            
+            # If PERP market fails, try USDC market
+            if not chart_data or not chart_data.get("success"):
+                market_name = f"{token_upper}-USDC"
+                chart_data = await run_grace_sync(
+                    grace_instance.mango_v3_extension.get_candles,
+                    market_name,
+                    60
+                )
+            
+            # Log the success
+            if chart_data and chart_data.get("success"):
+                logger.info(f"Successfully retrieved chart data for {market_name}")
+                return jsonify(chart_data)
+            
+            # If both markets fail, raise exception to fall back to simulated data
+            raise Exception(f"Failed to get chart data for {token} from Mango V3")
+            
         except Exception as inner_e:
             logger.warning(
-                f"Error getting price from GMGNService: {str(inner_e)}, using simulated data"
+                f"Error getting price from Mango V3: {str(inner_e)}, using simulated data"
             )
             # Generate simulated price data if real data is unavailable
             import random
@@ -2049,7 +2007,7 @@ async def get_price_chart():
                 "BONK": 0.000025,
                 "JTO": 2.75,
             }
-            base_price = base_prices.get(token, 10.0)
+            base_price = base_prices.get(token_upper, 10.0)
 
             # Generate 30 days of price data
             for i in range(30):
@@ -2059,16 +2017,22 @@ async def get_price_chart():
                 # Add some randomness to price
                 price = base_price * (1 + random.uniform(-0.1, 0.1) + i * 0.01)
                 prices.append(round(price, 6))
-
-                # Format date for label
                 labels.append(date.strftime("%m/%d"))
 
-            chart_data = {"timestamps": timestamps, "prices": prices, "labels": labels}
+            return jsonify({
+                "success": True,
+                "data": {
+                    "timestamps": timestamps,
+                    "prices": prices,
+                    "labels": labels,
+                    "simulated": True
+                }
+            })
 
-        return jsonify({"success": True, "chartData": chart_data})
     except Exception as e:
         logger.error(f"Error getting price chart: {str(e)}", exc_info=True)
         return jsonify({"error": "Error retrieving price chart data"}), 500
+
 
 
 @app.route("/api/trading/execute", methods=["POST"])
@@ -2147,10 +2111,72 @@ async def execute_trade():
                     400,
                 )
 
-        # Execute trade using the GMGNService
-        trade_result = await run_grace_sync(
-            grace_instance.gmgn_service.execute_trade, action, amount, token, user_id
-        )
+        # Use EnhancedTradingAgent for trade execution
+        try:
+            # Import and initialize EnhancedTradingAgent on demand
+            from trading_agent_extension import EnhancedTradingAgent
+            from agent_framework import AgentTask
+            import uuid
+            
+            logger.info("Initializing EnhancedTradingAgent for trade execution")
+            
+            # Create an instance of EnhancedTradingAgent (non-invasively)
+            enhanced_agent = EnhancedTradingAgent(
+                agent_id="enhanced_trading_agent",
+                config=grace_instance.config,
+                memory_system=grace_instance.memory_system
+            )
+            
+            # Format parameters as an AgentTask (what the trading agent expects)
+            task_id = str(uuid.UUID(int=uuid.getnode()))
+            market = f"{token}/USDC"  # Default market format
+            
+            # Create a task in the format that EnhancedTradingAgent expects
+            task = AgentTask(
+                task_id=task_id,
+                task_type="execute_trade",
+                priority=0,  # High priority
+                content={
+                    "market": market,
+                    "side": action,
+                    "type": "market",  # Default to market orders
+                    "size": float(amount),
+                    "user_id": user_id,
+                    "client_id": f"web_{int(time.time())}",  # Generate client ID
+                }
+            )
+            
+            # Process the task directly using the agent's _handle_execute_trade method
+            logger.info(f"Executing trade via EnhancedTradingAgent: {market} {action} {amount}")
+            trade_result = await run_grace_sync(enhanced_agent._handle_execute_trade, task)
+            
+        except Exception as e:
+            # Fall back to trading service selector or GMGN service if available
+            logger.warning(f"Error using EnhancedTradingAgent: {str(e)}. Trying fallback options.")
+            
+            if hasattr(grace_instance, "trading_service_selector"):
+                # Format trade parameters in the format expected by the selector
+                trade_params = {
+                    "market": f"{token}/USDC",  # Default market format
+                    "side": action,
+                    "type": "market",  # Default to market orders
+                    "size": float(amount),
+                    "user_id": user_id,
+                    "client_id": f"web_{int(time.time())}",  # Generate client ID
+                }
+                
+                # Execute trade using the selector which prioritizes Mango V3
+                logger.info(f"Falling back to trading_service_selector: {trade_params}")
+                trade_result = await run_grace_sync(
+                    grace_instance.trading_service_selector.execute_trade,
+                    trade_params
+                )
+            else:
+                # Fall back to GMGN service if nothing else is available
+                logger.warning("All trading services unavailable, falling back to direct GMGN call")
+                trade_result = await run_grace_sync(
+                    grace_instance.gmgn_service.execute_trade, action, amount, token, user_id
+                )
 
         # Add smart trading info to result
         if apply_smart_settings:
@@ -2178,10 +2204,134 @@ async def execute_trade():
                 trade_result["stop_loss_price"] = round(stop_loss_price, 6)
                 trade_result["take_profit_price"] = round(take_profit_price, 6)
 
+        # Add more informative success message
+        if trade_result.get("status") == "confirmation_required":
+            # Add detailed confirmation instructions
+            trade_result["confirmation_instructions"] = {
+                "message": "Please review and confirm this trade",
+                "details": {
+                    "token": token,
+                    "action": action,
+                    "amount": amount,
+                    "estimated_price": trade_result.get("current_price", "Unknown"),
+                    "estimated_total": float(amount) * float(trade_result.get("current_price", 0)),
+                    "fees": trade_result.get("fees", "Not provided"),
+                }
+            }
+        
         return jsonify({"success": True, "result": trade_result})
     except Exception as e:
         logger.error(f"Error executing trade: {str(e)}", exc_info=True)
-        return jsonify({"error": "Error executing trade"}), 500
+        
+        # Provide more specific error information to help users
+        error_message = str(e)
+        error_code = "EXECUTION_ERROR"
+        error_details = None
+        
+        # Categorize common errors with helpful messages
+        if "insufficient balance" in error_message.lower() or "insufficient funds" in error_message.lower():
+            error_code = "INSUFFICIENT_FUNDS"
+            error_details = "You don't have enough funds to complete this trade."
+        elif "market closed" in error_message.lower():
+            error_code = "MARKET_CLOSED"
+            error_details = "This market is currently closed for trading."
+        elif "price slippage" in error_message.lower():
+            error_code = "PRICE_SLIPPAGE"
+            error_details = "The price changed too much during execution. Try again with a different amount."
+        elif "invalid token" in error_message.lower():
+            error_code = "INVALID_TOKEN"
+            error_details = "The specified token is not available for trading."
+        
+        return jsonify({
+            "success": False,
+            "error": "Error executing trade",
+            "error_code": error_code,
+            "error_message": error_message,
+            "error_details": error_details or "An unexpected error occurred during trade execution."
+        }), 500
+
+
+@app.route("/api/trading/confirm", methods=["POST"])
+async def confirm_trade():
+    """Confirm a pending trade execution."""
+    result = await verify_token_and_get_user_id()
+    if not result.get("success"):
+        return jsonify(result), 401
+
+    user_id = result["user_id"]
+    data = await request.get_json()
+    confirmation_id = data.get("confirmation_id")
+
+    if not confirmation_id:
+        return jsonify({"error": "Missing confirmation ID"}), 400
+
+    try:
+        # Determine which service to use for confirmation
+        if hasattr(grace_instance, "trading_service_selector"):
+            # Use the trading service selector which prioritizes Mango V3
+            logger.info(f"Confirming trade {confirmation_id} via trading_service_selector")
+            confirmation_result = await run_grace_sync(
+                grace_instance.trading_service_selector.confirm_trade,
+                confirmation_id,
+                user_id
+            )
+        else:
+            # Fall back to GMGN service
+            logger.info(f"Confirming trade {confirmation_id} via GMGN service")
+            confirmation_result = await run_grace_sync(
+                grace_instance.gmgn_service.confirm_trade,
+                confirmation_id,
+                user_id
+            )
+
+        # Enhance the response with detailed information
+        if confirmation_result.get("status") == "success":
+            # Add transaction details for display
+            if "transaction_details" not in confirmation_result:
+                confirmation_result["transaction_details"] = {
+                    "confirmation_id": confirmation_id,
+                    "execution_time": confirmation_result.get("execution_time", datetime.now().isoformat()),
+                    "status": "Completed",
+                    "message": "Your trade was executed successfully"
+                }
+            
+            # Add a message for the UI to display
+            confirmation_result["display_message"] = "Trade executed successfully!"
+            
+            # Store this in transaction history
+            try:
+                # We'll just log this for now, but could store in a database
+                logger.info(f"Transaction completed for user {user_id}: {confirmation_result}")
+            except Exception as history_err:
+                logger.warning(f"Could not store transaction history: {str(history_err)}")
+        
+        return jsonify({"success": True, "result": confirmation_result})
+    except Exception as e:
+        logger.error(f"Error confirming trade: {str(e)}", exc_info=True)
+        
+        # Provide specific error information
+        error_message = str(e)
+        error_code = "CONFIRMATION_ERROR"
+        error_details = None
+        
+        # Categorize common confirmation errors
+        if "not found" in error_message.lower() or "invalid" in error_message.lower():
+            error_code = "INVALID_CONFIRMATION"
+            error_details = "The confirmation ID is invalid or has expired."
+        elif "already confirmed" in error_message.lower():
+            error_code = "ALREADY_CONFIRMED"
+            error_details = "This trade has already been confirmed."
+        elif "insufficient balance" in error_message.lower() or "insufficient funds" in error_message.lower():
+            error_code = "INSUFFICIENT_FUNDS"
+            error_details = "You don't have enough funds to complete this trade."
+            
+        return jsonify({
+            "success": False,
+            "error": "Error confirming trade",
+            "error_code": error_code,
+            "error_message": error_message,
+            "error_details": error_details or "An unexpected error occurred during trade confirmation."
+        }), 500
 
 
 @app.route("/api/trading/swap", methods=["POST"])
@@ -2296,6 +2446,120 @@ async def execute_swap():
     except Exception as e:
         logger.error(f"Error executing swap: {str(e)}", exc_info=True)
         return jsonify({"error": "Error executing swap"}), 500
+
+
+# Transaction History Endpoint
+@app.route("/api/trading/transaction-history", methods=["GET"])
+async def get_transaction_history():
+    """Get transaction history for the user."""
+    result = await verify_token_and_get_user_id()
+    if not result.get("success"):
+        return jsonify(result), 401
+
+    user_id = result["user_id"]
+    
+    # Get query parameters for filtering
+    start_time = request.args.get("start_time")
+    end_time = request.args.get("end_time")
+    transaction_type = request.args.get("type")  # e.g., 'trade', 'swap', 'deposit', 'withdrawal'
+    token = request.args.get("token")  # Filter by specific token
+    limit = request.args.get("limit", 50)  # Default to 50 transactions
+    page = request.args.get("page", 1)  # Pagination support
+    
+    try:
+        limit = int(limit)
+        page = int(page)
+    except ValueError:
+        limit = 50
+        page = 1
+
+    try:
+        # Check if the trading service selector is available
+        if hasattr(grace_instance, "trading_service_selector"):
+            # Get transaction history from trading service
+            logger.info(f"Fetching transaction history for user {user_id} via trading_service_selector")
+            history_params = {
+                "user_id": user_id,
+                "limit": limit,
+                "page": page
+            }
+            
+            # Add optional filters if provided
+            if start_time:
+                history_params["start_time"] = start_time
+            if end_time:
+                history_params["end_time"] = end_time
+            if transaction_type:
+                history_params["type"] = transaction_type
+            if token:
+                history_params["token"] = token
+                
+            history_result = await run_grace_sync(
+                grace_instance.trading_service_selector.get_transaction_history,
+                history_params
+            )
+        else:
+            # Fall back to GMGN service
+            logger.info(f"Fetching transaction history for user {user_id} via GMGN service")
+            
+            # Adapt parameters for GMGN service if the interface is different
+            history_result = await run_grace_sync(
+                grace_instance.gmgn_service.get_wallet_transactions,
+                user_id,
+                start_time=start_time,
+                end_time=end_time,
+                transaction_type=transaction_type,
+                token=token,
+                limit=limit,
+                offset=(page-1)*limit
+            )
+
+        # Enhance the response with metadata for pagination
+        if "transactions" in history_result:
+            # Add pagination info if not already included
+            if "pagination" not in history_result:
+                history_result["pagination"] = {
+                    "page": page,
+                    "limit": limit,
+                    "total": len(history_result["transactions"]),
+                    "has_more": len(history_result["transactions"]) >= limit
+                }
+                
+            # Add human-readable timestamps and status labels
+            for tx in history_result["transactions"]:
+                # Add readable timestamp if not present
+                if "timestamp" in tx and "readable_time" not in tx:
+                    try:
+                        # Try to convert ISO timestamp to readable format
+                        tx_time = datetime.fromisoformat(tx["timestamp"].replace('Z', '+00:00'))
+                        tx["readable_time"] = tx_time.strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        # Keep original if parsing fails
+                        tx["readable_time"] = tx["timestamp"]
+                
+                # Add status label if not present
+                if "status" in tx and "status_label" not in tx:
+                    status_map = {
+                        "success": "Completed",
+                        "pending": "Pending",
+                        "failed": "Failed",
+                        "rejected": "Rejected",
+                        "cancelled": "Cancelled"
+                    }
+                    tx["status_label"] = status_map.get(tx["status"].lower(), tx["status"])
+        
+        return jsonify({
+            "success": True,
+            "history": history_result
+        })
+    except Exception as e:
+        logger.error(f"Error fetching transaction history: {str(e)}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": "Error fetching transaction history",
+            "error_message": str(e),
+            "error_details": "Unable to retrieve your transaction history at this time."
+        }), 500
 
 
 # Smart Trading Settings Endpoints
