@@ -11,6 +11,13 @@ import jwt
 import logging
 import os
 import time
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 from pathlib import Path
 import uuid
 from uuid import uuid4
