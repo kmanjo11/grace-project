@@ -4,13 +4,23 @@ API Server for Grace UI
 This module provides the API endpoints for the Grace UI to interact with the Grace Core.
 """
 
+# Standard library imports
 import asyncio
 import datetime
 import json
-import jwt
 import logging
 import os
 import time
+import uuid
+from datetime import datetime, timedelta
+from functools import wraps
+from typing import Dict, Any, Optional
+
+# Third-party imports
+import aiofiles
+import jwt
+from quart import Quart, request, jsonify, current_app, send_file
+from quart_cors import cors
 
 # Configure logging
 logging.basicConfig(
@@ -18,16 +28,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-from pathlib import Path
-import uuid
-from uuid import uuid4
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional, Union, Callable
-from functools import wraps
-# Custom JWT decorator implementation for Quart
-from functools import wraps
-from quart import Quart, request, jsonify, current_app
-from quart_cors import cors
 
 # Custom jwt_required decorator for Quart
 def jwt_required():
@@ -177,7 +177,8 @@ async def verify_token_and_get_user_id() -> Dict[str, Any]:
 
 # --- Session Persistence ---
 # File to store sessions
-SESSIONS_FILE = os.path.join(os.path.dirname(__file__), "persistent_sessions.json")
+script_dir = os.path.dirname(__file__)
+SESSIONS_FILE = os.path.join(script_dir, "persistent_sessions.json")
 
 
 async def save_sessions():
@@ -279,31 +280,7 @@ async def refresh_token():
 
 
 # On app startup, load persistent sessions
-@app.before_serving
-async def startup():
-    try:
-        serialized_sessions = {}
-        for token, session in active_sessions.items():
-            serialized = {}
-            for key, value in session.items():
-                if hasattr(value, "isoformat"):
-                    serialized[key] = value.isoformat()
-                else:
-                    serialized[key] = value
-            serialized_sessions[token] = serialized
-
-        # Use async with loop.run_in_executor for non-blocking file I/O
-        def write_file():
-            with open(SESSIONS_FILE, "w") as f:
-                json.dump(serialized_sessions, f, indent=2)
-
-        # Run the file write in a thread pool to avoid blocking
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, write_file)
-
-        logger.info(f"Saved {len(active_sessions)} sessions to {SESSIONS_FILE}")
-    except Exception as e:
-        logger.error(f"Error saving sessions: {e}", exc_info=True)
+# (The actual startup function is defined at the end of the file)
 
 
 async def load_sessions():
