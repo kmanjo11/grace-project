@@ -417,3 +417,143 @@ class TradingServiceSelector:
         except Exception as e:
             self.logger.error(f"Error in position modification: {str(e)}")
             return {"success": False, "error": str(e)}
+            
+    async def close_position(self, 
+                          market_name: str, 
+                          position_id: str = None, 
+                          size: float = None,
+                          price: float = 0,  # 0 for market order
+                          user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Close an existing position according to the Mango v3 documentation.
+        
+        Args:
+            market_name: The market name (e.g., "BTC/USDC")
+            position_id: Optional position ID (if not provided, will find by market)
+            size: Amount to close (if None, closes entire position)
+            price: Limit price (0 for market orders)
+            user_id: User ID for tracking
+            
+        Returns:
+            Dictionary with position closing result
+        """
+        try:
+            # Try Mango V3 first
+            mango_service = self.services[self.primary_service]
+            
+            if hasattr(mango_service, "close_position"):
+                result = await mango_service.close_position(
+                    market_name=market_name,
+                    position_id=position_id,
+                    size=size,
+                    price=price,
+                    user_identifier=user_id
+                )
+                
+                if result.get("success", False):
+                    self.logger.info(f"Position closed successfully via {self.primary_service.value}")
+                    return result
+                    
+                error = result.get("error", "Unknown error")
+                self.logger.warning(f"Position closing failed via {self.primary_service.value}: {error}")
+            
+            # Fall back to GMGN
+            gmgn_service = self.services[TradingService.GMGN]
+            self.logger.info("Falling back to GMGN for position closing")
+            
+            if hasattr(gmgn_service, "close_position"):
+                return await gmgn_service.close_position(
+                    market_name=market_name,
+                    position_id=position_id,
+                    size=size,
+                    price=price,
+                    user_id=user_id
+                )
+            else:
+                self.logger.error("No service available for position closing")
+                return {
+                    "success": False,
+                    "error": "No service available for position closing",
+                    "status": "error",
+                    "code": "SERVICE_UNAVAILABLE"
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Error in position closing: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "status": "error",
+                "code": "CLOSE_POSITION_ERROR"
+            }
+            
+    async def sell_spot_token(self, 
+                           token: str, 
+                           amount: float,
+                           target_token: str = "USDC",
+                           price: float = 0,  # 0 for market order
+                           user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Sell a spot token according to the Mango v3 documentation.
+        
+        Args:
+            token: Token to sell (e.g., "BTC")
+            amount: Amount to sell
+            target_token: Token to receive (default: "USDC")
+            price: Limit price (0 for market orders)
+            user_id: User ID for tracking
+            
+        Returns:
+            Dictionary with token selling result
+        """
+        try:
+            # Try Mango V3 first
+            mango_service = self.services[self.primary_service]
+            
+            if hasattr(mango_service, "sell_spot_token"):
+                result = await mango_service.sell_spot_token(
+                    token=token,
+                    amount=amount,
+                    target_token=target_token,
+                    price=price,
+                    user_identifier=user_id
+                )
+                
+                if result.get("success", False):
+                    self.logger.info(f"Token sold successfully via {self.primary_service.value}")
+                    return result
+                    
+                error = result.get("error", "Unknown error")
+                self.logger.warning(f"Token selling failed via {self.primary_service.value}: {error}")
+            
+            # Fall back to GMGN
+            gmgn_service = self.services[TradingService.GMGN]
+            self.logger.info("Falling back to GMGN for token selling")
+            
+            # Construct trade parameters for GMGN
+            trade_params = {
+                "action": "sell",
+                "token": token,
+                "amount": amount,
+                "user_id": user_id
+            }
+            
+            if hasattr(gmgn_service, "execute_trade"):
+                return await gmgn_service.execute_trade(trade_params)
+            else:
+                self.logger.error("No service available for token selling")
+                return {
+                    "success": False,
+                    "error": "No service available for token selling",
+                    "status": "error",
+                    "code": "SERVICE_UNAVAILABLE"
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Error in token selling: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "status": "error",
+                "code": "SELL_TOKEN_ERROR"
+            }

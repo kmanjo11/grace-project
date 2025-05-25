@@ -340,8 +340,13 @@ class GraceCore:
         # Store both services on the instance
         self.trading_service_selector = trading_service_selector
         
+        # Store a direct reference to the Mango V3 extension for direct access
+        # This prevents 'GraceCore' object has no attribute 'mango_v3_extension' errors
+        self.mango_v3_extension = trading_service_selector.services[trading_service_selector.primary_service]
+        
         # Log that we've set up the trading service selector
         logger.info("Trading Service Selector initialized with Mango V3 as primary service")
+        logger.info("Direct reference to Mango V3 extension created for backward compatibility")
         
         return gmgn_service
 
@@ -352,12 +357,14 @@ class GraceCore:
         try:
             from src.wallet_connection import InternalWalletManager
             
-            # Create wallet manager with proper configuration
+            # Create wallet manager with proper configuration - only pass the secure_data_manager
             internal_wallet_manager = InternalWalletManager(
-                secure_data_manager=self.secure_data_manager,
-                data_dir=self.data_dir,
-                solana_rpc_url=self.config.get("solana_rpc_url", "https://api.mainnet-beta.solana.com")
+                secure_data_manager=self.secure_data_manager
             )
+            
+            # Add the data_dir as an attribute after initialization
+            internal_wallet_manager.data_dir = self.data_dir
+            internal_wallet_manager.solana_rpc_url = self.config.get("solana_rpc_url", "https://api.mainnet-beta.solana.com")
             
             logger.info("Internal Wallet Manager successfully initialized")
             return internal_wallet_manager
@@ -385,7 +392,9 @@ class GraceCore:
         logger.info("Initializing Transaction Confirmation System")
         try:
             return TransactionConfirmationSystem(
-                solana_manager=self.solana_wallet_manager,
+                solana_wallet_manager=self.solana_wallet_manager,
+                user_profile_system=self.user_profile_system,
+                gmgn_service=self.gmgn_service,
                 config=self.config.get("transaction_confirmation", {})
             )
         except Exception as e:
@@ -396,10 +405,12 @@ class GraceCore:
         """Initialize the Research Service."""
         logger.info("Initializing Research Service")
         try:
-            return ResearchService(
+            # ResearchService only accepts memory_system and interpreter parameters
+            research_service = ResearchService(
                 memory_system=self.memory_system,
-                config=self.config.get("research_service", {})
+                interpreter=None  # Will be set later if OpenInterpreter is available
             )
+            return research_service
         except Exception as e:
             logger.error(f"Failed to initialize Research Service: {str(e)}")
             return None
@@ -408,9 +419,16 @@ class GraceCore:
         """Initialize the Leverage Trade Manager."""
         logger.info("Initializing Leverage Trade Manager")
         try:
-            return LeverageTradeManager(
-                config=self.config.get("leverage_trading", {})
-            )
+            # Pass the necessary dependencies to LeverageTradeManager
+            # without the config parameter which isn't supported
+            manager = LeverageTradeManager()
+            
+            # If there's configuration that needs to be applied, we can set it as attributes
+            leverage_config = self.config.get("leverage_trading", {})
+            for key, value in leverage_config.items():
+                setattr(manager, key, value)
+                
+            return manager
         except Exception as e:
             logger.error(f"Failed to initialize Leverage Trade Manager: {str(e)}")
             return None
@@ -474,24 +492,6 @@ class GraceCore:
         system_message = f"{base_prompt}\n\n{trading_specific}\n\n{research_specific}"
         
         return system_message
-
-    def pruning_task():
-        """Task to periodically prune expired memories."""
-        while True:
-            try:
-                logger.info("Running memory pruning task")
-                self.memory_system.prune_expired_memories()
-                logger.info("Memory pruning completed successfully")
-            except Exception as e:
-                logger.error(f"Error during memory pruning: {str(e)}")
-            finally:
-                # Sleep for the specified interval
-                time.sleep(pruning_interval)
-        
-            # Start pruning thread
-            pruning_thread = threading.Thread(target=pruning_task, daemon=True)
-            pruning_thread.start()
-            logger.info(f"Memory pruning scheduled every {pruning_interval} seconds")
 
     def _init_agent_manager(self):
         """Initialize the Agent Manager for the multi-agent framework."""
@@ -575,46 +575,6 @@ class GraceCore:
                 return
         except Exception as e:
             logger.error(f"Error checking interpreter capabilities: {str(e)}")
-            
-    def _get_grace_system_message(self):
-        """Get the Grace system message from system_prompts.py."""
-        # Get a comprehensive system message that includes all prompt components
-        base_prompt = get_system_prompt("general")
-        trading_prompt = get_system_prompt("trading")
-        research_prompt = get_system_prompt("research")
-        
-        # Combine all prompts into a comprehensive system message
-        # We need to extract just the trading and research specific parts
-        trading_specific = trading_prompt.replace(base_prompt, "").strip()
-        research_specific = research_prompt.replace(base_prompt, "").strip()
-        
-        # Combine all components
-        system_message = f"{base_prompt}\n\n{trading_specific}\n\n{research_specific}"
-        
-        return system_message
-            
-        logger.info("Setting up periodic memory pruning")
-        
-        # Define pruning interval (in seconds)
-        pruning_interval = self.config.get("memory_pruning_interval", 3600)  # Default: 1 hour
-        
-        def pruning_task():
-            """Task to periodically prune expired memories."""
-            while True:
-                try:
-                    logger.info("Running memory pruning task")
-                    self.memory_system.prune_expired_memories()
-                    logger.info("Memory pruning completed successfully")
-                except Exception as e:
-                    logger.error(f"Error during memory pruning: {str(e)}")
-                finally:
-                    # Sleep for the specified interval
-                    time.sleep(pruning_interval)
-        
-        # Start pruning thread
-        pruning_thread = threading.Thread(target=pruning_task, daemon=True)
-        pruning_thread.start()
-        logger.info(f"Memory pruning scheduled every {pruning_interval} seconds")
 
     def _init_agent_manager(self):
         """Initialize the Agent Manager for the multi-agent framework."""

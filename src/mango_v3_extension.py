@@ -640,6 +640,237 @@ class MangoV3Extension:
         except Exception as e:
             self.logger.error(f"Error placing leverage trade: {e}")
             return {"success": False, "error": str(e)}
+            
+    def close_position(self, 
+                     market_name: str, 
+                     position_id: str = None, 
+                     size: float = None,
+                     price: float = 0,  # 0 for market order
+                     user_identifier: str = None) -> Dict[str, Any]:
+        """
+        Close an existing position according to the Mango v3 documentation.
+        
+        For a leverage position, this places an order in the opposite direction of the position.
+        For a spot position, this sells the held token back to the quote currency.
+        
+        Args:
+            market_name: The market name (e.g., "BTC/USDC")
+            position_id: Optional position ID (if not provided, will find by market)
+            size: Amount to close (if None, closes entire position)
+            price: Limit price (0 for market orders)
+            user_identifier: User ID for tracking
+        
+        Returns:
+            Dictionary with position closing result
+        """
+        try:
+            # 1. Get current positions
+            positions = self.get_positions(user_identifier)
+            
+            if not positions.get("success", False):
+                return {
+                    "success": False, 
+                    "error": "Failed to retrieve positions",
+                    "status": "error",
+                    "code": "POSITIONS_ERROR"
+                }
+                
+            # Get the position data
+            position_data = positions.get("positions", [])
+            target_position = None
+            
+            # Find the position to close (by ID or market name)
+            for position in position_data:
+                if (position_id and position.get("id") == position_id) or \
+                   (market_name and position.get("market") == market_name):
+                    target_position = position
+                    break
+                    
+            # If no position found, return error
+            if not target_position:
+                return {
+                    "success": False,
+                    "error": f"Position not found for market {market_name}",
+                    "status": "error",
+                    "code": "POSITION_NOT_FOUND"
+                }
+                
+            # 2. Determine parameters for closing order
+            position_size = float(target_position.get("size", 0))
+            position_side = target_position.get("side", "").lower()
+            
+            # Determine the opposite side for closing
+            close_side = "sell" if position_side == "buy" else "buy"
+            
+            # Determine size to close
+            close_size = abs(size) if size is not None else abs(position_size)
+            
+            # Validate against position size
+            if close_size > abs(position_size):
+                return {
+                    "success": False,
+                    "error": f"Close size {close_size} exceeds position size {abs(position_size)}",
+                    "status": "error",
+                    "code": "INVALID_CLOSE_SIZE"
+                }
+                
+            # 3. Place order to close position
+            order_type = "market" if price == 0 else "limit"
+            
+            # Generate a unique client ID
+            client_id = f"close_{position_id or market_name}_{int(time.time())}"
+            
+            # Call place_spot_order with reduce_only=True
+            result = self.client.place_spot_order(
+                market=market_name,
+                side=close_side,
+                price=price,
+                size=close_size,
+                client_id=client_id,
+                order_type=order_type,
+                reduce_only=True  # Important: This ensures the order only reduces position
+            )
+            
+            # 4. Format response
+            if result.get("success", False):
+                return {
+                    "success": True,
+                    "status": "success",
+                    "message": f"Successfully closed {close_size} of {market_name} position",
+                    "market": market_name,
+                    "close_side": close_side,
+                    "close_size": close_size,
+                    "order_type": order_type,
+                    "order_id": result.get("id") or client_id,
+                    "position_id": position_id,
+                    "user_id": user_identifier,
+                    "timestamp": datetime.now().isoformat(),
+                    "original_position": target_position,
+                    "order_details": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "status": "error",
+                    "error": result.get("error", "Unknown error closing position"),
+                    "code": result.get("code", "CLOSE_POSITION_ERROR"),
+                    "market": market_name,
+                    "position_id": position_id,
+                    "user_id": user_identifier
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Error closing position: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "status": "error",
+                "error": f"Failed to close position: {str(e)}",
+                "code": "CLOSE_POSITION_EXCEPTION",
+                "market": market_name,
+                "position_id": position_id
+            }
+            
+    def sell_spot_token(self, 
+                      token: str, 
+                      amount: float,
+                      target_token: str = "USDC",
+                      price: float = 0,  # 0 for market order
+                      user_identifier: str = None) -> Dict[str, Any]:
+        """
+        Sell a spot token according to the Mango v3 documentation.
+        This is a simplified method for selling a specific token back to the target token (usually USDC).
+        
+        Args:
+            token: Token to sell (e.g., "BTC")
+            amount: Amount to sell
+            target_token: Token to receive (default: "USDC")
+            price: Limit price (0 for market orders)
+            user_identifier: User ID for tracking
+        
+        Returns:
+            Dictionary with token selling result
+        """
+        try:
+            # 1. Validate token balance
+            balances = self.get_wallet_balances()
+            
+            if not balances.get("success", False):
+                return {
+                    "success": False,
+                    "error": "Failed to retrieve wallet balances",
+                    "status": "error",
+                    "code": "BALANCES_ERROR"
+                }
+                
+            # Check if user has enough balance
+            token_balances = balances.get("details", {})
+            token_balance = token_balances.get(token.upper(), 0)
+            
+            if token_balance < amount:
+                return {
+                    "success": False,
+                    "error": f"Insufficient balance: {token_balance} {token} < {amount} {token}",
+                    "status": "error",
+                    "code": "INSUFFICIENT_BALANCE"
+                }
+                
+            # 2. Construct market name
+            market_name = f"{token.upper()}/{target_token.upper()}"
+            
+            # 3. Place sell order
+            order_type = "market" if price == 0 else "limit"
+            
+            # Generate a unique client ID
+            client_id = f"sell_{token}_{int(time.time())}"
+            
+            # Call place_spot_order
+            result = self.client.place_spot_order(
+                market=market_name,
+                side="sell",
+                price=price,
+                size=amount,
+                client_id=client_id,
+                order_type=order_type,
+                reduce_only=False  # Not reducing a position, just selling a token
+            )
+            
+            # 4. Format response
+            if result.get("success", False):
+                return {
+                    "success": True,
+                    "status": "success",
+                    "message": f"Successfully sold {amount} {token} for {target_token}",
+                    "market": market_name,
+                    "side": "sell",
+                    "size": amount,
+                    "order_type": order_type,
+                    "order_id": result.get("id") or client_id,
+                    "user_id": user_identifier,
+                    "timestamp": datetime.now().isoformat(),
+                    "order_details": result
+                }
+            else:
+                return {
+                    "success": False,
+                    "status": "error",
+                    "error": result.get("error", "Unknown error selling token"),
+                    "code": result.get("code", "SELL_TOKEN_ERROR"),
+                    "market": market_name,
+                    "token": token,
+                    "amount": amount,
+                    "user_id": user_identifier
+                }
+                
+        except Exception as e:
+            self.logger.error(f"Error selling token: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "status": "error",
+                "error": f"Failed to sell token: {str(e)}",
+                "code": "SELL_TOKEN_EXCEPTION",
+                "token": token,
+                "amount": amount
+            }
 
     def link_wallet(self, wallet_address: str, user_id: str) -> Dict[str, Any]:
         """

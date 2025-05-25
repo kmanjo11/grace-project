@@ -1169,13 +1169,6 @@ class EnhancedConversationFlow:
                     self.logger.warning(f"Leverage trade processing failed: {trade_result['message']}")
                 
                 return
-                        
-                        if sentiment_data:
-                            # Store the result in the conversation context
-                            await self._store_action_result(context_id, user_id, "sentiment_check", {
-                                "token": token,
-                                "sentiment_data": sentiment_data
-                            })
             
         except Exception as e:
             self.logger.error(f"Error executing action {action}: {str(e)}")
