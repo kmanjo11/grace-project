@@ -222,7 +222,7 @@ const XFeed: React.FC<XFeedProps> = ({ maxItems = 5 }) => {
           <IconButton onClick={fetchTweets} disabled={loading} size="small">
             <RefreshIcon fontSize="small" />
           </IconButton>
-          <IconButton onClick={() => setOpenSettings(true)} size="small">
+          <IconButton onClick={() => setOpenSettings(true)} size="small" data-xfeed-settings>
             <SettingsIcon fontSize="small" />
           </IconButton>
         </Box>

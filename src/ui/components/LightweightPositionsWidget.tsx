@@ -10,7 +10,6 @@ import {
   Trade
 } from '../api/apiTypes';
 import { api, API_ENDPOINTS, ApiError, TradingApi } from '../api/apiClient';
-import { getAuthToken } from '../utils/authUtils';
 import { toast } from 'react-toastify';
 import { AgentTaskManager } from '../../services/AgentTaskManager';
 
@@ -308,8 +307,9 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
 
   // Fetch user positions with proper error handling and type safety
   const fetchPositions = useCallback(async (isRetry = false): Promise<void> => {
-    if (!user?.token) {
-      setError('User not authenticated');
+    if (!user) {
+      // Skip error message for authentication - just return silently
+      // This prevents error messages when user isn't logged in yet
       return;
     }
 
@@ -326,12 +326,24 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
       
       try {
         spotResponse = await TradingApi.getUserSpotPositions();
+        // Emit wallet integration event for spot positions update
+        tradingEventBus.emit('walletPositionsUpdated', {
+          type: 'spot',
+          count: spotResponse.positions.length,
+          timestamp: new Date().toISOString()
+        });
       } catch (spotError) {
         console.error('Error fetching spot positions:', spotError);
       }
       
       try {
         leverageResponse = await TradingApi.getUserLeveragePositions();
+        // Emit wallet integration event for leverage positions update
+        tradingEventBus.emit('walletPositionsUpdated', {
+          type: 'leverage',
+          count: leverageResponse.positions.length,
+          timestamp: new Date().toISOString()
+        });
       } catch (leverageError) {
         console.error('Error fetching leverage positions:', leverageError);
       }
@@ -428,17 +440,20 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
 
   // Set up polling with proper cleanup
   useEffect(() => {
-    if (!user) return;
-
+    // Always attempt to fetch data, even if not authenticated yet
+    // The fetchPositions function will handle authentication checks internally
+    
     // Initial fetch
     const initialFetch = async () => {
       try {
+        // If not authenticated, these calls will gracefully handle errors
         await Promise.all([
-          fetchPositions(),
-          fetchTransactions()
+          fetchPositions().catch(err => console.log('Positions not available yet: waiting for auth')),
+          fetchTransactions().catch(err => console.log('Transactions not available yet: waiting for auth'))
         ]);
       } catch (error) {
         console.error('Initial fetch failed:', error);
+        // Don't set error state - just log it to avoid UI disruption
       }
     };
     initialFetch();
@@ -470,7 +485,7 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
 
   // Close a position with confirmation and proper error handling
   const closePosition = useCallback(async (positionId: string): Promise<boolean> => {
-    if (!user?.token) {
+    if (!user) {
       toast.error('Authentication required to close positions');
       return false;
     }
@@ -489,20 +504,25 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
     try {
       setIsLoading(true);
       
-      const response = await api.post<{ success: boolean; message?: string; error?: string }>(
-        '/api/trading/sell-position',
-        { positionId },
-        { headers: { 'Authorization': `Bearer ${user.token}` } }
-      );
+      // Use the TradingApi.sellPosition method for consistent API usage
+      // This method correctly handles authentication headers automatically
+      const response = await TradingApi.sellPosition({
+        positionId,
+        token: positionToClose.token,
+        amount: positionToClose.amount,
+        type: positionToClose.type as 'spot' | 'leverage'
+      });
       
-      if (response.data?.success) {
+      if (response.success) {
         // Optimistic update - remove the position immediately
         setPositions(prev => prev.filter(pos => pos.id !== positionId));
         
-        // Emit position sold event
+        // Emit position sold event with wallet integration data
         tradingEventBus.emit('positionSold', {
           ...positionToClose,
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          wallet_affected: true,
+          transaction_type: 'position_close'
         });
 
         // Refresh data in the background
@@ -511,13 +531,15 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
           fetchTransactions()
         ]);
         
-        toast.success(response.data.message || `Successfully closed ${positionToClose.token} position`);
+        toast.success(response.message || `Successfully closed ${positionToClose.token} position`);
         return true;
       } else {
-        throw new Error(response.data?.message || 'Failed to close position');
+        throw new Error(response.error || 'Failed to close position');
       }
     } catch (error) {
       console.error('Error selling position', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to close position');
+      return false;
     }
   }, [user?.token, positions, setIsLoading, fetchPositions, fetchTransactions, tradingEventBus]);
 
@@ -600,20 +622,20 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
           timestamp: new Date().toISOString()
         });
 
-        // Refresh data in the background
-        await Promise.all([
-          fetchPositions(),
-          fetchTransactions()
-        ]);
-        
+      // Refresh data in the background
+      await Promise.all([
+        fetchPositions(),
+        fetchTransactions()
+      ]);
+      
         const successMessage = isPartial
           ? `Successfully closed ${percentage}% of ${positionToClose.token} position`
           : `Successfully closed ${positionToClose.token} position`;
           
         toast.success(response.message || successMessage);
-        return true;
-      } else {
-        throw new Error(response.error || 'Failed to close position');
+      return true;
+    } else {
+      throw new Error(response.error || 'Failed to close position');
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to close position';
@@ -638,12 +660,28 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
           {isExpanded ? 'Collapse' : 'Expand'}
         </button>
       </div>
-      {positions.length === 0 ? (
+      {!user ? (
+        // Not authenticated yet - show placeholder
+        <div className="text-center py-4 border border-gray-700 rounded bg-gray-900/50 p-4">
+          <p className="text-gray-300 mb-2">Trading Widget</p>
+          <p className="text-sm text-gray-400">Log in to view your trading positions</p>
+        </div>
+      ) : isLoading ? (
+        // Authenticated but still loading
+        <div className="text-center py-4 border border-gray-700 rounded bg-gray-900/50 p-4">
+          <p className="text-gray-300 mb-2">Loading positions...</p>
+          <div className="flex justify-center mt-2">
+            <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-red-500"></div>
+          </div>
+        </div>
+      ) : positions.length === 0 ? (
+        // Authenticated but no positions
         <div className="text-center py-4 border border-gray-700 rounded bg-gray-900/50 p-4">
           <p className="text-gray-300 mb-2">No trading positions available</p>
           <p className="text-sm text-gray-400">Your active trades will appear here</p>
         </div>
       ) : (
+        // Authenticated with positions
         <div className="overflow-hidden">
           {positions.map((position) => (
             <PositionCard 

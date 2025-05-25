@@ -27,6 +27,7 @@ import Wallet from './pages/Wallet';
 import Trading from './pages/Trading';
 import Social from './pages/Social';
 import Settings from './pages/Settings';
+import WidgetTest from './pages/WidgetTest';
 
 function PrivateRoute({ children }: { children: JSX.Element }) {
   const { user, loading } = useAuth();
@@ -59,6 +60,7 @@ function AppRoutes() {
         <Route path="/trading" element={<PrivateRoute><ErrorBoundary componentName="Trading"><Trading /></ErrorBoundary></PrivateRoute>} />
         <Route path="/social" element={<PrivateRoute><ErrorBoundary componentName="Social"><Social /></ErrorBoundary></PrivateRoute>} />
         <Route path="/settings" element={<PrivateRoute><ErrorBoundary componentName="Settings"><Settings /></ErrorBoundary></PrivateRoute>} />
+        <Route path="/widget-test" element={<PrivateRoute><ErrorBoundary componentName="WidgetTest"><WidgetTest /></ErrorBoundary></PrivateRoute>} />
 
         <Route path="*" element={<Navigate to="/chat" replace />} />
       </Routes>

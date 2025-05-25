@@ -5,6 +5,7 @@ import { api, API_ENDPOINTS } from '../api/apiClient';
 import { useAuth } from '../components/AuthContext';
 import { getAuthToken } from '../utils/authUtils';
 import { useChatStatePersistence } from '../components/ChatStatePersistence';
+import XFeed from '../components/XFeed';
 
 interface ChatMessage {
   sender?: 'user' | 'grace';
@@ -863,6 +864,33 @@ export default function Chat() {
               {loading ? '...' : 'Send'}
             </button>
           </footer>
+          
+          {/* XFeed Section */}
+          <div className="border-t border-red-800/50 p-4 bg-black/70">
+            <div className="bg-transparent text-white p-4">
+              <div className="flex justify-between items-center mb-2">
+                <h3 className="flex items-center text-red-500 font-bold relative pl-4 before:content-[''] before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-red-500">
+                  XFeed Channel
+                </h3>
+                {/* Direct Add Account Button */}
+                <button 
+                  onClick={() => {
+                    // Find and click the settings button in XFeed
+                    const settingsBtn = document.querySelector('[data-xfeed-settings]');
+                    if (settingsBtn && settingsBtn instanceof HTMLElement) {
+                      settingsBtn.click();
+                    }
+                  }}
+                  className="text-xs px-2 py-1 rounded bg-red-900/50 text-red-200 hover:bg-red-800 flex items-center space-x-1"
+                >
+                  <span className="text-lg leading-none">+</span>
+                  <span>Add Account</span>
+                </button>
+              </div>
+              <hr className="border-gray-800 mb-4" />
+              <XFeed maxItems={3} /> {/* Limit to 3 items to keep it compact */}
+            </div>
+          </div>
         </main>
       </div>
   );
