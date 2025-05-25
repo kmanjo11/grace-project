@@ -51,7 +51,7 @@ export const API_ENDPOINTS = {
     SPOT_POSITIONS: '/api/user/spot_positions',
     POSITION_HISTORY: '/api/user/position_history',
     TRADE_HISTORY: '/api/user/trade_history',
-    LIMIT_ORDERS: '/api/user/limit-orders'
+    LIMIT_ORDERS: '/api/limit-orders'
   },
   WALLET: {
     DATA: '/api/wallet/data',
@@ -61,7 +61,8 @@ export const API_ENDPOINTS = {
     CONNECT_PHANTOM: '/api/wallet/phantom/connect',
     COMPLETE_PHANTOM: '/api/wallet/phantom/callback', // Updated to match actual backend endpoint
     DISCONNECT_PHANTOM: '/api/wallet/phantom/disconnect',
-    BALANCE: '/api/wallet/balance',
+    // Map BALANCE to INFO since the server uses /api/wallet/info endpoint to get wallet balance
+    BALANCE: '/api/wallet/info',
     TRANSACTIONS: '/api/wallet/transactions'
   },
   CHAT: {
@@ -93,15 +94,14 @@ export const API_ENDPOINTS = {
   TRADING: {
     EXECUTE: '/api/trading/execute',
     CONFIRM: '/api/trading/confirm',
-    HISTORY: '/api/trading/history',
     SMART_SETTINGS: '/api/trading/smart-settings',
     TOKENS: '/api/trading/tokens',
     PRICE_CHART: '/api/trading/price-chart',
     SWAP: '/api/trading/swap',
     SELL_POSITION: '/api/trading/sell-position',
     USER_POSITIONS: '/api/user/positions',
-    LEVERAGE_POSITIONS: '/api/user/leverage-positions',
-    SPOT_POSITIONS: '/api/user/spot-positions'
+    LEVERAGE_POSITIONS: '/api/user/leverage_positions',
+    SPOT_POSITIONS: '/api/user/spot_positions'
   },
   SETTINGS: {
     // Updated to match backend implementation
@@ -300,6 +300,53 @@ export const TradingApi = {
       console.error('Trade confirmation failed:', error);
       throw new Error(
         error.response?.data?.error || 'Trade confirmation failed'
+      );
+    }
+  },
+  
+  /**
+   * Close an existing position (leverage or spot)
+   * @param params Position parameters to close
+   * @returns Position closing result
+   */
+  async closePosition(params: {
+    market: string;
+    position_id?: string;
+    size?: number;
+    price?: number;
+  }): Promise<any> {
+    try {
+      const response = await api.post('/api/trading/sell-position', params);
+      return response.data;
+    } catch (error) {
+      console.error('Position closing failed:', error);
+      throw new Error(
+        error.response?.data?.error || 'Failed to close position'
+      );
+    }
+  },
+  
+  /**
+   * Sell a spot token for another token (usually USDC)
+   * @param params Token selling parameters
+   * @returns Token selling result
+   */
+  async sellToken(params: {
+    token: string;
+    amount: number | string;
+    target_token?: string;
+    price?: number;
+  }): Promise<any> {
+    try {
+      const response = await api.post('/api/trading/sell-token', {
+        ...params,
+        amount: params.amount.toString()
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Token selling failed:', error);
+      throw new Error(
+        error.response?.data?.error || 'Failed to sell token'
       );
     }
   },

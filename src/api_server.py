@@ -2272,6 +2272,96 @@ async def execute_trade():
         }), 500
 
 
+@app.route("/api/trading/sell-position", methods=["POST"])
+async def close_position():
+    """Close an existing position (leverage or spot)."""
+    result = await verify_token_and_get_user_id()
+    if not result.get("success"):
+        return jsonify(result), 401
+
+    user_id = result["user_id"]
+    data = await request.get_json()
+
+    # Extract parameters
+    market_name = data.get("market")
+    position_id = data.get("position_id")
+    size = data.get("size")  # Optional, will close entire position if not provided
+    price = data.get("price", 0)  # 0 for market order
+
+    # Validate required parameters
+    if not (market_name or position_id):
+        return jsonify({"error": "Either market or position_id must be provided"}), 400
+
+    try:
+        # Determine which service to use for closing the position
+        if hasattr(grace_instance, "trading_service_selector"):
+            # Use the trading service selector which prioritizes Mango V3
+            logger.info(f"Closing position for market {market_name} via trading_service_selector")
+            result = await run_grace_sync(
+                grace_instance.trading_service_selector.close_position,
+                market_name=market_name,
+                position_id=position_id,
+                size=size,
+                price=price,
+                user_id=user_id
+            )
+            return jsonify(result), 200 if result.get("success", False) else 400
+        else:
+            return jsonify({"error": "Trading service not available"}), 500
+    except Exception as e:
+        logger.error(f"Error closing position: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Error closing position: {str(e)}"}), 500
+
+
+@app.route("/api/trading/sell-token", methods=["POST"])
+async def sell_spot_token():
+    """Sell a spot token for another token (usually USDC)."""
+    result = await verify_token_and_get_user_id()
+    if not result.get("success"):
+        return jsonify(result), 401
+
+    user_id = result["user_id"]
+    data = await request.get_json()
+
+    # Extract parameters
+    token = data.get("token")
+    amount = data.get("amount")
+    target_token = data.get("target_token", "USDC")  # Default to USDC
+    price = data.get("price", 0)  # 0 for market order
+
+    # Validate required parameters
+    if not token or not amount:
+        return jsonify({"error": "Missing required parameters: token and amount"}), 400
+
+    try:
+        # Validate amount is a valid number
+        try:
+            amount = float(amount)
+            if amount <= 0:
+                return jsonify({"error": "Amount must be positive"}), 400
+        except ValueError:
+            return jsonify({"error": "Invalid amount format"}), 400
+
+        # Determine which service to use for selling the token
+        if hasattr(grace_instance, "trading_service_selector"):
+            # Use the trading service selector which prioritizes Mango V3
+            logger.info(f"Selling {amount} {token} for {target_token} via trading_service_selector")
+            result = await run_grace_sync(
+                grace_instance.trading_service_selector.sell_spot_token,
+                token=token,
+                amount=amount,
+                target_token=target_token,
+                price=price,
+                user_id=user_id
+            )
+            return jsonify(result), 200 if result.get("success", False) else 400
+        else:
+            return jsonify({"error": "Trading service not available"}), 500
+    except Exception as e:
+        logger.error(f"Error selling token: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Error selling token: {str(e)}"}), 500
+
+
 @app.route("/api/trading/confirm", methods=["POST"])
 async def confirm_trade():
     """Confirm a pending trade execution."""

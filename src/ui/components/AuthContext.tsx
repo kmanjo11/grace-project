@@ -232,6 +232,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  // Check if user has a wallet and generate one if not available
+  const checkAndGenerateWallet = async () => {
+    try {
+      // Skip if not authenticated
+      if (!isAuthenticated || !token) {
+        return;
+      }
+
+      // First check if wallet already exists
+      const walletResponse = await api.get(API_ENDPOINTS.WALLET.INFO, {});
+      
+      // If no wallet or wallet address is empty, generate a new one
+      if (!walletResponse.success || 
+          !walletResponse.data?.wallet?.wallet_address) {
+        
+        console.log('No wallet found for user, generating a new internal wallet...');
+        
+        // Generate a new wallet
+        const generateResponse = await api.post(API_ENDPOINTS.WALLET.GENERATE, {});
+        
+        if (generateResponse.success) {
+          console.log('Wallet generated successfully:', 
+            generateResponse.data?.wallet?.wallet_address);
+          
+          // You could set wallet info in state here if needed
+          return generateResponse.data?.wallet;
+        } else {
+          console.error('Failed to generate wallet:', generateResponse.error);
+        }
+      } else {
+        console.log('User wallet already exists:', 
+          walletResponse.data?.wallet?.wallet_address);
+        return walletResponse.data?.wallet;
+      }
+    } catch (error) {
+      console.error('Error checking/generating wallet:', 
+        error instanceof Error ? error.message : 'Unknown error');
+    }
+  };
+
   // Implement token refresh functionality with exponential backoff
   const refreshToken = async (retryCount = 0): Promise<boolean> => {
     const MAX_RETRIES = 3;
@@ -325,6 +365,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setToken(data.token); // Ensure token state is synchronized
       setUser(data.user || {});
       setIsAuthenticated(true);
+      
+      // Automatically check for wallet and generate if needed
+      // This ensures every user has a wallet automatically
+      setTimeout(() => {
+        checkAndGenerateWallet();
+      }, 500); // Small delay to ensure auth is fully established
     } catch (error) {
       console.error('Login failed:', error instanceof Error ? error.message : 'Unknown error');
       // Ensure auth state is reset if login fails

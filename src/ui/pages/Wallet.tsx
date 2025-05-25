@@ -5,6 +5,8 @@ import { useAuth } from '../components/AuthContext';
 import { api, API_ENDPOINTS } from '../api/apiClient';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import LightweightPositionsWidget from '../components/LightweightPositionsWidget';
+import WalletDebugger from '../components/WalletDebugger';
+import PositionsWidgetDebugger from '../components/PositionsWidgetDebugger';
 
 // Crypto wallet address converter - compatible with existing setup
 const COOL_PREFIXES = [
@@ -208,23 +210,56 @@ export default function Wallet() {
     };
   }, []);
 
-  // Function to fetch wallet data
-  const fetchWalletData = async () => {
-    try {
-      setError('');
-      const { data, success } = await api.get(API_ENDPOINTS.WALLET.DATA);
-      
-      if (success && data) {
-        setWalletData(data);
-      } else {
-        throw new Error('Failed to load wallet data');
+// Update fetchWalletData to also get Mango balance
+const fetchWalletData = async () => {
+  try {
+    setError('');
+    // Get wallet data
+    const { data, success } = await api.get(API_ENDPOINTS.WALLET.DATA);
+    
+    if (success && data) {
+      // Also get Mango balance
+      try {
+        const mangoResponse = await api.get(API_ENDPOINTS.WALLET.MANGO_BALANCE);
+        if (mangoResponse.success) {
+          // Add Mango balance to wallet data
+          data.mango_balance = {
+            total_value: calculateTotalValue(mangoResponse.data.balances),
+            balances: mangoResponse.data.balances
+          };
+        }
+      } catch (mangoErr) {
+        console.error('Error fetching Mango balance:', mangoErr);
+        data.mango_balance = { total_value: 0, balances: {} };
       }
-    } catch (err: any) {
-      console.error('Wallet data fetch error:', err);
-      setError(err?.message || 'Failed to load wallet info');
+      
+      setWalletData(data);
+    } else {
+      throw new Error('Failed to load wallet data');
     }
-  };
+  } catch (err: any) {
+    console.error('Wallet data fetch error:', err);
+    setError(err?.message || 'Failed to load wallet info');
+  }
+};
 
+// Helper function to calculate total value from Mango balances
+const calculateTotalValue = (balances) => {
+  if (!balances) return 0;
+  
+  let total = 0;
+  // Handle different possible structures in the API response
+  Object.values(balances).forEach((token: any) => {
+    if (typeof token === 'object') {
+      // Try different possible property names for the USD value
+      const value = token.value_usd || token.notionalValue || token.usd_value || 
+                    (token.amount && token.price ? token.amount * token.price : 0);
+      total += Number(value) || 0;
+    }
+  });
+  
+  return total;
+};
   // Load wallet data when user is authenticated
   useEffect(() => {
     if (user) {
@@ -459,6 +494,9 @@ export default function Wallet() {
               <p className="text-sm">
                 <span className="text-green-400">$ USDC</span>: {walletData.internal_wallet?.balances?.usdc || '0.00'}
               </p>
+              <p className="text-sm">
+                <span className="text-orange-400">🥭 Mango Balance</span>: ${typeof walletData.mango_balance?.total_value === 'number' ? walletData.mango_balance.total_value.toFixed(2) : '0.00'}
+              </p>
               
               {/* Crypto Bro Address Converter for Internal Wallet */}
               <div className="mt-2 p-2 bg-gradient-to-r from-blue-900/30 to-indigo-900/30 rounded-lg border border-blue-700">
@@ -593,6 +631,12 @@ export default function Wallet() {
             initialExpanded={true}
             refreshInterval={60000} 
           />
+        </div>
+        
+        {/* Wallet Debugger - For diagnosing wallet display issues */}
+        <div className="mt-6 border border-blue-800 rounded p-4">
+          <h2 className="text-xl font-mono text-blue-300 mb-4">Wallet Debugger</h2>
+          <WalletDebugger />
         </div>
       </div>
   );

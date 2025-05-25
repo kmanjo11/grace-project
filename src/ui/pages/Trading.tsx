@@ -3,7 +3,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useAuth } from '../components/AuthContext';
 import { useAppState } from '../context/AppStateContext';
 import MangoV3Service, { MarketData } from '../../services/mangoV3Service';
-import { UITrade, TradeForm } from '../../types/trading';
+import { Trade, TradeExecutionResult } from '../api/apiTypes';
 import { api, API_ENDPOINTS, ApiError, TradingApi } from '../api/apiClient';
 import PriceChart from '../components/PriceChart';
 import ErrorBoundary from '../components/ErrorBoundary';
@@ -20,7 +20,7 @@ const DEFAULT_TAKE_PROFIT = 10;
 type TradingState = {
   tokens: MarketData[];
   selectedToken: MarketData | null;
-  transactions: UITrade[];
+  transactions: Trade[];  // Changed from UITrade to Trade
   isLoading: {
     tokens: boolean;
     transactions: boolean;
@@ -29,9 +29,17 @@ type TradingState = {
   error: string | null;
   resolution: string;
   search: string;
-  tradeForm: TradeForm;
+  tradeForm: {  // Defined inline instead of using TradeForm
+    amount: string;
+    leverage: number;
+    isLeverage: boolean;
+    isSmartTrade: boolean;
+    stopLoss: number;
+    takeProfit: number;
+    orderType: 'market' | 'limit'; // Type of order: market or limit
+    limitPrice: string; // Price for limit orders
+  };
 };
-
 // Initial state
 const initialState: TradingState = {
   tokens: [],
@@ -52,6 +60,8 @@ const initialState: TradingState = {
     isSmartTrade: false,
     stopLoss: DEFAULT_STOP_LOSS,
     takeProfit: DEFAULT_TAKE_PROFIT,
+    orderType: 'market', // Default to market orders
+    limitPrice: '',
   },
 };
 
@@ -158,7 +168,7 @@ const Trading: React.FC = () => {
       console.log('Selecting token:', token?.name);
       setState(prev => ({ ...prev, selectedToken: token }));
     },
-    setTransactions: (transactions: UITrade[]) => {
+    setTransactions: (transactions: Trade[]) => {
       setState(prev => ({ ...prev, transactions }));
     },
     setLoading: (loading: Partial<TradingState['isLoading']>) => {
@@ -189,7 +199,7 @@ const Trading: React.FC = () => {
     setSearch: (search: string) => {
       setState(prev => ({ ...prev, search }));
     },
-    updateTradeForm: (form: Partial<TradeForm>) => {
+    updateTradeForm: (form: Partial<TradingState['tradeForm']>) => {
       setState(prev => ({
         ...prev,
         tradeForm: { ...prev.tradeForm, ...form }
@@ -211,6 +221,17 @@ const Trading: React.FC = () => {
         tradeForm: {
           ...prev.tradeForm,
           isSmartTrade: !prev.tradeForm.isSmartTrade,
+        },
+      }));
+    },
+    toggleOrderType: () => {
+      setState(prev => ({
+        ...prev,
+        tradeForm: {
+          ...prev.tradeForm,
+          orderType: prev.tradeForm.orderType === 'market' ? 'limit' : 'market',
+          // Reset limitPrice when switching back to market order
+          limitPrice: prev.tradeForm.orderType === 'limit' ? prev.tradeForm.limitPrice : '',
         },
       }));
     },
@@ -254,74 +275,122 @@ const Trading: React.FC = () => {
       return;
     }
 
+    // For limit orders, validate limit price
+    if (state.tradeForm.orderType === 'limit' && !state.tradeForm.limitPrice) {
+      toast.error('Please enter a limit price');
+      return;
+    }
+
     try {
       actions.setLoading({ trading: true });
       
-      const tradeData = {
-        action: side,
-        token: state.selectedToken.symbol,
-        amount: state.tradeForm.amount,
-        isLeverage: state.tradeForm.isLeverage,
-        leverage: state.tradeForm.isLeverage ? state.tradeForm.leverage : undefined,
-        stopLoss: state.tradeForm.stopLoss,
-        takeProfit: state.tradeForm.takeProfit,
-        isSmartTrade: state.tradeForm.isSmartTrade
-      };
-
-      // Step 1: Execute trade (gets confirmation request)
-      const tradeResult = await TradingApi.executeTrade(tradeData);
-      
-      // Step 2: If confirmation is required, handle it
-      if (tradeResult.result?.status === 'confirmation_required' && 
-          tradeResult.result.confirmation_id) {
-        
-        // Show confirmation dialog to user
-        const confirmDetails = {
-          token: state.selectedToken.symbol,
-          action: side,
-          amount: state.tradeForm.amount,
-          price: tradeResult.result.current_price,
-          total: tradeResult.result.estimated_total,
-          stopLoss: tradeResult.result.stop_loss_price,
-          takeProfit: tradeResult.result.take_profit_price
+      if (state.tradeForm.orderType === 'limit') {
+        // Handle limit order placement
+        const limitOrderData = {
+          market: state.selectedToken.symbol,
+          side: side,
+          price: parseFloat(state.tradeForm.limitPrice),
+          size: parseFloat(state.tradeForm.amount),
+          trade_type: state.tradeForm.isLeverage ? 'leverage' : 'spot',
+          leverage: state.tradeForm.isLeverage ? state.tradeForm.leverage : undefined,
+          reduce_only: false,
+          client_id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
         };
-        
-        // Ask user to confirm
-        const userConfirmed = await showTradeConfirmation(confirmDetails);
-        
-        if (userConfirmed) {
-          // Execute confirmation
-          const confirmResult = await TradingApi.confirmTrade(
-            tradeResult.result.confirmation_id
-          );
+
+        try {
+          // Call the limit orders API endpoint
+          const response = await api.post(API_ENDPOINTS.USER.LIMIT_ORDERS, limitOrderData);
           
-          if (confirmResult.success) {
-            toast.success(`${side.toUpperCase()} order executed successfully`);
+          if (response.success) {
+            toast.success(`${side.toUpperCase()} limit order placed successfully at $${state.tradeForm.limitPrice}`);
             // Emit trade confirmed event for position widgets to update
             tradingEventBus.emit('trade:confirmed', {
-              type: 'trade_confirmed',
-              data: confirmResult,
+              type: 'limit_order_placed',
+              data: response,
               trade: {
                 action: side,
                 token: state.selectedToken.symbol,
                 amount: state.tradeForm.amount,
+                price: state.tradeForm.limitPrice,
                 isLeverage: state.tradeForm.isLeverage,
                 timestamp: Date.now()
               }
             });
           } else {
-            throw new Error(confirmResult.error || 'Trade confirmation failed');
+            throw new Error(response.error || 'Failed to place limit order');
           }
-        } else {
-          toast.info('Trade canceled by user');
-          return; // User canceled
+        } catch (error: any) {
+          console.error('Limit order placement error:', error);
+          toast.error(`Limit order failed: ${error.message || 'Unknown error'}`);
         }
-      } else if (tradeResult.success) {
-        // Trade executed immediately
-        toast.success(`${side === 'buy' ? 'Buy' : 'Sell'} order placed successfully`);
       } else {
-        // Trade failed
-        throw new Error(tradeResult.error || 'Failed to execute trade');
+        // Handle market order (existing functionality)
+        const tradeData = {
+          action: side,
+          token: state.selectedToken.symbol,
+          amount: state.tradeForm.amount,
+          isLeverage: state.tradeForm.isLeverage,
+          leverage: state.tradeForm.isLeverage ? state.tradeForm.leverage : undefined,
+          stopLoss: state.tradeForm.stopLoss,
+          takeProfit: state.tradeForm.takeProfit,
+          isSmartTrade: state.tradeForm.isSmartTrade
+        };
+
+        // Step 1: Execute trade (gets confirmation request)
+        const tradeResult = await TradingApi.executeTrade(tradeData);
+        
+        // Step 2: If confirmation is required, handle it
+        if (tradeResult.result?.status === 'confirmation_required' && 
+            tradeResult.result.confirmation_id) {
+          
+          // Show confirmation dialog to user
+          const confirmDetails = {
+            token: state.selectedToken.symbol,
+            action: side,
+            amount: state.tradeForm.amount,
+            price: tradeResult.result.current_price,
+            total: tradeResult.result.estimated_total,
+            stopLoss: tradeResult.result.stop_loss_price,
+            takeProfit: tradeResult.result.take_profit_price
+          };
+          
+          // Ask user to confirm
+          const userConfirmed = await showTradeConfirmation(confirmDetails);
+          
+          if (userConfirmed) {
+            // Execute confirmation
+            const confirmResult = await TradingApi.confirmTrade(
+              tradeResult.result.confirmation_id
+            );
+            
+            if (confirmResult.success) {
+              toast.success(`${side.toUpperCase()} order executed successfully`);
+              // Emit trade confirmed event for position widgets to update
+              tradingEventBus.emit('trade:confirmed', {
+                type: 'trade_confirmed',
+                data: confirmResult,
+                trade: {
+                  action: side,
+                  token: state.selectedToken.symbol,
+                  amount: state.tradeForm.amount,
+                  isLeverage: state.tradeForm.isLeverage,
+                  timestamp: Date.now()
+                }
+              });
+            } else {
+              throw new Error(confirmResult.error || 'Trade confirmation failed');
+            }
+          } else {
+            toast.info('Trade canceled by user');
+            return; // User canceled
+          }
+        } else if (tradeResult.success) {
+          // Trade executed immediately
+          toast.success(`${side === 'buy' ? 'Buy' : 'Sell'} order placed successfully`);
+        } else {
+          // Trade failed
+          throw new Error(tradeResult.error || 'Failed to execute trade');
+        }
       }
     } catch (error: any) {
       console.error('Trade execution error:', error);
@@ -784,6 +853,25 @@ const Trading: React.FC = () => {
             {/* Show wallet balances above the trading form */}
             {renderWalletBalances()}
             
+            {/* Order Type Toggle (Market/Limit) */}
+            <div className="flex items-center justify-between bg-gray-800 rounded p-2">
+              <div className="text-sm text-gray-400">Order Type:</div>
+              <div className="flex bg-gray-700 rounded overflow-hidden">
+                <button
+                  className={`px-3 py-1 text-sm ${state.tradeForm.orderType === 'market' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                  onClick={() => state.tradeForm.orderType !== 'market' && actions.toggleOrderType()}
+                >
+                  Market
+                </button>
+                <button
+                  className={`px-3 py-1 text-sm ${state.tradeForm.orderType === 'limit' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                  onClick={() => state.tradeForm.orderType !== 'limit' && actions.toggleOrderType()}
+                >
+                  Limit
+                </button>
+              </div>
+            </div>
+            
             <div>
               <label className="block text-sm text-gray-400 mb-1">Amount</label>
               <input
@@ -799,6 +887,20 @@ const Trading: React.FC = () => {
                 </div>
               )}
             </div>
+            
+            {/* Limit Price field - only shown for limit orders */}
+            {state.tradeForm.orderType === 'limit' && (
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Limit Price ($)</label>
+                <input
+                  type="number"
+                  className="w-full p-2 bg-gray-800 text-white rounded"
+                  value={state.tradeForm.limitPrice}
+                  onChange={(e) => actions.updateTradeForm({ limitPrice: e.target.value })}
+                  placeholder={state.selectedToken?.price?.toFixed(6) || "0.0"}
+                />
+              </div>
+            )}
             
             <div className="flex items-center justify-between">
               <button
