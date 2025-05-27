@@ -56,7 +56,7 @@ const initialState: TradingState = {
   tradeForm: {
     amount: '',
     leverage: DEFAULT_LEVERAGE,
-    isLeverage: false,
+    isLeverage: true, // Enable leverage by default
     isSmartTrade: false,
     stopLoss: DEFAULT_STOP_LOSS,
     takeProfit: DEFAULT_TAKE_PROFIT,

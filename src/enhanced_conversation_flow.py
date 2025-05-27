@@ -63,12 +63,20 @@ class EnhancedConversationFlow:
         self.interpreter = interpreter
         self.logger = logging.getLogger("EnhancedConversationFlow")
         
-        # Initialize Leverage Trade Manager
-        self.leverage_trade_manager = LeverageTradeManager(
-            gmgn_service=gmgn_service,
-            memory_system=memory_system,
-            logger=self.logger
-        )
+        # Initialize Leverage Trade Manager with proper error handling
+        try:
+            self.leverage_trade_manager = LeverageTradeManager(
+                gmgn_service=gmgn_service,
+                memory_system=memory_system,
+                logger=self.logger
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to initialize Leverage Trade Manager: {str(e)}",
+                exc_info=True
+            )
+            # Create a dummy manager that will fail gracefully
+            self.leverage_trade_manager = None
     
     async def process_message(self, user_id: str, session_id: str, message: str) -> str:
         """

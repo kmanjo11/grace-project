@@ -70,10 +70,19 @@ class EnhancedTradingAgent(TradingAgent):
             
             if hasattr(self.config, 'get') and self.config.get('leverage_trading', {}).get('enabled', True):
                 self.logger.info("Initializing connection to leverage trading handler")
-                self.leverage_manager = LeverageTradeManager(
-                    config=self.config,
-                    memory_system=self.memory_system
-                )
+                try:
+                    self.leverage_manager = LeverageTradeManager(
+                        gmgn_service=getattr(self, 'gmgn_service', None),
+                        memory_system=self.memory_system,
+                        logger=self.logger,
+                        **self.config.get('leverage_trading', {})
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to initialize Leverage Trade Manager: {str(e)}",
+                        exc_info=True
+                    )
+                    self.leverage_manager = None
         except ImportError:
             self.logger.warning("Leverage trading handler not available")
             self.leverage_manager = None

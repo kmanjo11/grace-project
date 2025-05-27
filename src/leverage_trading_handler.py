@@ -163,12 +163,54 @@ class LeverageTradeManager:
 
     def __init__(
         self,
-        mango_v3_client,  # MangoV3Extension instance
+        mango_v3_client=None,  # MangoV3Extension instance (deprecated, use gmgn_service)
+        gmgn_service=None,     # GMGN service instance (preferred)
         memory_system=None,
         max_leverage: float = 10.0,  # Default max leverage
         min_margin_ratio: float = 0.05,  # 5% minimum margin ratio
         logger: Optional[logging.Logger] = None,
+        **kwargs  # For backward compatibility with config
     ):
+        """
+        Initialize the LeverageTradeManager.
+
+        Args:
+            mango_v3_client: MangoV3Extension instance (deprecated, use gmgn_service)
+            gmgn_service: GMGN service instance (preferred)
+            memory_system: Memory system for storing trade conditions
+            max_leverage: Maximum allowed leverage (default: 10.0)
+            min_margin_ratio: Minimum margin ratio (default: 0.05)
+            logger: Logger instance
+        """
+        self.logger = logger or logging.getLogger(__name__)
+        self.memory_system = memory_system
+        self.max_leverage = max_leverage
+        self.min_margin_ratio = min_margin_ratio
+        
+        # Handle both gmgn_service and mango_v3_client for backward compatibility
+        if gmgn_service is not None:
+            self.gmgn_service = gmgn_service
+            self.mango_v3_client = getattr(gmgn_service, 'mango_v3_client', None)
+        else:
+            self.gmgn_service = None
+            self.mango_v3_client = mango_v3_client
+
+        if self.mango_v3_client is None and self.gmgn_service is None:
+            self.logger.warning(
+                "No Mango V3 client or GMGN service provided. "
+                "Some features may be limited."
+            )
+        
+        # Initialize trade conditions storage
+        self.trade_conditions: Dict[str, List[LeverageTradeCondition]] = {}
+        self.active_trades: Dict[str, Dict] = {}
+        
+        # Apply any additional configuration from kwargs
+        for key, value in kwargs.items():
+            if hasattr(self, key) and not key.startswith('_'):
+                setattr(self, key, value)
+            else:
+                self.logger.warning(f"Invalid config key for LeverageTradeManager: {key}")
         """
         Initialize the Leverage Trade Manager.
 

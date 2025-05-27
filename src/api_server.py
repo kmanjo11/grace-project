@@ -1402,6 +1402,26 @@ async def wallet_info():
         logger.error(f"Error getting wallet info: {str(e)}", exc_info=True)
         return jsonify({"error": "Error retrieving wallet information"}), 500
 
+@app.route("/api/wallet/mango-balance", methods=["GET"])
+async def get_mango_wallet_balance():
+    """Get Mango wallet balance information for the authenticated user."""
+    try:
+        # Verify authentication
+        user_id = await verify_token_and_get_user_id()
+        if not user_id:
+            return jsonify({"success": False, "error": "Authentication required"}), 401
+
+        # Get Mango wallet balance through the trading service selector
+        result = await run_grace_sync(
+            current_app.grace_instance.trading_service_selector.check_wallet_balance,
+            user_id=user_id,
+        )
+        
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Error getting Mango wallet balance: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/wallet/generate", methods=["POST"])
 async def generate_wallet():
@@ -2927,48 +2947,23 @@ async def get_tweets():
     if not result.get("success"):
         return jsonify(result), 401
 
-    topic = request.args.get("topic", "Solana")
+    query = request.args.get("query", "")
+    search_type = request.args.get("search_type", "tweets")
+    count = int(request.args.get("count", 10))
+    include_media = request.args.get("include_media", "true").lower() == "true"
 
     try:
-        # For now, return simulated data
-        tweets = [
-            {
-                "username": "@SolanaFndn",
-                "content": "Excited to announce our latest partnership with #GMGN! #Solana ecosystem continues to grow.",
-                "timestamp": "2025-05-01T14:32:00Z",
-                "likes": 1250,
-            },
-            {
-                "username": "@dogwifhattoken",
-                "content": "$WIF just hit a new ATH! Thanks to all our supporters. #WIF #Solana",
-                "timestamp": "2025-05-01T10:15:00Z",
-                "likes": 875,
-            },
-            {
-                "username": "@CryptoAnalyst",
-                "content": "The #Solana ecosystem is showing incredible resilience. $SOL, $WIF, and $BONK all performing well despite market conditions.",
-                "timestamp": "2025-04-30T22:45:00Z",
-                "likes": 620,
-            },
-            {
-                "username": "@SolanaDevs",
-                "content": "New developer tools just released! Building on #Solana has never been easier.",
-                "timestamp": "2025-04-30T18:20:00Z",
-                "likes": 540,
-            },
-            {
-                "username": "@BonkToken",
-                "content": "$BONK community is the best! New staking rewards program launching next week. #BONK #Solana",
-                "timestamp": "2025-04-30T15:10:00Z",
-                "likes": 780,
-            },
-        ]
-
-        return jsonify({"success": True, "tweets": tweets})
+        # Use the existing social_media_service instance
+        result = await grace_instance.social_media_service.search_tweets(
+            query=query,
+            search_type=search_type,
+            count=count,
+            include_media=include_media
+        )
+        return jsonify({"success": True, "data": result})
     except Exception as e:
-        logger.error(f"Error getting tweets: {str(e)}", exc_info=True)
-        return jsonify({"error": "Error retrieving tweets"}), 500
-
+        logger.error(f"Error fetching tweets: {str(e)}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 # User Settings Endpoint
 @app.route("/api/user/settings", methods=["GET", "POST"])

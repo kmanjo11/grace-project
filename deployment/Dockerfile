@@ -12,6 +12,9 @@ RUN npm ci
 # Copy source files
 COPY src/ui/ ./
 
+# Set environment variables for the build
+ENV REACT_APP_API_URL=/api
+
 # Build with TypeScript
 RUN npm run build || (echo "BUILD FAILED - check console output above")
 

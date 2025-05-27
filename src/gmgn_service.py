@@ -13,9 +13,12 @@ import random
 import requests
 import threading
 import asyncio
-from typing import Dict, List, Any, Optional, Union, Tuple
+from enum import Enum, auto
+from typing import Dict, List, Any, Optional, Union, Tuple, TypedDict
 from datetime import datetime, timedelta
+from dataclasses import dataclass
 import re
+from typing_extensions import Literal
 from src.mango_spot_market import MangoSpotMarket  # Import for spot trading
 from src.leverage_trading_handler import (
     LeverageTradeManager,
@@ -36,8 +39,45 @@ except ImportError:
 # Mango V3 is the only supported version
 
 
-def get_config():
-    return {"solana_rpc_url": "http://localhost:8899"}
+# Enums for type safety
+class PositionType(str, Enum):
+    SPOT = "spot"
+    LEVERAGE = "leverage"
+    LONG = "long"
+    SHORT = "short"
+
+class TradeAction(str, Enum):
+    BUY = "buy"
+    SELL = "sell"
+    SWAP = "swap"
+
+@dataclass
+class PositionInfo:
+    id: str
+    token: str
+    type: PositionType
+    amount: float
+    entry_price: float
+    current_price: float
+    leverage: float = 1.0
+    open_timestamp: str = ""
+    market: str = ""
+    side: str = ""
+    liquidation_price: float = 0.0
+    margin_used: float = 0.0
+    unrealized_pnl: float = 0.0
+    pnl_percentage: float = 0.0
+
+def get_config() -> Dict[str, str]:
+    """Get default configuration for the service.
+    
+    Returns:
+        Dict[str, str]: Default configuration dictionary
+    """
+    return {
+        "solana_rpc_url": "http://localhost:8899",
+        "solana_network": "mainnet-beta"
+    }
 
 
 class GMGNService:
@@ -181,8 +221,97 @@ class GMGNService:
             f"Added to cache with key: {cache_key}, expires at: {expires_at}"
         )
 
+    def _process_position_data(self, position_data: Dict[str, Any]) -> PositionInfo:
+        """Process raw position data into a PositionInfo object.
+
+        Args:
+            position_data: Raw position data from the API
+
+        Returns:
+            PositionInfo: Processed position information
+        """
+        try:
+            return PositionInfo(
+                id=position_data.get("id", f"pos_{int(time.time())}"),
+                token=position_data.get("market", ""),
+                type=PositionType(position_data.get("type", "spot").lower()),
+                amount=float(position_data.get("size", 0)),
+                entry_price=float(position_data.get("entryPrice", 0)),
+                current_price=float(position_data.get("currentPrice", 0)),
+                leverage=float(position_data.get("leverage", 1.0)),
+                open_timestamp=position_data.get("openTimestamp", datetime.utcnow().isoformat()),
+                market=position_data.get("market", ""),
+                side=position_data.get("side", ""),
+                liquidation_price=float(position_data.get("liquidationPrice", 0.0)),
+                margin_used=float(position_data.get("marginUsed", 0.0)),
+                unrealized_pnl=float(position_data.get("unrealizedPnl", 0.0)),
+                pnl_percentage=float(position_data.get("pnlPercentage", 0.0)),
+            )
+        except (ValueError, KeyError) as e:
+            self.logger.error(f"Error processing position data: {e}", exc_info=True)
+            raise ValueError(f"Invalid position data format: {e}")
+
+    def _filter_positions_by_type(
+        self, positions: List[Dict[str, Any]], position_type: Optional[PositionType] = None
+    ) -> List[Dict[str, Any]]:
+        """Filter positions by position type.
+
+        Args:
+            positions: List of position dictionaries
+            position_type: Optional position type to filter by
+
+        Returns:
+            Filtered list of positions
+        """
+        if not position_type:
+            return positions
+
+        return [
+            pos for pos in positions
+            if pos.get("type", "").lower() == position_type.value
+        ]
+
+    def _transform_positions(
+        self,
+        positions: List[Dict[str, Any]],
+        user_id: str
+    ) -> Dict[str, Any]:
+        """Transform raw positions into the expected format.
+
+        Args:
+            positions: List of raw position dictionaries
+            user_id: User identifier for logging
+
+        Returns:
+            Dict containing transformed positions and metadata
+        """
+        try:
+            transformed = [self._process_position_data(pos) for pos in positions]
+            return {
+                "success": True,
+                "positions": [pos.__dict__ for pos in transformed],
+                "metadata": {
+                    "total_positions": len(transformed),
+                    "user_id": user_id,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+            }
+        except Exception as e:
+            self.logger.error(f"Error transforming positions: {e}", exc_info=True)
+            return {
+                "success": False,
+                "positions": [],
+                "error": {
+                    "message": "Failed to process positions",
+                    "code": "POSITION_PROCESSING_ERROR",
+                    "details": str(e)
+                }
+            }
+
     def get_user_leverage_positions(
-        self, user_identifier: str, position_type: Optional[str] = None
+        self,
+        user_identifier: str,
+        position_type: Optional[Union[str, PositionType]] = None
     ) -> Dict[str, Any]:
         """
         Retrieve user leverage positions with flexible filtering.
@@ -192,17 +321,115 @@ class GMGNService:
             position_type: Optional filter for position type (spot/leverage)
 
         Returns:
-            Dict containing user's leverage positions
+            Dict containing:
+                - success: Boolean indicating if the operation was successful
+                - positions: List of position dictionaries
+                - error: Error details if success is False
+                - metadata: Additional metadata about the request
+
+        Raises:
+            ValueError: If user_identifier is empty or invalid
         """
-        if not self.mango_v3:
-            logger.warning("Mango V3 Extension not initialized")
+        start_time = time.time()
+        self.logger.debug(f"Retrieving positions for user: {user_identifier}")
+
+        if not user_identifier:
+            error_msg = "Empty user_identifier provided"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # Convert string position_type to PositionType if needed
+        if isinstance(position_type, str):
+            try:
+                position_type = PositionType(position_type.lower())
+            except ValueError as e:
+                error_msg = f"Invalid position_type: {position_type}"
+                self.logger.warning(f"{error_msg}. Valid values: {[t.value for t in PositionType]}")
+                return {
+                    "success": False,
+                    "positions": [],
+                    "error": {
+                        "message": error_msg,
+                        "code": "INVALID_POSITION_TYPE"
+                    },
+                    "metadata": {
+                        "user_id": user_identifier,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                }
+
+        try:
+            # Check if Mango V3 extension is available
+            if not self.mango_v3:
+                error_msg = "Mango V3 Extension not available"
+                self.logger.warning(error_msg)
+                return {
+                    "success": False,
+                    "positions": [],
+                    "error": {
+                        "message": error_msg,
+                        "code": "MANGO_V3_UNAVAILABLE"
+                    },
+                    "metadata": {
+                        "user_id": user_identifier,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                }
+
+            # Fetch all positions from Mango V3
+            self.logger.debug(f"Fetching positions from Mango V3 for user: {user_identifier}")
+            all_positions = self.mango_v3.get_positions()
+            
+            if not isinstance(all_positions, dict) or "positions" not in all_positions:
+                error_msg = "Invalid response format from Mango V3"
+                self.logger.error(f"{error_msg}: {all_positions}")
+                return {
+                    "success": False,
+                    "positions": [],
+                    "error": {
+                        "message": error_msg,
+                        "code": "INVALID_RESPONSE_FORMAT"
+                    },
+                    "metadata": {
+                        "user_id": user_identifier,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                }
+
+            # Filter positions by type if specified
+            positions = all_positions.get("positions", [])
+            if position_type:
+                positions = self._filter_positions_by_type(positions, position_type)
+                self.logger.debug(f"Filtered to {len(positions)} {position_type.value} positions")
+
+            # Transform and return the positions
+            result = self._transform_positions(positions, user_identifier)
+
+            # Log successful operation
+            duration_ms = (time.time() - start_time) * 1000
+            self.logger.info(
+                f"Successfully retrieved {len(result.get('positions', []))} positions "
+                f"for user {user_identifier} in {duration_ms:.2f}ms"
+            )
+            
+            return result
+
+        except Exception as e:
+            error_msg = f"Error retrieving positions: {str(e)}"
+            self.logger.error(error_msg, exc_info=True)
             return {
                 "success": False,
                 "positions": [],
                 "error": {
-                    "message": "Mango V3 Extension not available",
-                    "code": "MANGO_V3_UNAVAILABLE",
+                    "message": "Failed to retrieve positions",
+                    "code": "POSITION_RETRIEVAL_ERROR",
+                    "details": str(e)
                 },
+                "metadata": {
+                    "user_id": user_identifier,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "position_type": position_type.value if position_type else None
+                }
             }
 
         try:

@@ -419,18 +419,23 @@ class GraceCore:
         """Initialize the Leverage Trade Manager."""
         logger.info("Initializing Leverage Trade Manager")
         try:
-            # Pass the necessary dependencies to LeverageTradeManager
-            # without the config parameter which isn't supported
-            manager = LeverageTradeManager()
+            # Get the GMGN service if available
+            gmgn_service = getattr(self, 'gmgn_service', None)
             
-            # If there's configuration that needs to be applied, we can set it as attributes
-            leverage_config = self.config.get("leverage_trading", {})
-            for key, value in leverage_config.items():
-                setattr(manager, key, value)
-                
+            # Initialize with required services and configuration
+            manager = LeverageTradeManager(
+                gmgn_service=gmgn_service,
+                memory_system=getattr(self, 'memory_system', None),
+                logger=logger,
+                **self.config.get("leverage_trading", {})
+            )
+            
             return manager
         except Exception as e:
-            logger.error(f"Failed to initialize Leverage Trade Manager: {str(e)}")
+            logger.error(
+                f"Failed to initialize Leverage Trade Manager: {str(e)}",
+                exc_info=True
+            )
             return None
         
     def _init_social_media_service(self):

@@ -1,20 +1,31 @@
 version: '3.8'
 services:
   grace_app:
-    build: .
+    build: 
+      context: .
+      dockerfile: deployment/Dockerfile
     ports:
-      - "5000:5000"
+      - "8000:8000"
     env_file:
       - .env
-    volumes:
-      - ./keys:/app/keys  # Mount private key volume
     environment:
+      - NODE_ENV=production
+      - REACT_APP_API_URL=/api
       - MANGO_V3_BASE_URL=${MANGO_V3_BASE_URL}
       - MANGO_V3_PRIVATE_KEY_PATH=${MANGO_V3_PRIVATE_KEY_PATH}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
+    volumes:
+      - ./keys:/app/keys  # Mount private key volume
+      - ./data:/app/data  # Mount data directory for persistence
+    restart: unless-stopped
 
   mango_v3_service:
     image: mango-v3-service  # Replace with actual Mango V3 service image
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     volumes:
       - ./mango_v3_config:/config
+      - ./src:/app/src  # Mount source code for development
