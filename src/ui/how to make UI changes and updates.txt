@@ -1,0 +1,140 @@
+# UI Development Workflow Guide
+
+## Key Components
+
+### 1. docker-compose.yml (Traffic Director)
+```yaml
+volumes:
+  - ../src/ui:/app           # Syncs local UI code with container
+  - /app/node_modules        # Preserves container's node_modules
+```
+- **Purpose**: Maps your local `src/ui` to the container's `/app`
+- **Effect**: Changes to any file in `src/ui` are immediately reflected
+
+### 2. Vite Dev Server (Live Updater)
+- **Command**: `pnpm dev`
+- **Features**:
+  - Watches for file changes
+  - Rebuilds only changed modules
+  - Injects updates via WebSocket
+  - Hot Module Replacement (HMR) - updates without full page reload
+
+### 3. package.json (Command Center)
+```json
+"scripts": {
+  "dev": "vite",           // Start Vite dev server
+  "build": "vite build",    // Create production build
+  "preview": "vite preview" // Preview production build
+}
+```
+
+## Update Flow
+1. Save a file in `src/ui/`
+2. Volume mount syncs changes to container
+3. Vite detects the change
+4. Browser updates in ~100-200ms
+
+## Production Build
+- Run `pnpm build` to create `dist/` folder
+- Contains optimized, minified assets
+- Served by Nginx in production
+Nginx serves these static files
+Quick Checks if Updates Don't Appear:
+Ensure you're accessing http://localhost:3000 (not cached version)
+Check browser's dev tools > Network > Disable cache
+Look at terminal where docker-compose up is running for HMR logs
+The beauty is you don't need to manually push changes - the volume mount + Vite handle everything automatically!
+
+Feedback submitted
+Me
+
+Based on this set up.. what should my protocol be when i make front end updates.. would i need to do anything else after other than rebuild or run... I need a perfect SOP for this process, so when i do my backend changes.. i dont have any issues in reflecting the visual on front ... thuroughly disect to be sure none of these paths lead elsewhere and its full proofed and if not we need to make sure my workshop and changes i actually make are true... not saying code more but im just super concercned
+
+Revert
+Standard Operating Procedure (SOP) for Frontend Updates
+1. Initial Setup (One-time)
+bash
+CopyInsert
+# 1. Navigate to project root
+cd c:\Users\manjo\Downloads\grace_project_docker\grace_project
+
+# 2. Start all services in detached mode
+docker-compose up -d
+
+# 3. Open browser to
+http://localhost:3000
+2. Regular Development Flow
+After making frontend changes:
+
+Save your files in src/ui/
+Wait 1-2 seconds for Vite's HMR (Hot Module Replacement)
+Changes should appear automatically in your browser
+If changes don't appear:
+
+Check terminal where docker-compose up is running for errors
+Hard refresh browser with Ctrl + Shift + R
+Verify you're editing files in the correct src/ui directory
+3. After Backend Changes
+bash
+CopyInsert
+# 1. Rebuild just the backend
+docker-compose up -d --build backend
+
+# 2. Check logs
+docker-compose logs -f backend
+4. Common Issues & Fixes
+Issue: Old UI still showing
+
+bash
+CopyInsert
+# Clear browser cache or use incognito
+# Or force rebuild frontend
+docker-compose up -d --build frontend
+Issue: Node modules not installing
+
+bash
+CopyInsert
+# Delete node_modules and reinstall
+docker-compose exec frontend rm -rf node_modules
+docker-compose up -d --build frontend
+5. Production Build (When Deploying)
+bash
+CopyInsert
+# 1. Stop dev containers
+docker-compose down
+
+# 2. Build production
+docker-compose -f docker-compose.prod.yml up -d --build
+6. Verification Steps
+Check container status:
+bash
+CopyInsert in Terminal
+docker-compose ps
+Should show all containers as "healthy" or "up"
+Verify frontend:
+Open browser console (F12)
+Check for network errors
+Confirm VITE_API_BASE_URL is correct
+Verify backend:
+bash
+CopyInsert in Terminal
+curl http://localhost:8000/health
+Should return {"status":"healthy"}
+7. Emergency Reset
+If everything breaks:
+
+bash
+CopyInsert
+# Stop and remove everything
+docker-compose down -v
+
+# Rebuild from scratch
+docker-compose up -d --build
+Key Points to Remember:
+Never edit files directly in the container
+Always edit files in src/ui/ on your host machine
+The volume mount ensures changes are reflected immediately
+No need to restart for frontend changes
+Only rebuild containers when changing dependencies or Docker configuration
+This SOP ensures your development workflow remains smooth while maintaining the integrity of both frontend and backend services.
+
