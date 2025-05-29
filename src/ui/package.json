@@ -15,6 +15,11 @@
     "start": "vite --host 0.0.0.0 --port 3000"
   },
   "dependencies": {
+    "@solana/wallet-adapter-base": "^0.9.26",
+    "@solana/wallet-adapter-react": "^0.15.38",
+    "@solana/wallet-adapter-react-ui": "^0.9.38",
+    "@solana/wallet-adapter-wallets": "^0.19.36",
+    "@solana/web3.js": "^1.98.2",
     "bs58": "^6.0.0",
     "build": "^0.1.4",
     "react": "^18.2.0",
@@ -29,15 +34,18 @@
     "@typescript-eslint/eslint-plugin": "^6.14.0",
     "@typescript-eslint/parser": "^6.14.0",
     "@vitejs/plugin-react": "^4.4.1",
-    "autoprefixer": "^10.4.16",
+    "autoprefixer": "^10.4.17",
     "eslint": "^8.55.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
-    "postcss": "^8.4.32",
-    "rollup-plugin-visualizer": "^6.0.1",
-    "tailwindcss": "^3.4.0",
-    "typescript": "^5.8.3",
-    "vite": "^5.4.19",
-    "vite-plugin-pwa": "^1.0.0"
+    "postcss": "^8.4.35",
+    "postcss-nesting": "^12.0.2",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.2.2",
+    "vite": "^5.0.12",
+    "vite-plugin-dts": "^3.7.1",
+    "vite-plugin-pwa": "^1.0.0",
+    "vite-tsconfig-paths": "^4.2.2",
+    "vitest": "^1.1.0"
   }
 }

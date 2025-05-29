@@ -75,7 +75,7 @@ WORKDIR /app
 # Install pnpm
 RUN npm install -g pnpm@8.10.0
 
-# Copy package files
+# Copy package files first for better caching
 COPY package.json pnpm-lock.yaml* ./
 
 # Install dependencies
@@ -87,8 +87,12 @@ COPY . .
 # Expose port for development server
 EXPOSE 3000
 
-# Start development server
-CMD ["pnpm", "dev"]
+# Set environment variables
+ENV NODE_ENV=development
+ENV VITE_API_BASE_URL=http://localhost:8000
+
+# Start development server with host binding
+CMD ["pnpm", "start"]
 
 # ============================================
 # Test Stage - For running tests

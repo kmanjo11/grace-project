@@ -48,3 +48,12 @@ mkdocs==1.5.3
 mkdocs-material==9.4.7
 
 # Note: litellm is pinned to 1.62.0 in the Dockerfile to avoid enterprise module dependency
+
+# Security
+pycryptodome==3.20.0
+
+# Web Framework
+fastapi>=0.95.0
+pydantic>=1.10.7
+quart-jwt-extended>=0.9.0
+shortuuid>=1.0.11
