@@ -1,5 +1,5 @@
 ### BACKEND STAGE
-FROM python:3.10-slim
+FROM python:3.10-slim AS builder
 
 WORKDIR /app
 
@@ -10,28 +10,45 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy backend requirements
+# Copy only requirements first for better caching
 COPY requirements.txt .
 
-# Install Python deps
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir litellm==1.10.3 && \
-    pip install --no-cache-dir open-interpreter==0.4.3
+# Install Python deps with specific versions
+RUN pip install --user -r requirements.txt
 
-# Copy entire backend project
+# Final stage
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Copy Python dependencies from builder
+COPY --from=builder /root/.local /root/.local
+
+# Ensure scripts in .local are usable
+ENV PATH=/root/.local/bin:$PATH
+
+# Copy application code
 COPY . .
 
-# Make sure required dirs exist
+# Create necessary directories
 RUN mkdir -p data/chromadb logs
 
-# Env vars
+# Environment variables
 ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PORT=8000
 ENV GRACE_ENV=production
 ENV LOG_LEVEL=info
-ENV OPENAI_API_KEY=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
+ENV OPENAI_API_KEY=${OPENAI_API_KEY:-your-default-key-here}
 
+# Expose port
 EXPOSE 8000
 
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+
+# Run the application
 CMD ["python", "src/run_server.py"]
 

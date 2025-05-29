@@ -11,23 +11,39 @@ services:
       - .env
     environment:
       - GRACE_ENV=production
-      - LOG_LEVEL=info
-      - OPENAI_API_KEY=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
+      - LOG_LEVEL=debug
+      - PYTHONUNBUFFERED=1
     volumes:
       - grace-data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     depends_on:
-      - grace-redis
+      grace-redis:
+        condition: service_healthy
 
   frontend:
     build:
       context: ..
       dockerfile: src/ui/Dockerfile
+      target: development  # Use development stage for hot-reloading
     container_name: grace-frontend
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - VITE_API_BASE_URL=http://localhost:8000
+    volumes:
+      - ../src/ui:/app
+      - /app/node_modules
     depends_on:
       - backend
+    stdin_open: true
+    tty: true
 
   grace-redis:
     image: redis:7-alpine
@@ -36,7 +52,16 @@ services:
     volumes:
       - grace-redis-data:/data
     command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   grace-data:
   grace-redis-data:
+
+networks:
+  default:
+    driver: bridge
