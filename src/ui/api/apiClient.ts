@@ -420,7 +420,12 @@ export const ChatApi = {
         API_ENDPOINTS.CHAT.NEW_SESSION,
         { title: title || 'New Chat' }
       );
-      return response.data;
+      
+      if (!response.data?.session_id) {
+        throw new Error('Invalid response format from server');
+      }
+      
+      return { session_id: response.data.session_id };
     } catch (error) {
       console.error('Error creating chat session:', error);
       throw new Error('Failed to create chat session');

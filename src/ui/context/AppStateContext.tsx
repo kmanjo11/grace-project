@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useReducer, useEffect, useRef, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useRef, useState, ReactNode, useCallback } from 'react';
 import StatePersistenceManager, { DynamicStateSnapshot } from '../utils/StatePersistence';
 import { NavigateFunction } from 'react-router-dom';
+import { useAuth } from '../components/AuthContext';
 
 // Extend the DynamicStateSnapshot interface to include our additional app state
 // Our extended app state interface that maintains compatibility with DynamicStateSnapshot
@@ -157,7 +158,8 @@ type ActionType =
   | { type: 'HYDRATE_STATE'; payload: AppState }
   | { type: 'RESET_STATE' }
   | { type: 'HYDRATE'; payload: AppState }
-  | { type: 'RESET' };
+  | { type: 'RESET' }
+  | { type: 'UPDATE_AUTH'; payload: { user: any; token: string | null } };
 
 // State reducer
 function appStateReducer(state: AppState, action: ActionType): AppState {
@@ -180,6 +182,21 @@ function appStateReducer(state: AppState, action: ActionType): AppState {
       return { ...state, chatContext: { ...state.chatContext, ...action.payload } };
     case 'SET_USER_SESSION':
       return { ...state, userSession: { ...state.userSession, ...action.payload } };
+    case 'UPDATE_AUTH':
+      const { user, token } = action.payload;
+      return {
+        ...state,
+        userSession: {
+          ...state.userSession,
+          token: token || '',
+          username: user?.username || ''
+        },
+        authSession: {
+          ...state.authSession,
+          token: token || '',
+          expiresAt: token ? Math.floor(Date.now() / 1000) + (24 * 60 * 60) : undefined
+        }
+      };
     case 'UPDATE_XFEED':
       return {
         ...state,
@@ -211,7 +228,7 @@ interface AppStateContextType {
   isStateHydrated: boolean;
   isStateRecovered: boolean;
   isStateSyncing: boolean;
-  hydrateFromStorage: (navigate?: NavigateFunction) => void;
+  hydrateFromStorage: (navigate?: NavigateFunction) => Promise<void>;
 }
 
 const AppStateContext = createContext<AppStateContextType | undefined>(undefined);
@@ -229,17 +246,168 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
   const [isStateSyncing, setIsStateSyncing] = useState(false);
   const isUpdatingFromStorage = useRef(false);
   
+  // Get auth state from AuthContext
+  const { user, isAuthenticated } = useAuth();
+
+  // Sync auth state with AppState
+  useEffect(() => {
+    dispatch({
+      type: 'UPDATE_AUTH',
+      payload: {
+        user: isAuthenticated ? user : null,
+        token: isAuthenticated ? localStorage.getItem('authToken') : null
+      }
+    });
+  }, [user, isAuthenticated]);
+
   // Hydrate state from storage on initial load
+  const hydrateFromStorage = useCallback(async (navigate?: NavigateFunction) => {
+    try {
+      setIsStateLoading(true);
+      
+      // Get the stored state using the synchronous retrieveSnapshot method
+      const storedState = StatePersistenceManager.retrieveSnapshot();
+      
+      if (!storedState) {
+        console.log('No stored state found');
+        setIsStateHydrated(true);
+        return;
+      }
+      
+      console.log('Hydrating state from storage:', storedState);
+      
+      // Create a clean state object with proper defaults
+      const hydratedState: AppState = {
+        // Required fields from AppState
+        timestamp: storedState.timestamp || Date.now(),
+        isHydrated: true,
+        lastSaved: 0, // Will be updated on next save
+        
+        // Map user session
+        userSession: {
+          token: storedState.userSession?.token || '',
+          username: storedState.userSession?.username || ''
+        },
+        
+        // Map chat context (required by DynamicStateSnapshot)
+        chatContext: {
+          currentConversationId: storedState.chatContext?.currentConversationId,
+          draftMessage: storedState.chatContext?.draftMessage || '',
+          lastMessageTimestamp: storedState.chatContext?.lastMessageTimestamp || 0
+        },
+        
+        // Map page state
+        pageState: {
+          lastVisitedPath: storedState.pageState?.lastVisitedPath || '/',
+          scrollPositions: storedState.pageState?.scrollPositions || {}
+        },
+        
+        // Map widget states
+        widgetStates: {
+          tradingPositions: storedState.widgetStates?.tradingPositions || [],
+          walletBalance: storedState.widgetStates?.walletBalance || 0
+        },
+        
+        // Map extended chat state
+        chatState: {
+          activeSessions: storedState.chatState?.activeSessions || [],
+          currentSessionId: storedState.chatState?.currentSessionId,
+          sessions: storedState.chatState?.sessions || {},
+          draftMessages: storedState.chatState?.draftMessages || {}
+        },
+        
+        // Map trading state
+        tradingState: storedState.tradingState ? {
+          selectedToken: storedState.tradingState.selectedToken,
+          watchlist: storedState.tradingState.watchlist || [],
+          tradeHistory: storedState.tradingState.tradeHistory || [],
+          tradeForm: storedState.tradingState.tradeForm,
+          resolution: storedState.tradingState.resolution,
+          search: storedState.tradingState.search,
+          positions: storedState.tradingState.positions || []
+        } : {},
+        
+        // Map wallet state
+        walletState: storedState.walletState ? {
+          connectedWallets: storedState.walletState.connectedWallets || [],
+          transactions: storedState.walletState.transactions || []
+        } : {},
+        
+        // Map social state
+        socialState: storedState.socialState ? {
+          posts: storedState.socialState.posts || [],
+          following: storedState.socialState.following || [],
+          notifications: storedState.socialState.notifications || []
+        } : {},
+        
+        // Map UI state with defaults
+        uiState: {
+          darkMode: storedState.uiState?.darkMode ?? true,
+          sidebarOpen: storedState.uiState?.sidebarOpen ?? true,
+          activeTabs: storedState.uiState?.activeTabs || {}
+        },
+        
+        // Initialize xfeed with default values since it's not in DynamicStateSnapshot
+        xfeed: {
+          followedAccounts: [],
+          lastUpdated: undefined
+        }
+      };
+      
+      // Apply the hydrated state
+      dispatch({ type: 'HYDRATE_STATE', payload: hydratedState });
+      
+      // Handle navigation if needed
+      if (navigate && hydratedState.pageState?.lastVisitedPath) {
+        navigate(hydratedState.pageState.lastVisitedPath);
+        
+        // Restore scroll position after a small delay
+        if (hydratedState.pageState.scrollPositions) {
+          setTimeout(() => {
+            const scrollY = hydratedState.pageState?.scrollPositions?.[hydratedState.pageState.lastVisitedPath || ''];
+            if (typeof scrollY === 'number') {
+              window.scrollTo(0, scrollY);
+            }
+          }, 100);
+        }
+      }
+      
+      // Check for active session in localStorage
+      const activeSessionId = localStorage.getItem('activeSessionId');
+      if (activeSessionId && !hydratedState.chatContext?.currentConversationId) {
+        dispatch({
+          type: 'SET_CHAT_CONTEXT',
+          payload: {
+            ...hydratedState.chatContext,
+            currentConversationId: activeSessionId
+          }
+        });
+      }
+      
+      // Mark as hydrated
+      setIsStateHydrated(true);
+    } catch (error) {
+      console.error('Error hydrating state:', error);
+      // Even if there's an error, we should mark as hydrated to prevent infinite loading
+      setIsStateHydrated(true);
+    } finally {
+      setIsStateLoading(false);
+    }
+  }, []);
+
+  // Initial hydration on mount
   useEffect(() => {
     // Set loading state
     dispatch({ type: 'SET_UI_STATE', payload: { isLoading: true } });
     
     // Small delay to allow UI to render loading state
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       hydrateFromStorage();
       dispatch({ type: 'SET_UI_STATE', payload: { isLoading: false } });
     }, 300);
-  }, []);
+    
+    return () => clearTimeout(timer);
+  }, [hydrateFromStorage]);
   
   // Listen for changes from other tabs
   useEffect(() => {
@@ -365,85 +533,6 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
     };
   }, [state]);
   
-  // Function to hydrate state from storage
-  const hydrateFromStorage = (navigate?: NavigateFunction) => {
-    setIsStateLoading(true);
-    const storedState = StatePersistenceManager.hydrateState(navigate);
-    
-    if (storedState) {
-      // Check if this is a recovered state
-      if ('recovered' in storedState && storedState.recovered === true) {
-        setIsStateRecovered(true);
-      }
-      
-      console.log('Hydrating state from storage:', storedState);
-      
-      // Apply stored state via dispatches in a specific order to ensure proper dependencies
-      if (storedState.userSession) {
-        dispatch({ type: 'SET_USER_SESSION', payload: storedState.userSession });
-      }
-      
-      // Enhanced chat context restoration
-      if (storedState.chatContext) {
-        dispatch({ type: 'SET_CHAT_CONTEXT', payload: storedState.chatContext });
-        
-        // Also restore the chat state if available
-        if (storedState.chatState) {
-          dispatch({ type: 'SET_CHAT_STATE', payload: storedState.chatState });
-        }
-      }
-      
-      // Also look for session-specific data in localStorage
-      const activeSessionId = localStorage.getItem('activeSessionId');
-      if (activeSessionId) {
-        // Try to load any active sessions from localStorage if they weren't in the state
-        try {
-          // Make sure the chat context includes the current session ID
-          if (!storedState.chatContext?.currentConversationId) {
-            dispatch({ 
-              type: 'SET_CHAT_CONTEXT', 
-              payload: { 
-                ...storedState.chatContext,
-                currentConversationId: activeSessionId 
-              } 
-            });
-          }
-        } catch (error) {
-          console.error('Error restoring active session:', error);
-        }
-      }
-      
-      if (storedState.pageState) {
-        dispatch({ type: 'SET_PAGE_STATE', payload: storedState.pageState });
-      }
-      
-      if (storedState.widgetStates) {
-        dispatch({ type: 'SET_WIDGET_STATES', payload: storedState.widgetStates });
-      }
-      
-      // Restore additional state objects
-      if (storedState.tradingState) {
-        dispatch({ type: 'SET_TRADING_STATE', payload: storedState.tradingState });
-      }
-      
-      if (storedState.walletState) {
-        dispatch({ type: 'SET_WALLET_STATE', payload: storedState.walletState });
-      }
-      
-      if (storedState.socialState) {
-        dispatch({ type: 'SET_SOCIAL_STATE', payload: storedState.socialState });
-      }
-      
-      if (storedState.uiState) {
-        dispatch({ type: 'SET_UI_STATE', payload: storedState.uiState });
-      }
-      
-      setIsStateHydrated(true);
-      setIsStateLoading(false);
-    } else {
-      setIsStateLoading(false);
-    }
-  };
   
   const contextValue: AppStateContextType = {
     state,

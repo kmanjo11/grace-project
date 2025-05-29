@@ -1,5 +1,14 @@
 import axios from 'axios';
 
+/**
+ * Get environment variable with fallback
+ * Uses Vite's import.meta.env in the browser
+ */
+function getEnv(key: string, defaultValue: string = ''): string {
+  // @ts-ignore - Vite provides import.meta.env
+  return import.meta.env[key] || defaultValue;
+}
+
 // Type definition for Axios errors
 interface AxiosError extends Error {
   isAxiosError: boolean;
@@ -12,9 +21,9 @@ interface AxiosError extends Error {
 
 /**
  * Base URL for Mango V3 API
- * @default 'http://localhost:8000'
+ * @default 'http://mango-v3-service:8080'
  */
-const MANGO_V3_BASE_URL = process.env.REACT_APP_MANGO_V3_BASE_URL || 'http://localhost:8000';
+const MANGO_V3_BASE_URL = getEnv('VITE_MANGO_V3_BASE_URL', 'http://mango-v3-service:8080');
 
 /**
  * Time in seconds for different resolution aliases

@@ -40,18 +40,32 @@ async def init_redis():
     """Initialize Redis connection with robust error handling."""
     global redis, USING_FALLBACK
     try:
-        logger.info(f"Attempting to connect to Redis at {redis_host}:{redis_port}")
-        redis = await aioredis.create_redis_pool(
-            f"redis://{redis_host}:{redis_port}", encoding="utf-8"
+        redis_url = f"redis://{redis_host}:{redis_port}"
+        logger.info(f"Attempting to connect to Redis at {redis_url}")
+        
+        redis = await aioredis.from_url(
+            redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            socket_timeout=5,
+            socket_connect_timeout=5,
+            retry_on_timeout=True
         )
+        # Test the connection
+        await redis.ping()
+        logger.info("Successfully connected to Redis")
+        USING_FALLBACK = False
+        return True
         USING_FALLBACK = False
         logger.info("Successfully connected to Redis")
         return True
     except Exception as e:
-        logger.error(f"Redis connection error: {e}")
+        logger.error(f"Redis connection error: {e}", exc_info=True)
         logger.warning(
-            "Falling back to in-memory storage for chat sessions. Data will not persist between restarts!"
+            "Falling back to in-memory storage for chat sessions. "
+            "Data will not persist between restarts!"
         )
+        redis = None
         USING_FALLBACK = True
         return False
 

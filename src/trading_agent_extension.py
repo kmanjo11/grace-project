@@ -24,7 +24,7 @@ class EnhancedTradingAgent(TradingAgent):
     """
 
     def __init__(self, agent_id="enhanced_trading_agent", api_services_manager=None, 
-                 memory_system=None, task_queue=None, result_queue=None, config=None):
+                 memory_system=None, task_queue=None, result_queue=None, config=None, **kwargs):
         """Initialize enhanced trading agent with full TradingAgent compatibility.
         
         Args:
@@ -34,25 +34,49 @@ class EnhancedTradingAgent(TradingAgent):
             task_queue: Queue for incoming tasks
             result_queue: Queue for task results
             config: Agent configuration
+            **kwargs: Additional keyword arguments
         """
+        # Initialize logger first
+        self.logger = logging.getLogger(f"EnhancedTradingAgent.{agent_id}")
+        
         # Initialize base TradingAgent with all parameters
-        super().__init__(
-            agent_id=agent_id,
-            api_services_manager=api_services_manager,
-            memory_system=memory_system,
-            task_queue=task_queue,
-            result_queue=result_queue,
-            config=config
-        )
+        try:
+            super().__init__(
+                agent_id=agent_id,
+                api_services_manager=api_services_manager,
+                memory_system=memory_system,
+                task_queue=task_queue,
+                result_queue=result_queue,
+                config=config,
+                **kwargs
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to initialize base TradingAgent: {str(e)}", exc_info=True)
+            raise
         
         # Log agent initialization
-        logger.info(f"Initializing EnhancedTradingAgent with ID: {agent_id}")
+        self.logger.info(f"Initializing EnhancedTradingAgent with ID: {agent_id}")
         
-        # Initialize service selector - this is the key enhancement
-        self.service_selector = TradingServiceSelector(
-            config=self.config, 
-            memory_system=self.memory_system
-        )
+        # Initialize service selector with proper logging
+        try:
+            # Initialize service selector with proper configuration
+            self.service_selector = TradingServiceSelector(
+                config=self.config,
+                memory_system=self.memory_system,
+                logger=self.logger
+            )
+            self.logger.info("TradingServiceSelector initialized successfully")
+            
+            # Initialize Mango V3 client if available
+            if hasattr(self.service_selector, 'services') and hasattr(self.service_selector.services, 'get'):
+                mango_service = self.service_selector.services.get('mango')
+                if mango_service:
+                    self.mango_v3_client = mango_service
+                    self.logger.info("Mango V3 client initialized")
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to initialize TradingServiceSelector: {str(e)}", exc_info=True)
+            raise
         
         # Add additional supported task types specific to enhanced operations
         self.supported_task_types.extend([

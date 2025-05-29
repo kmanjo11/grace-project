@@ -1,9 +1,9 @@
 services:
-  grace-app:
+  backend:
     build:
       context: ..
       dockerfile: deployment/Dockerfile
-    container_name: grace-app
+    container_name: grace-backend
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -15,10 +15,19 @@ services:
       - OPENAI_API_KEY=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
     volumes:
       - grace-data:/app/data
-      # Comment out this line to use the built React app from the Docker image
-      # - ../src:/app/src
     depends_on:
       - grace-redis
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: src/ui/Dockerfile
+    container_name: grace-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
 
   grace-redis:
     image: redis:7-alpine

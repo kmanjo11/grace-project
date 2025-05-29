@@ -304,7 +304,7 @@ class GraceCore:
         # Ensure we have a valid mango_url, using a default if not present in config
         mango_url = self.config.get("mango_v3_endpoint")
         if not mango_url:
-            mango_url = "http://localhost:8000"  # Default fallback URL
+            mango_url = "http://localhost:8080"  # Default fallback URL on port 8080
             logger.info(f"No Mango V3 endpoint configured, using default: {mango_url}")
         
         mango_config = {

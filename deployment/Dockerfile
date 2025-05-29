@@ -1,23 +1,3 @@
-### FRONTEND STAGE
-FROM node:18 AS frontend-builder
-
-WORKDIR /ui
-
-# Copy package files first for better caching
-COPY src/ui/package.json src/ui/package-lock.json ./
-
-# Install dependencies
-RUN npm ci
-
-# Copy source files
-COPY src/ui/ ./
-
-# Set environment variables for the build
-ENV REACT_APP_API_URL=/api
-
-# Build with TypeScript
-RUN npm run build || (echo "BUILD FAILED - check console output above")
-
 ### BACKEND STAGE
 FROM python:3.10-slim
 
@@ -40,9 +20,6 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 
 # Copy entire backend project
 COPY . .
-
-# Copy built frontend from builder stage
-COPY --from=frontend-builder /ui/dist ./src/ui/dist
 
 # Make sure required dirs exist
 RUN mkdir -p data/chromadb logs

@@ -1364,6 +1364,10 @@ def _start_periodic_state_persistence(self):
     
     # Store the scheduler function for later use
     self._schedule_persistence_task = schedule_persistence_task
+    
+    # Store a reference to the pending contexts coroutine if it exists
+    if hasattr(self, '_pending_contexts_coro'):
+        self._schedule_pending_contexts()
 
 async def _save_state_snapshot(self, context: ConversationContext):
     """Save a state snapshot for recovery purposes."""
@@ -1378,37 +1382,66 @@ async def _save_state_snapshot(self, context: ConversationContext):
 
 def _load_existing_contexts(self):
     """Load existing contexts from storage during initialization."""
-    self.logger.info("Loading existing contexts from storage")
-    
-    try:
-        # Get all session files
-        sessions_dir = os.path.join(self.storage_dir, "sessions")
-        if not os.path.exists(sessions_dir):
-            self.logger.warning("Sessions directory does not exist")
-            return
+    if not os.path.exists(self.storage_dir):
+        self.logger.info("Storage directory does not exist, no contexts to load")
+        return
             
-        session_files = [f for f in os.listdir(sessions_dir) if f.endswith(".json")]
+    # Load session files
+    sessions_dir = os.path.join(self.storage_dir, "sessions")
+    if not os.path.exists(sessions_dir):
+        self.logger.info("Sessions directory does not exist, no contexts to load")
+        return
+            
+    # Queue loading of existing contexts
+    session_files = [f for f in os.listdir(sessions_dir) if f.endswith('.json')]
+    self.logger.info(f"Queued loading of existing contexts from {len(session_files)} session files")
         
-        # Load each session's context
-        for session_file in session_files:
-            try:
-                with open(os.path.join(sessions_dir, session_file), 'r') as f:
-                    session_data = json.load(f)
+    # Store the context info for later loading when there's an event loop
+    self._pending_contexts = []
+    for session_file in session_files:
+        try:
+            # Load session file to get context_id and user_id
+            with open(os.path.join(sessions_dir, session_file), 'r', encoding='utf-8') as f:
+                session_data = json.load(f)
                     
-                # Extract context_id and check if it's an active session
-                if session_data.get("state") == "active" and "context_id" in session_data:
-                    context_id = session_data["context_id"]
-                    user_id = session_data.get("user_id")
-                    
-                    if user_id:
-                        # Queue this context for async loading
-                        asyncio.create_task(self._async_load_context(context_id, user_id))
-            except Exception as e:
-                self.logger.error(f"Error loading session file {session_file}: {str(e)}")
+            context_id = session_data.get('context_id')
+            user_id = session_data.get('user_id')
                 
-        self.logger.info(f"Queued loading of existing contexts from {len(session_files)} session files")
-    except Exception as e:
-        self.logger.error(f"Error loading existing contexts: {str(e)}")
+            if context_id and user_id:
+                self._pending_contexts.append((context_id, user_id, session_file))
+                    
+        except Exception as e:
+            self.logger.error(f"Error loading session file {session_file}: {str(e)}")
+                
+    # Start a task to process the pending contexts once the event loop is running
+    async def _process_pending_contexts():
+        for context_id, user_id, session_file in getattr(self, '_pending_contexts', []):
+            try:
+                await self._async_load_context(context_id, user_id)
+            except Exception as e:
+                self.logger.error(f"Error loading context from {session_file}: {str(e)}")
+            
+    # Schedule the task to run when the event loop starts
+    if hasattr(self, '_pending_contexts') and self._pending_contexts:
+        # Create a task factory that will be called when we have a running loop
+        async def create_context_loading_task():
+            try:
+                await _process_pending_contexts()
+            except Exception as e:
+                self.logger.error(f"Error in pending context loading: {str(e)}")
+                
+        # Store the coroutine to be run when the loop starts
+        self._pending_contexts_coro = create_context_loading_task()
+        
+        # Try to schedule it now if we're in an async context
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._pending_contexts_coro)
+        except RuntimeError:
+            # No running loop, will be scheduled by _schedule_pending_contexts
+            pass
+            
+    self.logger.info(f"Queued loading of existing contexts from {len(session_files)} session files")
 
 async def _async_load_context(self, context_id: str, user_id: str):
     """Asynchronously load a context and add it to active contexts."""
@@ -1433,6 +1466,30 @@ async def _wait_for_state_ready(self, timeout: float = 30.0):
     
     return self._state_ready
 
+def _schedule_pending_contexts(self):
+    """Schedule the pending contexts loading when the event loop is available."""
+    if not hasattr(self, '_pending_contexts_coro'):
+        return
+        
+    try:
+        # Try to get the running loop
+        loop = asyncio.get_running_loop()
+        # If we get here, we can create the task
+        loop.create_task(self._pending_contexts_coro)
+        self.logger.info("Started loading pending contexts in the event loop")
+        # Clear the coroutine reference to avoid running it again
+        del self._pending_contexts_coro
+    except RuntimeError:
+        # No running loop yet, will be scheduled when the loop starts
+        self.logger.info("Will schedule pending contexts loading when event loop starts")
+        # Use call_soon_threadsafe to schedule when the loop starts
+        try:
+            loop = asyncio.get_event_loop()
+            loop.call_soon_threadsafe(self._schedule_pending_contexts)
+        except RuntimeError:
+            # Still no loop, will be scheduled later
+            pass
+
 # Add the helper methods to the ConversationManager class
 ConversationManager._async_save_new_context = _async_save_new_context
 ConversationManager._start_periodic_state_persistence = _start_periodic_state_persistence
@@ -1440,3 +1497,4 @@ ConversationManager._save_state_snapshot = _save_state_snapshot
 ConversationManager._load_existing_contexts = _load_existing_contexts
 ConversationManager._async_load_context = _async_load_context
 ConversationManager._wait_for_state_ready = _wait_for_state_ready
+ConversationManager._schedule_pending_contexts = _schedule_pending_contexts

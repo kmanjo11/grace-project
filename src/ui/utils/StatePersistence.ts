@@ -61,6 +61,9 @@ export interface DynamicStateSnapshot {
 }
 
 class StatePersistenceManager {
+  static getStoredState() {
+    throw new Error('Method not implemented.');
+  }
   // Storage keys - making this public so it can be referenced by sync logic
   public static STORAGE_KEY = 'GRACE_DYNAMIC_SNAPSHOT';
   private static MAX_SNAPSHOT_AGE = 24 * 60 * 60 * 1000; // 24 hours

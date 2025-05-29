@@ -140,7 +140,6 @@ class MangoV3Client:
     def get_orderbook(self, market_name: str) -> Dict[str, Any]:
         """Get orderbook by market name"""
         return self._make_request("GET", f"markets/{market_name}/orderbook")
-
     def get_trades(self, market_name: str) -> Dict[str, Any]:
         """Get trades by market name"""
         return self._make_request("GET", f"markets/{market_name}/trades")

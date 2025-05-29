@@ -287,23 +287,56 @@ class MangoSpotMarket:
         self, market_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Get comprehensive market data.
-
+        Get comprehensive market data including order book and recent trades.
+        
         Args:
-            market: Market symbol (e.g. "BTC/USDC")
-
+            market_name: Market name (e.g., 'SOL/USDC')
+            
         Returns:
             Dictionary with market data
         """
+        if not market_name:
+            return {
+                'success': False,
+                'error': 'Market name is required'
+            }
+            
         try:
-            return await self.mango.get_market_data(market_name)
+            # Get market data from MangoV3Extension
+            market_data = await self.mango.get_market_by_name(market_name)
+            orderbook = await self.mango.get_orderbook(market_name)
+            trades = await self.mango.get_trades(market_name)
+            
+            return {
+                'success': True,
+                'market': market_name,
+                'data': market_data,
+                'orderbook': orderbook,
+                'trades': trades
+            }
         except Exception as e:
-            self.logger.error(f"Failed to get market data: {str(e)}")
-            return {"success": False, "error": str(e)}
+            self.logger.error(f"Failed to get market data: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    async def get_positions(self, user_id: str = None) -> Dict[str, Any]:
+        """
+        Get user's open positions.
+        Alias for get_user_positions for compatibility.
+
+        Args:
+            user_id: Optional user identifier
+
+        Returns:
+            Dictionary with position information
+        """
+        return await self.get_user_positions(user_id or "default_user")
 
     async def get_user_positions(self, user_id: str) -> Dict[str, Any]:
         """
-        Get user's open positions.
+        Get user's open positions from Mango V3.
 
         Args:
             user_id: User identifier
@@ -312,10 +345,14 @@ class MangoSpotMarket:
             Dictionary with position information
         """
         try:
+            # Use MangoV3Client's get_positions method
             return await self.mango.get_positions(user_id)
         except Exception as e:
-            self.logger.error(f"Failed to get positions: {str(e)}")
-            return {"success": False, "error": str(e)}
+            self.logger.error(f"Failed to get positions: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'error': str(e)
+            }
 
     def get_trade_history(
         self,

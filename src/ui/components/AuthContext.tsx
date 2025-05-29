@@ -99,7 +99,7 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (data: any) => void;
+  login: (data: any) => Promise<void>;
   logout: () => void;
   loading: boolean;
   refreshToken: () => Promise<boolean>;
@@ -300,7 +300,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const rememberMe = inLocalStorage; // If in localStorage, user wanted persistent login
       
       // Store the new token with the same preference
-      storeAuthToken(token, rememberMe);
+      await storeAuthToken(token, rememberMe);
       
       // Update local token state
       setToken(token);
@@ -335,36 +335,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const login = (data: any) => {
+  const login = async (data: any) => {
     try {
       if (!data.token) {
         throw new Error('No token found in login data');
       }
       
       // Store token with remember me preference if provided
-      // Using ternary to correctly handle all cases including false values
       const rememberMe = data.remember_me !== undefined ? data.remember_me : true; // Default to true for persistent login
       
-      // Use setTimeout to move token storage to next tick
-      // This prevents it from blocking UI rendering
-      setTimeout(() => {
-        // Store token with remember me preference
-        storeAuthToken(data.token, rememberMe);
-        
-        // Capture minimal session data after successful login
-        // Only capture basic data to avoid form interference
-        if (data.user) {
-          SessionPersistence.captureSnapshot(data.user, data.token);
-        }
-      }, 0);
-      
-      // Set flag to skip next verification cycle to avoid race condition
-      setSkipNextVerification(true);
+      // Store token and wait for it to complete
+      await storeAuthToken(data.token, rememberMe);
       
       // Update application state
       setToken(data.token); // Ensure token state is synchronized
       setUser(data.user || {});
       setIsAuthenticated(true);
+      
+      // Capture minimal session data after successful login
+      if (data.user) {
+        SessionPersistence.captureSnapshot(data.user, data.token);
+      }
+      
+      // Set flag to skip next verification cycle to avoid race condition
+      setSkipNextVerification(true);
       
       // Automatically check for wallet and generate if needed
       // This ensures every user has a wallet automatically

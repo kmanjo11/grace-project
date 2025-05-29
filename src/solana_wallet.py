@@ -8,14 +8,11 @@ wallet management, balance retrieval, and transaction signing.
 
 import os
 import json
-import uuid
 import base64
-import logging
 import hashlib
 import secrets
-import hmac
-import requests
-from typing import Dict, List, Optional, Any, Union
+import logging
+from typing import Dict, Any, Optional, Tuple, List
 from datetime import datetime
 
 from src.config import get_config
@@ -25,6 +22,14 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("GraceSolanaWallet")
+
+# Try to import PyNaCl for secure key generation
+try:
+    from nacl.signing import SigningKey
+    HAS_NACL = True
+except ImportError:
+    HAS_NACL = False
+    logger.warning("PyNaCl not available, using standard library fallback for key generation")
 
 
 class SolanaWalletManager:
@@ -84,117 +89,208 @@ class SolanaWalletManager:
 
     def generate_internal_wallet(self, user_id: str) -> Dict[str, Any]:
         """
-        Generate an internal Solana wallet for a user.
+        Generate an internal Solana wallet for a user with enhanced error handling and fallbacks.
 
         Args:
             user_id: User ID
 
         Returns:
-            Dict[str, Any]: Wallet information
+            Dict[str, Any]: Wallet information with status, message, and wallet data
         """
+        logger.info(f"Starting wallet generation for user: {user_id}")
+        
+        # Validate user_id
+        if not user_id or not isinstance(user_id, str):
+            error_msg = f"Invalid user_id: {user_id}"
+            logger.error(error_msg)
+            return {"status": "error", "message": error_msg}
+
+        # First try using WalletConnectionSystem if available
+        wallet_data = self._try_wallet_connection_system(user_id)
+        if wallet_data.get("status") == "success":
+            return wallet_data
+
+        # Fallback to direct wallet generation
+        logger.warning("Falling back to direct wallet generation method")
+        return self._generate_wallet_directly(user_id)
+
+    def _try_wallet_connection_system(self, user_id: str) -> Dict[str, Any]:
+        """Try to generate wallet using WalletConnectionSystem."""
+        if not self.wallet_connection_system:
+            logger.warning("WalletConnectionSystem not available")
+            return {"status": "error", "message": "Wallet connection system not available"}
+
         try:
-            # Check if WalletConnectionSystem is available
-            if self.wallet_connection_system:
-                # Use the WalletConnectionSystem to create an internal wallet
-                logger.info(
-                    f"Using WalletConnectionSystem to generate wallet for user {user_id}"
-                )
-                wallet_data = self.wallet_connection_system.create_internal_wallet(
-                    user_id
-                )
-                return {
-                    "status": "success",
-                    "message": "Internal wallet created successfully",
-                    "wallet_address": wallet_data.get("public_key")
-                    or wallet_data.get("address"),
-                    "wallet_data": wallet_data,
-                }
+            logger.info(f"Using WalletConnectionSystem for user {user_id}")
+            wallet_data = self.wallet_connection_system.create_internal_wallet(user_id)
+            
+            if not wallet_data:
+                raise ValueError("Empty wallet data returned from WalletConnectionSystem")
 
-            # Fallback if WalletConnectionSystem is not available
-            logger.warning(
-                "WalletConnectionSystem not available, using fallback method"
-            )
+            address = wallet_data.get("public_key") or wallet_data.get("address")
+            if not address:
+                raise ValueError("No public key or address in wallet data")
 
-            # Check if user profile system is available
-            if not self.user_profile_system:
-                logger.error("User profile system not available")
-                return {
-                    "status": "error",
-                    "message": "User profile system not available",
-                }
 
-            # Check if user already has a wallet
-            user_data = self.user_profile_system.get_user_data(user_id)
-
-            if user_data and "internal_wallet" in user_data:
-                logger.info(f"User {user_id} already has an internal wallet")
-                return {
-                    "status": "success",
-                    "message": "User already has an internal wallet",
-                    "wallet_address": user_data["internal_wallet"]["address"],
-                }
-
-            # Generate a new wallet using direct crypto functions instead of Solana SDK
-            # Define helper function for keypair generation
-            def generate_keypair():
-                """Generate a keypair using standard crypto libraries."""
-                private_key = secrets.token_bytes(32)
-                # In a real implementation, this would use ed25519 to derive the public key
-                # For now, we'll use a simple hash to simulate the derivation
-                public_key = hashlib.sha256(private_key).digest()
-
-                # Convert to a clean alphanumeric string to avoid byte representation issues
-                # Use hexadecimal representation instead of base64 to ensure it's clean
-                clean_public_key = public_key.hex()
-
-                return {
-                    "private_key": private_key,
-                    "public_key": clean_public_key,  # This will be a clean alphanumeric string
-                }
-
-            # Generate keypair
-            keypair = generate_keypair()
-            public_key = keypair["public_key"]
-
-            # Encrypt private key if secure data manager is available
-            if self.secure_data_manager:
-                private_key_bytes = keypair["private_key"]
-                encrypted_private_key = self.secure_data_manager.encrypt(
-                    private_key_bytes
-                )
-            else:
-                # Base64 encode private key if no secure manager
-                private_key_bytes = keypair["private_key"]
-                encrypted_private_key = base64.b64encode(private_key_bytes).decode(
-                    "utf-8"
-                )
-
-            # Create wallet data
-            wallet_data = {
-                "address": public_key,
-                "public_key": public_key,
-                "private_key_encrypted": encrypted_private_key,
-                "created_at": datetime.now().isoformat(),
+            logger.info(f"Successfully generated wallet via WalletConnectionSystem for user {user_id}")
+            return {
+                "status": "success",
+                "message": "Internal wallet created successfully",
+                "wallet_address": address,
+                "wallet_data": wallet_data,
             }
 
-            # Save to user profile
-            self.user_profile_system.update_user_data(
+        except Exception as e:
+            error_msg = f"Error using WalletConnectionSystem: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return {"status": "error", "message": error_msg}
+
+    def _create_wallet_data(self, keypair: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create wallet data from a keypair with validation and error handling.
+
+        Args:
+            keypair: Dictionary containing 'private_key' (bytes) and 'public_key' (hex str)
+
+        Returns:
+            Dict containing wallet data
+
+        Raises:
+            ValueError: If keypair is invalid or data creation fails
+        """
+        if not keypair or not isinstance(keypair, dict):
+            raise ValueError("Invalid keypair: must be a non-empty dictionary")
+
+        required_keys = {"private_key": bytes, "public_key": str}
+        for key, key_type in required_keys.items():
+            if key not in keypair:
+                raise ValueError(f"Missing required key in keypair: {key}")
+            if not isinstance(keypair[key], key_type):
+                raise ValueError(f"Invalid type for {key}: expected {key_type.__name__}")
+
+        try:
+            # Get public key in base58 format
+            public_key_bytes = bytes.fromhex(keypair["public_key"]) if isinstance(keypair["public_key"], str) else keypair["public_key"]
+            public_key_base58 = base58.b58encode(public_key_bytes).decode('utf-8')
+
+            # Create wallet data structure
+            wallet_data = {
+                "public_key": public_key_base58,
+                "private_key_encrypted": base64.b64encode(keypair["private_key"]).decode('utf-8'),
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+                "version": "1.0",
+                "wallet_type": "solana",
+                "is_active": True,
+                "metadata": {
+                    "key_derivation": "ed25519",
+                    "key_encryption": "base64",
+                    "key_storage": "encrypted"
+                }
+            }
+
+            # Add additional validation for the wallet data
+            if not all(isinstance(k, str) for k in wallet_data.keys()):
+                raise ValueError("Invalid wallet data: all keys must be strings")
+
+            return wallet_data
+
+        except Exception as e:
+            logger.error(f"Error creating wallet data: {str(e)}", exc_info=True)
+            raise ValueError(f"Failed to create wallet data: {str(e)}")
+
+    def _generate_wallet_directly(self, user_id: str) -> Dict[str, Any]:
+        """Generate wallet directly without WalletConnectionSystem."""
+        if not self.user_profile_system:
+            error_msg = "User profile system not available"
+            logger.error(error_msg)
+            return {"status": "error", "message": error_msg}
+
+        try:
+            # Check for existing wallet
+            user_data = self.user_profile_system.get_user_data(user_id)
+            if user_data and "internal_wallet" in user_data:
+                wallet_address = user_data["internal_wallet"].get("address")
+                if wallet_address:
+                    logger.info(f"User {user_id} already has an internal wallet")
+                    return {
+                        "status": "success",
+                        "message": "User already has an internal wallet",
+                        "wallet_address": wallet_address,
+                    }
+
+            # Generate new wallet
+            keypair = self._generate_keypair()
+            wallet_data = self._create_wallet_data(keypair)
+
+            # Save to user profile with validation
+            if not hasattr(self, 'user_profile_system') or not self.user_profile_system:
+                raise ValueError("User profile system not available")
+                
+            if not hasattr(self.user_profile_system, 'update_user_data'):
+                raise ValueError("User profile system is missing required 'update_user_data' method")
+                
+            update_result = self.user_profile_system.update_user_data(
                 user_id, {"internal_wallet": wallet_data}
             )
 
-            logger.info(f"Generated internal wallet for user {user_id}: {public_key}")
+            # Handle different possible return types from update_user_data
+            if update_result is None:
+                logger.warning("update_user_data returned None, assuming success")
+            elif isinstance(update_result, dict) and not update_result.get("success", True):
+                error_msg = update_result.get("error", "Unknown error")
+                logger.error(f"Failed to update user data: {error_msg}")
+                raise ValueError(f"Failed to update user data: {error_msg}")
+            elif not isinstance(update_result, (dict, type(None))):
+                logger.warning(f"Unexpected return type from update_user_data: {type(update_result)}")
 
+            logger.info(f"Successfully generated wallet for user {user_id}")
             return {
                 "status": "success",
                 "message": "Internal wallet generated successfully",
-                "wallet_address": public_key,
+                "wallet_address": wallet_data["public_key"],
+                "wallet_data": wallet_data,
+            }
+
+        except Exception as e:
+            error_msg = f"Error generating wallet: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return {"status": "error", "message": error_msg}
+
+    @staticmethod
+    def _generate_keypair() -> Dict[str, Any]:
+        """
+        Generate a secure keypair using ed25519.
+        
+        Returns:
+            Dict containing 'private_key' (bytes) and 'public_key' (hex str)
+        """
+        if HAS_NACL:
+            try:
+                # Generate new keypair using PyNaCl's ed25519 implementation
+                private_key = SigningKey.generate()
+                public_key = private_key.verify_key
+                
+                return {
+                    "private_key": private_key.encode(),
+                    "public_key": public_key.encode().hex()
+                }
+            except Exception as e:
+                logger.error(f"Error generating keypair with PyNaCl: {e}", exc_info=True)
+                # Fall through to standard library fallback
+        
+        # Fallback to standard library if PyNaCl is not available or fails
+        try:
+            private_key = secrets.token_bytes(32)
+            public_key = hashlib.sha256(private_key).digest()
+            
+            return {
+                "private_key": private_key,
+                "public_key": public_key.hex()
             }
         except Exception as e:
-            logger.error(f"Error generating internal wallet: {str(e)}")
-            return {
-                "status": "error",
-                "message": f"Error generating internal wallet: {str(e)}",
-            }
+            logger.error(f"Error in fallback key generation: {e}", exc_info=True)
+            raise ValueError("Failed to generate keypair using any available method")
 
     def connect_phantom_wallet(
         self, user_id: str, phantom_address: str

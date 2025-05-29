@@ -8,25 +8,46 @@
 export const TOKEN_KEY = 'grace_token';
 export const TOKEN_EXPIRY_KEY = 'grace_token_expiry';
 
+// Simple mutex to prevent race conditions
+let tokenMutex = Promise.resolve();
+
 /**
  * Store authentication token with remember-me preference
+ * Uses a mutex to prevent race conditions
  */
-export function storeAuthToken(token: string, rememberMe: boolean = false): void {
-  const storage = rememberMe ? localStorage : sessionStorage;
-  storage.setItem(TOKEN_KEY, token);
+export async function storeAuthToken(token: string, rememberMe: boolean = false): Promise<void> {
+  // Wait for any existing operation to complete
+  await tokenMutex;
   
-  // Set expiry date (24 hours from now)
-  const expiry = new Date();
-  expiry.setHours(expiry.getHours() + 24);
-  storage.setItem(TOKEN_EXPIRY_KEY, expiry.toISOString());
+  // Create a new lock that others will wait for
+  let releaseLock: () => void;
+  tokenMutex = new Promise(resolve => {
+    releaseLock = resolve;
+  });
+  
+  try {
+    // Clear both to prevent any token conflicts
+    clearAuthTokens();
+    
+    // Store in the appropriate location
+    const storage = rememberMe ? localStorage : sessionStorage;
+    storage.setItem(TOKEN_KEY, token);
+    
+    // Set expiry date (24 hours from now)
+    const expiry = new Date();
+    expiry.setHours(expiry.getHours() + 24);
+    storage.setItem(TOKEN_EXPIRY_KEY, expiry.toISOString());
+  } finally {
+    releaseLock!();
+  }
 }
 
 /**
  * Get the current authentication token from storage
+ * Checks sessionStorage first, then falls back to localStorage
  */
 export function getAuthToken(): string | null {
-  // Check both storage locations for compatibility
-  return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || null;
+  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY);
 }
 
 /**

@@ -209,7 +209,7 @@ export class AgentTaskManager {
       // Construct URL with query parameters to avoid RequestInit type issues
       let queryParams = '';
       if (limit || offset) {
-        const queryParts = [];
+        const queryParts: string[] = [];
         if (limit) queryParts.push(`limit=${encodeURIComponent(limit)}`);
         if (offset) queryParts.push(`offset=${encodeURIComponent(offset)}`);
         queryParams = `?${queryParts.join('&')}`;
@@ -242,7 +242,7 @@ export class AgentTaskManager {
       
       // Build endpoint and query parameters
       let endpoint = '/api/social-media';
-      const queryParts = [];
+      const queryParts: string[] = [];
       
       if (query) {
         endpoint += '/sentiment';

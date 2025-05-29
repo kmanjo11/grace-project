@@ -124,7 +124,7 @@ class GMGNService:
         # Default Mango V3 configuration if not provided
         default_mango_v3_config = {
             "enabled": True,
-            "url": "http://localhost:8000",  # Default local Mango V3 endpoint
+            "url": "http://localhost:8080",  # Default local Mango V3 endpoint on port 8080
             "private_key_path": os.path.join(
                 os.path.dirname(__file__), "mango_private_key.json"
             ),
@@ -1354,14 +1354,46 @@ class GMGNService:
         Returns:
             Dict[str, Any]: Task result
         """
+        # Define supported task types for validation and error messages
+        SUPPORTED_TASK_TYPES = [
+            "get_token_price",
+            "price_check",
+            "check_wallet_balance",
+            "execute_trade",
+            "execute_swap",
+            "trade_preparation",
+            "monitor_smart_trading"
+        ]
+        
         # Extract task type - check both 'type' and 'task_type' fields for compatibility
         task_type = task_content.get("type") or task_content.get("task_type")
         
-        # Ensure task_type is a string or set a default for logging
-        if task_type is None:
-            task_type = "unknown"
+        # Validate task type
+        if not task_type:
             self.logger.warning(f"Task received without a type specification: {task_content}")
+            return {
+                "status": "error",
+                "message": "Task type is required. Please specify 'type' or 'task_type' in the task content.",
+                "task_content": task_content,
+                "supported_task_types": SUPPORTED_TASK_TYPES
+            }
+            
+        # Convert task_type to string and normalize
+        task_type = str(task_type).strip().lower()
         
+        # Check if task type is supported
+        if task_type not in SUPPORTED_TASK_TYPES:
+            self.logger.warning(f"Unsupported task type received: {task_type}")
+            return {
+                "status": "error",
+                "message": f"Unsupported task type: {task_type}",
+                "task_content": task_content,
+                "supported_task_types": SUPPORTED_TASK_TYPES
+            }
+        
+        self.logger.info(f"Processing task of type: {task_type}")
+
+        # Log the processing of a valid task type
         self.logger.info(f"Processing task of type: {task_type}")
 
         if task_type == "get_token_price" or task_type == "price_check":
