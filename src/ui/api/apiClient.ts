@@ -669,7 +669,7 @@ export const TradingApi = {
    */
   async getUserLeveragePositions(): Promise<UserPositionsResponse> {
     try {
-      const response = await api.get<UserPositionsResponse>(API_ENDPOINTS.USER.LEVERAGE_POSITIONS);
+      const response = await api.get<UserPositionsResponse | any[]>(API_ENDPOINTS.USER.LEVERAGE_POSITIONS);
       
       // If response already has the right format, return it directly
       if (response.data && typeof response.data === 'object' && 'success' in response.data) {
@@ -677,11 +677,12 @@ export const TradingApi = {
       }
       
       // Otherwise format according to Mango V3 spec
+      const positions = Array.isArray(response.data) ? response.data : [];
       return {
         success: true,
-        positions: Array.isArray(response.data) ? response.data : [],
+        positions,
         metadata: {
-          total_positions: Array.isArray(response.data) ? response.data.length : 0,
+          total_positions: positions.length,
           timestamp: new Date().toISOString()
         }
       };
@@ -704,7 +705,7 @@ export const TradingApi = {
    */
   async getUserSpotPositions(): Promise<UserPositionsResponse> {
     try {
-      const response = await api.get<UserPositionsResponse>(API_ENDPOINTS.USER.SPOT_POSITIONS);
+      const response = await api.get<UserPositionsResponse | any[]>(API_ENDPOINTS.USER.SPOT_POSITIONS);
       
       // If response already has the right format, return it directly
       if (response.data && typeof response.data === 'object' && 'success' in response.data) {
@@ -712,11 +713,12 @@ export const TradingApi = {
       }
       
       // Otherwise format according to Mango V3 spec
+      const positions = Array.isArray(response.data) ? response.data : [];
       return {
         success: true,
-        positions: Array.isArray(response.data) ? response.data : [],
+        positions,
         metadata: {
-          total_positions: Array.isArray(response.data) ? response.data.length : 0,
+          total_positions: positions.length,
           timestamp: new Date().toISOString()
         }
       };

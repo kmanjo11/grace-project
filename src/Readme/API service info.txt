@@ -1,0 +1,11 @@
+API service info
+
+Mango v3 service (ran in docker with app(diff port)): 
+https://microwavedcola1.github.io/mango-service-v3/ AND/OR https://blockworks-foundation.github.io/mango-client-v3/
+
+Phantom Wallet: https://docs.phantom.com/solana/integrating-phantom
+
+Solana RPC : https://solana.com/docs/rpc
+
+GmGn API service: https://docs.gmgn.ai/index/cooperation-api-integrate-gmgn-solana-trading-api
+

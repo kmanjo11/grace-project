@@ -240,15 +240,14 @@ class MangoSpotMarket:
                 return prep_result
 
             # Execute trade
-            trade_result = await self.mango.place_leverage_trade(
+            trade_result = await self.mango.client.place_spot_order(
                 market=order["market"],
                 side=order["side"],
                 price=order.get("price", 0),  # 0 for market orders
                 size=order["size"],
-                leverage=1.0,  # Default to spot (1x)
-                reduce_only=False,
+                client_id=client_id or f"grace-{int(time.time())}",
                 order_type=order["type"],
-                client_id=client_id,
+                reduce_only=False,
             )
 
             # Store trade in memory system if available

@@ -1,0 +1,52 @@
+ 
+    Trading Execution Flow:
+    ========================
+    1. Frontend (React/TypeScript):
+       - User initiates trade via UI components (Trading.tsx, OrderForm.tsx)
+       - Trade parameters are validated and formatted
+       - API call to /api/trade/execute endpoint
+    
+    2. API Layer (FastAPI):
+       - Validates JWT and permissions
+       - Forwards request to TradingServiceSelector
+    
+    3. TradingServiceSelector (this class):
+       - Receives trade parameters
+       - Maps parameters to service-specific format
+       - Selects primary service (Mango V3 by default)
+       - Handles fallback to secondary services (GMGN) if primary fails
+    
+    4. Service Layer (MangoSpotMarket/GMGNService):
+       - MangoSpotMarket for spot trading:
+         * Uses MangoV3Extension for direct market access
+         * Handles order routing and execution
+         * Manages order state and confirmation
+       - GMGNService as fallback:
+         * Provides backup trading functionality
+         * Handles different market conditions
+    
+    5. Order Execution:
+       - Spot Trades:
+         * Market/limit orders via place_spot_order
+         * Direct execution on Mango V3 orderbook
+       - Leverage Trades:
+         * Handled by MangoV3Extension.place_leverage_trade
+         * Manages margin and position sizing
+       - Smart Routing:
+         * Splits large orders across multiple venues
+         * Implements TWAP/VWAP strategies
+    
+    Error Handling & Recovery:
+    ---------------------------
+    - Automatic retries on transient failures
+    - Fallback to secondary services
+    - Circuit breakers for excessive failures
+    - Comprehensive logging and monitoring
+    
+    Known Limitations:
+    ------------------
+    - Limited smart order routing capabilities
+    - Basic price impact protection needed
+    - Could benefit from more sophisticated execution algorithms
+    - Consider adding more robust error recovery mechanisms
+    """
