@@ -113,9 +113,10 @@ export const useChatStatePersistence = (
     // Try multiple sources in order of preference
     try {
       // 1. First check persistent global state
-      if (state.chatState?.sessions?.[sid]?.messages?.length > 0) {
-        console.log(`Restoring ${state.chatState.sessions[sid].messages.length} messages from global state for session ${sid}`);
-        return state.chatState.sessions[sid].messages.map(msg => ({
+      const sessionMessages = state.chatState?.sessions?.[sid]?.messages;
+      if (Array.isArray(sessionMessages) && sessionMessages.length > 0) {
+        console.log(`Restoring ${sessionMessages.length} messages from global state for session ${sid}`);
+        return sessionMessages.map(msg => ({
           sender: msg.role === 'user' ? 'user' : 'grace',
           text: msg.content || '',
           timestamp: msg.timestamp || new Date().toISOString(),

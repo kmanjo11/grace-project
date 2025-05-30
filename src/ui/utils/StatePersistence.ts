@@ -137,7 +137,7 @@ class StatePersistenceManager {
   private static cleanupStorage(): boolean {
     try {
       // Strategy 1: Remove old chat messages (typically the largest data)
-      const keysToCheck = [];
+      const keysToCheck: string[] = [];
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key && (key.startsWith('messages_') || key.includes('draft_'))) {
@@ -147,7 +147,8 @@ class StatePersistenceManager {
       
       // Sort by last access time if available
       const keysWithTime = keysToCheck.map(key => {
-        const sessionId = key.replace('messages_', '').replace('draft_', '');
+        // Ensure key is a string before calling replace
+        const sessionId = String(key).replace('messages_', '').replace('draft_', '');
         const lastSynced = localStorage.getItem(`lastSynced_${sessionId}`);
         const timestamp = lastSynced ? new Date(lastSynced).getTime() : 0;
         return { key, timestamp };
