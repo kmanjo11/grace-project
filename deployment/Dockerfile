@@ -1,54 +1,49 @@
-### BACKEND STAGE
-FROM python:3.10-slim AS builder
+# ============================
+# BUILDER STAGE
+# ============================
+FROM node:20 AS builder
 
+# Set working directory
 WORKDIR /app
 
-# Install system packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+# Install pnpm
+RUN npm install -g pnpm
 
-# Copy only requirements first for better caching
-COPY requirements.txt .
+# Copy package files
+COPY package.json pnpm-lock.yaml* ./
 
-# Install Python deps with specific versions
-RUN pip install --user -r requirements.txt
+# Install dependencies
+RUN pnpm install --no-frozen-lockfile
 
-# Final stage
-FROM python:3.10-slim
-
-WORKDIR /app
-
-# Copy Python dependencies from builder
-COPY --from=builder /root/.local /root/.local
-
-# Ensure scripts in .local are usable
-ENV PATH=/root/.local/bin:$PATH
-
-# Copy application code
+# Copy source files
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p data/chromadb logs
+# Create symlink for axios
+RUN mkdir -p /app/../services/node_modules && \
+    ln -sf /app/node_modules/axios /app/../services/node_modules/
 
-# Environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PORT=8000
-ENV GRACE_ENV=production
-ENV LOG_LEVEL=info
-ENV OPENAI_API_KEY=${OPENAI_API_KEY:-your-default-key-here}
+# Set working directory to UI
+WORKDIR /app/src/ui
+
+# Install UI dependencies and build with specific Rollup version
+RUN pnpm install && \
+    pnpm add -D rollup@3.29.4 && \
+    pnpm install --no-optional && \
+    pnpm run build
+
+# ============================
+# PRODUCTION STAGE
+# ============================
+FROM nginx:alpine
+
+# Copy built files from builder stage
+COPY --from=builder /app/src/ui/dist /usr/share/nginx/html
+
+# Copy nginx configuration
+COPY deployment/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Expose port
-EXPOSE 8000
+EXPOSE 80
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8000/health || exit 1
-
-# Run the application
-CMD ["python", "src/run_server.py"]
-
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]
