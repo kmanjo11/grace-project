@@ -1,0 +1,93 @@
+version: '3.8'
+
+services:
+  # Backend Service
+  backend:
+    build: 
+      context: .
+      dockerfile: deployment/Dockerfile
+    container_name: grace-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
+      - MANGO_V3_BASE_URL=${MANGO_V3_BASE_URL:-http://mango_v3_service:8080}
+      - JWT_SECRET=${JWT_SECRET:-your-secret-key}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-1d}
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+    volumes:
+      - ./keys:/app/keys
+      - ./data:/app/data
+    networks:
+      - grace-network
+    restart: unless-stopped
+    depends_on:
+      - mango_v3_service
+
+  # Frontend Service
+  frontend:
+    build:
+      context: ./src/ui
+      dockerfile: Dockerfile
+    container_name: grace-frontend
+    ports:
+      - "3000:80"
+    environment:
+      - NODE_ENV=production
+      - VITE_API_URL=/api
+      - VITE_WS_URL=ws://localhost:8000/ws
+    volumes:
+      - ./src/ui:/app
+      - /app/node_modules
+    networks:
+      - grace-network
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Mango V3 Service
+  mango_v3_service:
+    image: mango-v3-service:latest
+    container_name: mango-v3-service
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - RPC_URL=${SOLANA_RPC_URL:-https://api.mainnet-beta.solana.com}
+      - WS_URL=${SOLANA_WS_URL:-wss://api.mainnet-beta.solana.com}
+    volumes:
+      - ./mango_v3_config:/config
+      - ./data/mango:/data
+    networks:
+      - grace-network
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy (Optional)
+  nginx:
+    image: nginx:alpine
+    container_name: grace-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - grace-network
+    restart: unless-stopped
+
+networks:
+  grace-network:
+    driver: bridge
+    name: grace-network

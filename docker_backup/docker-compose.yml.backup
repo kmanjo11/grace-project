@@ -1,0 +1,78 @@
+# Remove the version as it's no longer needed in newer Docker Compose versions
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    container_name: grace-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
+      - MANGO_V3_BASE_URL=${MANGO_V3_BASE_URL:-http://mango_v3_service:8080}
+      - JWT_SECRET=${JWT_SECRET:-your-secret-key}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-1d}
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - ../keys:/app/keys
+      - ../data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      mango_v3_service:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: src/ui/Dockerfile
+      target: development  # Use development stage for hot-reloading
+    container_name: grace-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      - NODE_ENV=production
+      - VITE_API_URL=/api
+      - VITE_WS_URL=ws://localhost:8000/ws
+    volumes:
+      - ../src/ui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../src/ui:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    stdin_open: true
+    tty: true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  grace-redis:
+    image: redis:7-alpine
+    container_name: grace-redis
+    restart: unless-stopped
+    volumes:
+      - grace-redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  grace-data:
+  grace-redis-data:
+
