@@ -50,21 +50,7 @@ test_data/
 *.log
 .coverage
 
-# Explicitly include deployment directory and its contents
-!/deployment/
-!/deployment/*
-!/deployment/Dockerfile
-!/deployment/docker-compose.yml
-!/deployment/**/*
 
-# Docker
-Dockerfile*
-docker-compose*
-**/Dockerfile*
-**/docker-compose*
-**/Docker/**
-**/docker/**
-**/deployment/**
 
 # Local development
 .local/

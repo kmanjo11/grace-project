@@ -67,7 +67,14 @@ export default defineConfig(({ mode, command: _command }) => {
       minify: isProduction ? 'esbuild' : false,
       cssCodeSplit: true,
       chunkSizeWarningLimit: 1600,
+      // Add commonjs options for better compatibility
+      commonjsOptions: {
+        transformMixedEsModules: true,
+      },
+      // Configure rollup options
       rollupOptions: {
+        // Externalize node_modules
+        external: ['lodash'],
         input: {
           main: path.resolve(__dirname, 'index.html'),
         },
@@ -75,6 +82,9 @@ export default defineConfig(({ mode, command: _command }) => {
           entryFileNames: 'assets/[name]-[hash].js',
           chunkFileNames: 'assets/[name]-[hash].js',
           assetFileNames: 'assets/[name]-[hash][extname]',
+          globals: {
+            lodash: '_',
+          },
           manualChunks: {
             vendor: ['react', 'react-dom', 'react-router-dom'],
             mui: ['@mui/material', '@emotion/react', '@emotion/styled'],
@@ -91,7 +101,7 @@ export default defineConfig(({ mode, command: _command }) => {
       alias: {
         '@': path.resolve(__dirname, 'src'),
         '@components': path.resolve(__dirname, 'src/components'),
-        '@services': path.resolve(__dirname, 'src/services'),
+        '@services': path.resolve(__dirname, '../services'),  // Updated to point to root services directory
         '@pages': path.resolve(__dirname, 'src/pages'),
         '@utils': path.resolve(__dirname, 'src/utils'),
         '@assets': path.resolve(__dirname, 'src/assets'),
@@ -99,6 +109,8 @@ export default defineConfig(({ mode, command: _command }) => {
         '@contexts': path.resolve(__dirname, 'src/contexts'),
       },
       extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'],
+      // Add preserveSymlinks to handle symlinked node_modules
+      preserveSymlinks: true,
     },
 
     // Server configuration
@@ -158,6 +170,7 @@ export default defineConfig(({ mode, command: _command }) => {
         '@emotion/react',
         '@emotion/styled',
         'lightweight-charts',
+        'lodash',  // Explicitly include lodash
       ],
       exclude: ['js-big-decimal'],
     },
