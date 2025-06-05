@@ -8,8 +8,10 @@ It's designed to work with the Quart framework instead of FastAPI.
 import os
 import json
 import uuid
+import logging
 from datetime import datetime
-import aioredis
+from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from quart import Blueprint, request, jsonify
 
 # Create a blueprint for chat sessions
@@ -43,7 +45,7 @@ async def init_redis():
         redis_url = f"redis://{redis_host}:{redis_port}"
         logger.info(f"Attempting to connect to Redis at {redis_url}")
         
-        redis = await aioredis.from_url(
+        redis = Redis.from_url(
             redis_url,
             encoding="utf-8",
             decode_responses=True,
@@ -56,15 +58,17 @@ async def init_redis():
         logger.info("Successfully connected to Redis")
         USING_FALLBACK = False
         return True
-        USING_FALLBACK = False
-        logger.info("Successfully connected to Redis")
-        return True
-    except Exception as e:
+    except RedisError as e:
         logger.error(f"Redis connection error: {e}", exc_info=True)
         logger.warning(
             "Falling back to in-memory storage for chat sessions. "
             "Data will not persist between restarts!"
         )
+        redis = None
+        USING_FALLBACK = True
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error initializing Redis: {e}", exc_info=True)
         redis = None
         USING_FALLBACK = True
         return False
@@ -105,21 +109,21 @@ async def get_user_id_from_request():
 
                     # Add default session metadata if needed
                     session_key = f"chat:default_{user_id}:meta"
-                    session_exists = await redis.exists(session_key)
+                    session_exists = await redis.exists(session_key) > 0
 
                     if not session_exists:
                         # Create default session
                         timestamp = datetime.utcnow().isoformat()
-                        await redis.hmset_dict(
+                        await redis.hset(
                             session_key,
-                            {
+                            mapping={
                                 "id": f"default_{user_id}",
                                 "session_id": f"default_{user_id}",
                                 "created": timestamp,
                                 "lastActivity": timestamp,
                                 "name": "New Chat",
                                 "topic": "New Chat",
-                            },
+                            }
                         )
                 else:
                     # In-memory fallback

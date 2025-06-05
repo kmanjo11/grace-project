@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { PageTransition } from './components/PageTransition';
-import '../ui/styles/transitions.css';
+import './styles/transitions.css';
 
 import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './components/AuthContext';
