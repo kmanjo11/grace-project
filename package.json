@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "cd src/ui && tsc -p tsconfig.json && vite build && tsc -p tsconfig.node.json",
+    "build": "cd src/ui && ../../node_modules/.bin/tsc -p tsconfig.json && vite build && ../../node_modules/.bin/tsc -p tsconfig.node.json",
     "preview": "vite preview",
     "test": "vitest",
     "test:ci": "vitest run",
@@ -83,7 +83,11 @@
   },
   "resolutions": {
     "bs58": "^6.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@babel/core": "^7.23.7",

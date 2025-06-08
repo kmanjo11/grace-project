@@ -201,8 +201,8 @@ class StateBackupService {
           
           navigator.serviceWorker.addEventListener('message', messageHandler);
           
-          // Request recovery
-          navigator.serviceWorker.controller.postMessage({
+          // Request recovery - we've already checked controller is not null
+          navigator.serviceWorker.controller!.postMessage({
             type: 'RECOVER_STATE'
           });
           

@@ -4,6 +4,9 @@
  * Provides standardized error handling and response processing for all API calls.
  */
 
+// Front api constant
+const API_BASE_URL = (import.meta as any).env.VITE_API_URL || '/api';
+
 // Auth token key for localStorage
 const AUTH_TOKEN_KEY = 'grace_auth_token';
 
@@ -70,7 +73,6 @@ export class ApiError extends Error {
 }
 
 // API configuration - use environment variable if available, otherwise use relative path
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || ''; // Will be set in Docker build
 
 // Ensure API_BASE_URL ends with a slash
 const getBaseUrl = () => {

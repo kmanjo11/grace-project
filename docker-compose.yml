@@ -6,6 +6,8 @@ services:
     build: 
       context: .
       dockerfile: deployment/Dockerfile
+      args:
+        - OPENAI_API_KEY=${OPENAI_API_KEY}
     container_name: grace-backend
     ports:
       - "8000:8000"
@@ -18,9 +20,13 @@ services:
       - JWT_SECRET=${JWT_SECRET:-your-secret-key}
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-1d}
       - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+      - PIP_CACHE_DIR=/root/.cache/pip
+      - OPENAI_API_KEY=${OPENAI_API_KEY} 
     volumes:
       - ./keys:/app/keys
       - ./data:/app/data
+      - python-packages:/root/.cache/pip
+      - ./:/app:cached
     networks:
       - grace-network
     restart: unless-stopped
@@ -38,7 +44,7 @@ services:
     environment:
       - NODE_ENV=production
       - VITE_API_URL=/api
-      - VITE_WS_URL=ws://localhost:8000/ws
+      - VITE_WS_URL=ws://backend:8000/ws
     volumes:
       - ./src/ui:/app
       - /app/node_modules
@@ -76,10 +82,8 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      - ./nginx/logs:/var/log/nginx
+      - ./deployment/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./src/ui/dist:/usr/share/nginx/html:ro
     depends_on:
       - frontend
       - backend

@@ -4,7 +4,6 @@ import path from 'path';
 import { visualizer } from 'rollup-plugin-visualizer';
 import { VitePWA } from 'vite-plugin-pwa';
 
-
 // Type for the visualizer plugin
 type VisualizerPlugin = (options?: any) => PluginOption;
 
@@ -22,7 +21,10 @@ export default defineConfig(({ mode, command: _command }) => {
         // Use React 17+ automatic JSX transform
         jsxImportSource: '@emotion/react',
         babel: {
-          plugins: ['@emotion/babel-plugin'],
+          plugins: [
+            ['@emotion/babel-plugin', { sourceMap: true }],
+            'babel-plugin-macros'
+          ],
         },
       }) as PluginOption,
       // Visualize bundle size
@@ -157,6 +159,11 @@ export default defineConfig(({ mode, command: _command }) => {
         path.resolve(__dirname, 'node_modules')  // Local node_modules (fallback)
       ],
       alias: [
+        // Emotion JSX runtime resolution
+        {
+          find: '@emotion/react/jsx-runtime',
+          replacement: require.resolve('@emotion/react/jsx-runtime')
+        },
         // Keep existing path aliases
         {
           find: /^@\/(.*)/,
@@ -191,7 +198,15 @@ export default defineConfig(({ mode, command: _command }) => {
         {
           find: '@context',
           replacement: path.resolve(__dirname, '../context')
-        }
+        },
+        {
+          find: '@emotion/react/jsx-runtime',
+          replacement: new URL('../../node_modules/@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js', import.meta.url).pathname
+        },
+        {
+          find: '@emotion/react/jsx-dev-runtime',
+          replacement: new URL('../../node_modules/@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.development.cjs.js', import.meta.url).pathname
+        },
       ],
       extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'],
       preserveSymlinks: true,

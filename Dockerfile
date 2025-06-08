@@ -17,6 +17,12 @@ RUN pnpm install
 # Copy everything else
 COPY . .
 
+COPY src/ui/.env.production /app/src/ui/.env.production
+
+# Add this before RUN npm run build
+ARG VITE_API_URL
+ENV VITE_API_URL=${VITE_API_URL:-/api}
+
 # Build from root - no need to cd since build script handles it
 RUN pnpm run build
 

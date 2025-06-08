@@ -145,7 +145,7 @@ export default function Chat() {
         // Use setTimeout to ensure the DOM is fully rendered
         setTimeout(() => {
           const chatContainer = messagesEndRef.current?.parentElement;
-          if (chatContainer) {
+          if (chatContainer && typeof savedPosition === 'number' && !isNaN(savedPosition)) {
             chatContainer.scrollTop = savedPosition;
           }
         }, 100);
@@ -756,32 +756,37 @@ export default function Chat() {
             <p className="text-yellow-500 text-xs mb-2">Please log in to use chat</p>
           )}
           <ul className="space-y-2">
-            {sessions.map((s) => (
-              <li key={s.session_id} className="relative group">
-                <button
-                onClick={() => {
-                  // Clear current messages first to avoid UI flashing
-                  setMessages([]);
-                  // Set the session ID
-                  setSessionId(s.session_id);
-                  // Immediately load messages from cache
-                  const cachedMessages = loadMessagesFromCache(s.session_id);
-                  if (cachedMessages.length > 0) {
-                    setMessages(cachedMessages);
-                  }
-                  // Store the active session ID
-                  localStorage.setItem('activeSessionId', s.session_id);
-                  // Close sidebar on mobile after selection
-                  setSidebarVisible(false);
-                }}
-                className={`w-full text-left px-3 py-2 rounded text-sm hover:bg-red-800 ${sessionId === s.session_id ? 'bg-red-900 text-white' : 'text-red-300'}`}
-              >
-                  {/* Display the topic/name or generate one from message content */}
-                  {s.topic || s.name || `Chat ${s.session_id.slice(0, 6)}`}
-                </button>
-
-              </li>
-            ))}
+            {sessions.map((s) => {
+              // Safely get the session ID, checking both session_id and id
+              const currentSessionId = s.session_id || s.id;
+              if (!currentSessionId) return null; // Skip if no valid ID
+              
+              return (
+                <li key={currentSessionId} className="relative group">
+                  <button
+                    onClick={() => {
+                      // Clear current messages first to avoid UI flashing
+                      setMessages([]);
+                      // Set the session ID
+                      setSessionId(currentSessionId);
+                      // Immediately load messages from cache
+                      const cachedMessages = loadMessagesFromCache(currentSessionId);
+                      if (cachedMessages.length > 0) {
+                        setMessages(cachedMessages);
+                      }
+                      // Store the active session ID
+                      localStorage.setItem('activeSessionId', currentSessionId);
+                      // Close sidebar on mobile after selection
+                      setSidebarVisible(false);
+                    }}
+                    className={`w-full text-left px-3 py-2 rounded text-sm hover:bg-red-800 ${sessionId === currentSessionId ? 'bg-red-900 text-white' : 'text-red-300'}`}
+                  >
+                    {/* Display the topic/name or generate one from message content */}
+                    {s.topic || s.name || `Chat ${currentSessionId.slice(0, 6)}`}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </aside>
 

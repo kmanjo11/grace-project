@@ -8,6 +8,7 @@ services:
       dockerfile: ./Dockerfile
       args:
         - NODE_ENV=production
+        - VITE_API_URL=/api
     ports:
       - "3000:80"
     environment:
@@ -34,6 +35,8 @@ services:
       dockerfile: deployment/Dockerfile
     ports:
       - "8000:8000"
+    user: root
+    command: sh -c "mkdir -p /app/data/conversation_data/contexts && chmod -R 777 /app/data && python -m src.run_server"
     environment:
       - GRACE_ENV=production
       - DEBUG=false
@@ -62,12 +65,11 @@ services:
       - MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-0.7}
       - OPENAI_API_KEY=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
       - MANGO_V3_BASE_URL=http://mango-v3-service:8080
-      - MANGO_V3_PRIVATE_KEY_PATH=
+      - MANGO_V3_PRIVATE_KEY_PATH=/app/keys/mango_private_key.pem  
     volumes:
-      - ./data:/app/data
-      - ./keys:/app/keys
-      - ./data/chromadb:/app/data/chromadb
-      - ./data/profiles.json:/app/data/profiles.json
+      - ../src/data:/app/data
+      - ../keys:/app/keys
+      - ../src/data/chromadb:/app/data/chromadb
     depends_on:
       - redis
     networks:

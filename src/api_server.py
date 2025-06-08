@@ -61,11 +61,12 @@ def get_jwt_identity():
 
 # Import chat_sessions_quart blueprint for chat functionality
 try:
-    from chat_sessions_quart import chat_blueprint
-    from grace_core import GraceCore
-except ImportError:
     from src.chat_sessions_quart import chat_blueprint
     from src.grace_core import GraceCore
+except ImportError:
+    # Fallback for direct execution
+    from chat_sessions_quart import chat_blueprint
+    from grace_core import GraceCore
 
 # Initialize Grace core instance
 # Use environment variables or defaults for configuration

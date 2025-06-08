@@ -17,8 +17,8 @@ if str(project_root) not in sys.path:
 
 # Inside Docker, the file might be in different locations. Try multiple approaches.
 try:
-    # First try normal import
-    from conversation_management import (
+    # First try normal import from src
+    from src.conversation_management import (
         ConversationManager,
         ConversationContext,
         TopicDetector,

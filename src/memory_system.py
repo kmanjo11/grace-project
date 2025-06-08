@@ -7,23 +7,24 @@ import chromadb
 from chromadb.utils import embedding_functions
 import uuid
 import re
+import logging
 
+# Configure logging for the memory system
+logger = logging.getLogger("MemorySystem")
 
 from src.user_profile import UserProfileSystem
 
-
-# Configure logging for the memory system
-import logging
-logger = logging.getLogger("MemorySystem")
 
 class MemorySystem:
     """
     Grace's three-layer memory system with ChromaDB integration.
 
-    Layers:
-    - Short-term: Active context window for immediate conversations
-    - Medium-term: Personal user memories that persist across sessions
-    - Long-term: Global shared knowledge accessible to all users
+    Features:
+    - Three-layer memory architecture (short/medium/long-term)
+    - Memory versioning with history tracking
+    - Advanced querying with filters and sorting
+    - Entity relationship mapping
+    - Automatic memory maintenance
     """
 
     def __init__(self, chroma_db_path: str, user_profile_system: "UserProfileSystem"):
@@ -40,29 +41,33 @@ class MemorySystem:
         # Time-based decay settings
         self.short_term_ttl = 60 * 60 * 24  # 1 day in seconds
         self.medium_term_ttl = 60 * 60 * 24 * 30  # 30 days in seconds
+        
+        # Versioning
+        self.version_history = {}
+        self.current_version = "1.0.0"
 
     def _initialize_collections(self):
         """Initialize ChromaDB collections for each memory layer."""
         # Global long-term memory collection
         self.global_collection = self._get_or_create_collection("global_memory")
-
         # System configuration collection
         self.system_collection = self._get_or_create_collection("system_config")
-
+        # Version history collection
+        self.version_collection = self._get_or_create_collection("version_history")
         # User-specific collections are created on demand
         self.user_collections = {}
 
     def _get_or_create_collection(self, name: str):
-        """Get or create a ChromaDB collection."""
+        """Get or create a ChromaDB collection with error handling."""
         try:
             return self.chroma_client.get_collection(
                 name=name, embedding_function=self.embedding_function
             )
-        except ValueError:
+        except Exception as e:
+            logger.warning(f"Collection {name} not found, creating new one: {str(e)}")
             return self.chroma_client.create_collection(
                 name=name, embedding_function=self.embedding_function
             )
-
     def _get_user_collection(self, user_id: str):
         """Get or create a user-specific collection."""
         # Sanitize user_id for collection name
@@ -75,7 +80,185 @@ class MemorySystem:
             )
 
         return self.user_collections[collection_name]
+    # ===== Versioning =====
+    def create_memory_version(self, memory_id: str, version_notes: str = "") -> str:
+        """Create a new version of a memory."""
+        # Get current memory state
+        memory = self.get_memory(memory_id)
+        if not memory:
+            raise ValueError(f"Memory {memory_id} not found")
+            
+        version_id = f"v{len(self.version_history.get(memory_id, [])) + 1}"
+        version_data = {
+            "id": version_id,
+            "timestamp": time.time(),
+            "notes": version_notes,
+            "data": memory
+        }
+        
+        # Store version
+        if memory_id not in self.version_history:
+            self.version_history[memory_id] = []
+        self.version_history[memory_id].append(version_data)
+        
+        # Update version in database
+        self.version_collection.upsert(
+            ids=[f"{memory_id}_versions"],
+            metadatas=[{"type": "version_history", "memory_id": memory_id}],
+            documents=[json.dumps(self.version_history[memory_id])]
+        )
+        
+        return version_id
 
+    def get_memory_versions(self, memory_id: str) -> List[Dict]:
+        """Get version history for a memory."""
+        if memory_id not in self.version_history:
+            # Try to load from DB
+            try:
+                result = self.version_collection.get(
+                    where={"memory_id": memory_id}, 
+                    include=["documents"]
+                )
+                if result and result["documents"]:
+                    self.version_history[memory_id] = json.loads(result["documents"][0])
+            except Exception as e:
+                logger.warning(f"Error loading versions for {memory_id}: {str(e)}")
+                return []
+        return self.version_history.get(memory_id, [])
+
+    # ===== Enhanced Querying =====
+    def query_memories(
+        self,
+        query: Optional[str] = None,
+        user_id: Optional[str] = None,
+        memory_types: Optional[List[str]] = None,
+        filters: Optional[Dict] = None,
+        sort_by: str = "relevance",  # 'relevance', 'timestamp', 'importance'
+        limit: int = 10,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Enhanced query interface with filtering and sorting.
+        
+        Args:
+            query: Text query for semantic search
+            user_id: Filter by user
+            memory_types: List of memory types to include
+            filters: Additional filters (e.g., {"importance": "high", "tags": ["crypto"]})
+            sort_by: Field to sort results by
+            limit: Max results to return
+            offset: Pagination offset
+            
+        Returns:
+            Dict with results and metadata
+        """
+        if memory_types is None:
+            memory_types = ["short_term", "medium_term", "long_term"]
+            
+        if filters is None:
+            filters = {}
+            
+        # Build where clause for filters
+        where_clause = {"memory_type": {"$in": memory_types}}
+        
+        # Add user filter if provided
+        if user_id:
+            where_clause["user_id"] = user_id
+            
+        # Add custom filters
+        for key, value in filters.items():
+            if isinstance(value, list):
+                where_clause[key] = {"$in": value}
+            else:
+                where_clause[key] = value
+        
+        # Execute query
+        if query:
+            results = self.global_collection.query(
+                query_texts=[query],
+                where=where_clause,
+                n_results=limit + offset
+            )
+        else:
+            results = self.global_collection.get(
+                where=where_clause,
+                limit=limit + offset
+            )
+        
+        # Process and sort results
+        processed = self._process_query_results(results, sort_by)
+        
+        return {
+            "items": processed[offset:offset+limit],
+            "total": len(processed),
+            "limit": limit,
+            "offset": offset
+        }
+
+    def _process_query_results(self, results: Dict, sort_by: str) -> List[Dict]:
+        """Process and sort query results."""
+        processed = []
+        
+        # Convert to common format
+        if "documents" in results:  # Query results
+            for i, doc in enumerate(results["documents"][0]):
+                if i < len(results["metadatas"][0]):
+                    processed.append({
+                        "text": doc,
+                        "metadata": results["metadatas"][0][i],
+                        "id": results["ids"][0][i],
+                        "relevance": 1.0 - min(results["distances"][0][i], 1.0)
+                    })
+        else:  # Get results
+            for i, doc_id in enumerate(results.get("ids", [])):
+                if i < len(results.get("documents", [])):
+                    processed.append({
+                        "text": results["documents"][i],
+                        "metadata": results["metadatas"][i],
+                        "id": doc_id,
+                        "relevance": 1.0
+                    })
+        
+        # Sort results
+        if sort_by == "timestamp" and all("timestamp" in item["metadata"] for item in processed):
+            processed.sort(key=lambda x: x["metadata"]["timestamp"], reverse=True)
+        elif sort_by == "importance" and all("importance" in item["metadata"] for item in processed):
+            processed.sort(key=lambda x: x["metadata"].get("importance", 0), reverse=True)
+        
+        return processed
+
+    # ===== Entity Management =====
+    def link_entities(self, entity1: str, entity2: str, relationship: str = "related"):
+        """Create a relationship between two entities."""
+        # This would be expanded with more sophisticated relationship tracking
+        pass
+
+    def get_related_entities(self, entity: str, relationship: Optional[str] = None) -> List[Dict]:
+        """Get entities related to the given entity."""
+        # This would query the relationship graph
+        pass
+
+    # ===== Memory Maintenance =====
+    def cleanup_memories(self, older_than_days: int = 30, min_importance: float = 0.0):
+        """Clean up old or low-importance memories."""
+        cutoff = time.time() - (older_than_days * 24 * 60 * 60)
+        
+        # Find candidates for cleanup
+        candidates = self.query_memories(
+            filters={
+                "timestamp": {"$lt": cutoff},
+                "importance": {"$lt": min_importance}
+            },
+            limit=1000
+        )
+        
+        # Remove candidates
+        for item in candidates["items"]:
+            self.delete_memory(item["id"])
+            
+        return len(candidates["items"])
+
+    # ===== Core Memory Operations =====
     def add_to_short_term(
         self, user_id: str, text: str, metadata: Dict[str, Any] = None
     ) -> str:

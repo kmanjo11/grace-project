@@ -12,12 +12,6 @@ from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 
-# Import mock Solana implementation for testing
-try:
-    from solana.keypair import Keypair
-except ImportError:
-    from mock_solana import Keypair
-
 
 class SecureDataManager:
     """Handles encryption and decryption of sensitive user data."""

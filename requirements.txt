@@ -1,10 +1,10 @@
 # Grace Project - Requirements.txt
 
 # Core dependencies
-python-dotenv==1.0.0
-pyjwt==2.8.0
-cryptography==41.0.5
-requests==2.31.0
+python-dotenv>=1.0.0
+pyjwt>=2.8.0
+cryptography>=41.0.5
+requests>=2.31.0
 flask>=3.0.0
 quart>=0.18.4
 quart-cors>=0.6.0
@@ -16,23 +16,23 @@ python-engineio>=4.5.1
 python-jose>=3.3.0
 python-multipart>=0.0.6
 python-dateutil>=2.8.2
-pydantic>=1.10.7,<2.0.0
+pydantic>=2.0.0
 fastapi>=0.95.0,<1.0.0
 uvicorn>=0.22.0,<1.0.0
 typing-extensions>=4.5.0,<5.0.0
 
 # AI and ML
-aiohttp==3.9.3
-openai==0.28.0
-open-interpreter==0.1.13
+aiohttp>=3.9.3
+openai>=0.28.0
+open-interpreter>=0.1.13
 chromadb>=0.3.0
 
 # Solana and Web3
 solana>=0.30.0  # Main Solana SDK (includes what was previously solana-py)
 solders>=0.18.0  # Rust-based Solana SDK components
-base58==2.1.1  # Base58 encoding/decoding
+base58>=2.1.1  # Base58 encoding/decoding
 anchorpy>=0.18.0  # Anchor framework for Solana
-construct-typing>=0.5.2,<0.6.0  # Type hints for Construct library (pinned to be compatible with solana)
+construct-typing>=0.5.2,<0.6.0  # Type hints for Construct library
 
 # Data processing
 numpy>=1.24.4,<2.0.0  # Pinned to 1.x for stability
@@ -82,7 +82,7 @@ pynacl>=1.5.0,<2.0.0  # For secure key generation
 
 # Web Framework
 fastapi>=0.95.0,<1.0.0
-pydantic>=1.10.7,<2.0.0
+pydantic>=2.0.0 
 quart-jwt-extended==0.1.0
 shortuuid>=1.0.11,<2.0.0
 uvicorn[standard]>=0.22.0,<1.0.0
