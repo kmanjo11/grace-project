@@ -1520,40 +1520,30 @@ class PhantomWalletConnector:
             error_msg = f"Failed to disconnect wallet {wallet_address}: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
             raise WalletConnectionError(error_msg) from e
-    try:
-        # In a real implementation, this would create a dApp connection URL
-        # For now, we'll simulate this with a placeholder URL
-        connection_url = f"{self.phantom_app_url}/connect?session={session_id}&redirect={redirect_url}{self.phantom_callback_path}"
 
-        self.logger.info(f"Generated connection URL for session {session_id}")
-        return connection_url
-    except Exception as e:
-        self.logger.error(f"Error generating connection URL: {str(e)}")
-        raise
+    def update_wallet_balance(self, wallet_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update wallet balance from network.
 
-def update_wallet_balance(self, wallet_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Update wallet balance from network.
+        Args:
+            wallet_data: Wallet data
 
-    Args:
-        wallet_data: Wallet data
+        Returns:
+            Dict: Updated wallet data with balance and timestamp
+        """
+        try:
+            public_key = wallet_data["public_key"]
+            balances = self.get_wallet_balance(public_key)
 
-    Returns:
-        Dict: Updated wallet data
-    """
-    try:
-        public_key = wallet_data["public_key"]
-        balances = self.get_wallet_balance(public_key)
+            # Update wallet data
+            updated_wallet = wallet_data.copy()
+            updated_wallet["balance"] = balances
+            updated_wallet["last_updated"] = datetime.now().isoformat()
 
-        # Update wallet data
-        updated_wallet = wallet_data.copy()
-        updated_wallet["balance"] = balances
-        updated_wallet["last_updated"] = datetime.now().isoformat()
-
-        return updated_wallet
-    except Exception as e:
-        self.logger.error(f"Error updating wallet balance: {str(e)}")
-        return wallet_data
+            return updated_wallet
+        except Exception as e:
+            self.logger.error(f"Error updating wallet balance: {str(e)}")
+            return wallet_data
 
     def _generate_connection_url(self, session_id: str, redirect_url: str) -> str:
         """
@@ -1761,7 +1751,30 @@ class WalletConnectionSystem:
     Manages wallet connections for Grace users.
     """
 
-# Removed duplicate __init__ method - using the more comprehensive one above
+    def __init__(self, user_profile_system, secure_data_manager=None, phantom_app_url=None, phantom_callback_path=None):
+        """
+        Initialize the WalletConnectionSystem.
+        
+        Args:
+            user_profile_system: User profile system for user data
+            secure_data_manager: Optional secure data manager for encryption
+            phantom_app_url: Base URL for Phantom wallet
+            phantom_callback_path: Callback path for Phantom wallet
+        """
+        self.user_profile_system = user_profile_system
+        self.secure_data_manager = secure_data_manager
+        self.phantom_app_url = phantom_app_url or os.getenv('PHANTOM_APP_URL', 'https://phantom.app')
+        self.phantom_callback_path = phantom_callback_path or '/api/wallet/phantom/callback'
+        self.logger = logging.getLogger("GraceWalletConnection")
+        
+        # Initialize wallet managers
+        self.internal_wallet_manager = InternalWalletManager(secure_data_manager)
+        self.phantom_wallet_connector = PhantomWalletConnector(
+            phantom_app_url=phantom_app_url,
+            secure_data_manager=secure_data_manager
+        )
+        
+        self.logger.info("WalletConnectionSystem initialized")
 
     def create_internal_wallet(self, user_id: str) -> Dict[str, Any]:
         """
