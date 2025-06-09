@@ -31,7 +31,7 @@
       "@types/*": ["./src/types/*"],
       "@pages/*": ["./src/pages/*"],
       "@utils/*": ["./src/utils/*"],
-      "@emotion/react/jsx-runtime": ["./node_modules/@emotion/react/jsx-runtime.js"]
+      "@emotion/react/jsx-runtime": ["./node_modules/@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js"]
     },
     "typeRoots": [
       "./node_modules/@types",

@@ -20,12 +20,18 @@ export default defineConfig(({ mode, command: _command }) => {
       react({
         // Use React 17+ automatic JSX transform
         jsxImportSource: '@emotion/react',
+        jsxRuntime: 'automatic',
         babel: {
           plugins: [
-            ['@emotion/babel-plugin', { sourceMap: true }],
+            ['@emotion/babel-plugin', { 
+              sourceMap: true,
+              autoLabel: 'dev-only',
+              labelFormat: '[local]',
+              cssPropOptimization: true
+            }],
             'babel-plugin-macros'
-          ],
-        },
+          ]
+        }
       }) as PluginOption,
       // Visualize bundle size
       isProduction && (visualizer as unknown as VisualizerPlugin)({
@@ -156,13 +162,14 @@ export default defineConfig(({ mode, command: _command }) => {
       // Check root node_modules first, then local node_modules
       modules: [
         path.resolve(__dirname, '../../node_modules'), // Root node_modules
-        path.resolve(__dirname, 'node_modules')  // Local node_modules (fallback)
+        path.resolve(__dirname, 'node_modules'),  // Local node_modules (fallback)
+        'node_modules/@emotion/react'
       ],
       alias: [
-        // Emotion JSX runtime resolution - using direct path instead of require.resolve
+        // Emotion JSX runtime resolution
         {
           find: '@emotion/react/jsx-runtime',
-          replacement: path.resolve(__dirname, 'node_modules/@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js')
+          replacement: '@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js'
         },
         // Keep existing path aliases
         {
