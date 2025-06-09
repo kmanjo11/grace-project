@@ -159,10 +159,10 @@ export default defineConfig(({ mode, command: _command }) => {
         path.resolve(__dirname, 'node_modules')  // Local node_modules (fallback)
       ],
       alias: [
-        // Emotion JSX runtime resolution
+        // Emotion JSX runtime resolution - using direct path instead of require.resolve
         {
           find: '@emotion/react/jsx-runtime',
-          replacement: require.resolve('@emotion/react/jsx-runtime')
+          replacement: path.resolve(__dirname, 'node_modules/@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js')
         },
         // Keep existing path aliases
         {
