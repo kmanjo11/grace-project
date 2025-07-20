@@ -1751,30 +1751,7 @@ class WalletConnectionSystem:
     Manages wallet connections for Grace users.
     """
 
-    def __init__(self, user_profile_system, secure_data_manager=None, phantom_app_url=None, phantom_callback_path=None):
-        """
-        Initialize the WalletConnectionSystem.
-        
-        Args:
-            user_profile_system: User profile system for user data
-            secure_data_manager: Optional secure data manager for encryption
-            phantom_app_url: Base URL for Phantom wallet
-            phantom_callback_path: Callback path for Phantom wallet
-        """
-        self.user_profile_system = user_profile_system
-        self.secure_data_manager = secure_data_manager
-        self.phantom_app_url = phantom_app_url or os.getenv('PHANTOM_APP_URL', 'https://phantom.app')
-        self.phantom_callback_path = phantom_callback_path or '/api/wallet/phantom/callback'
-        self.logger = logging.getLogger("GraceWalletConnection")
-        
-        # Initialize wallet managers
-        self.internal_wallet_manager = InternalWalletManager(secure_data_manager)
-        self.phantom_wallet_connector = PhantomWalletConnector(
-            phantom_app_url=phantom_app_url,
-            secure_data_manager=secure_data_manager
-        )
-        
-        self.logger.info("WalletConnectionSystem initialized")
+# Removed duplicate __init__ method - using the more comprehensive one above
 
     def create_internal_wallet(self, user_id: str) -> Dict[str, Any]:
         """
