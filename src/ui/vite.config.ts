@@ -166,10 +166,10 @@ export default defineConfig(({ mode, command: _command }) => {
         'node_modules/@emotion/react'
       ],
       alias: [
-        // Emotion JSX runtime resolution
+        // Emotion JSX runtime resolution - exact match from working solution
         {
-          find: '@emotion/react/jsx-runtime',
-          replacement: '@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js'
+          find: /^@emotion\/react(\/.*)?/,
+          replacement: path.resolve(__dirname, 'node_modules/@emotion/react$1')
         },
         // Keep existing path aliases
         {
@@ -268,6 +268,7 @@ export default defineConfig(({ mode, command: _command }) => {
 
     // Optimize dependencies for better build performance
     optimizeDeps: {
+      // Include all Emotion-related packages for proper bundling
       include: [
         'react',
         'react-dom',
@@ -276,21 +277,29 @@ export default defineConfig(({ mode, command: _command }) => {
         '@mui/material',
         '@emotion/react',
         '@emotion/react/jsx-runtime',
+        '@emotion/react/jsx-dev-runtime',
         '@emotion/styled',
         '@emotion/cache',
+        '@emotion/use-insertion-effect-with-fallbacks',
         'lightweight-charts',
-        'lodash',
+        'lodash'
       ],
       exclude: ['js-big-decimal'],
       esbuildOptions: {
-        // Enable esbuild's tree shaking
-        treeShaking: true,
+        // Preserve symlinks for proper module resolution in monorepo
+        preserveSymlinks: true,
+        // JSX configuration
+        jsx: 'automatic',
+        jsxImportSource: '@emotion/react',
         // Better compatibility
         define: { global: 'globalThis' },
         // Modern JS target
         target: 'es2020',
         supported: { bigint: true },
-        // Enable concurrent builds
+        // Module resolution
+        mainFields: ['module', 'jsnext:main', 'jsnext'],
+        // Performance optimizations
+        treeShaking: true,
         incremental: true
       }
     },

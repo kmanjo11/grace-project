@@ -5,13 +5,13 @@
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
-    "moduleResolution": "bundler",
+    "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "jsxImportSource": "@emotion/react",
+    "jsxImportSource": "@emotion/react",  
     "strict": true,
     "noImplicitAny": false,
     "strictNullChecks": true,
@@ -30,8 +30,7 @@
       "@services/*": ["./src/services/*"],
       "@types/*": ["./src/types/*"],
       "@pages/*": ["./src/pages/*"],
-      "@utils/*": ["./src/utils/*"],
-      "@emotion/react/jsx-runtime": ["./node_modules/@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js"]
+      "@utils/*": ["./src/utils/*"]
     },
     "typeRoots": [
       "./node_modules/@types",
