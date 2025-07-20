@@ -80,8 +80,6 @@ export default defineConfig(({ mode, command: _command }) => {
     // Root directory - use absolute path to src/ui
     root: __dirname,
 
-
-
     // Build configuration
     build: {
       outDir: 'dist',
@@ -95,61 +93,25 @@ export default defineConfig(({ mode, command: _command }) => {
       },
       // Configure rollup options
       rollupOptions: {
-        // Externalize node_modules
+        // Simplified externalization - let Vite handle most dependencies
         external: (id) => {
-          // Externalize all @mui/* packages
-          if (id.startsWith('@mui/')) return true;
-          
-          // Externalize react and related
-          if (id.startsWith('react') || id === 'react' || id === 'react-dom') return true;
-          
-          // Existing externals
-          const existingExternals = [
-            'lodash',
-            'react-router',
-            'react-router-dom',
-            '@babel/runtime/helpers/extends',
-            '@babel/runtime/helpers/objectWithoutProperties',
-            '@babel/runtime/helpers/classCallCheck',
-            '@babel/runtime/helpers/createClass',
-            '@babel/runtime/helpers/defineProperty',
-            '@babel/runtime/helpers/inherits',
-            '@babel/runtime/helpers/possibleConstructorReturn',
-            '@babel/runtime/helpers/getPrototypeOf',
-            '@babel/runtime/helpers/assertThisInitialized',
-            '@babel/runtime/helpers/typeof',
-            '@babel/runtime/helpers/asyncToGenerator',
-            '@babel/runtime/regenerator',
+          // Only externalize specific problematic packages
+          const explicitExternals = [
             'fancy-canvas',
-            'react-is',
-            '@mui/styled-engine',
-            // Add any other specific packages you want to explicitly externalize
           ];
           
-          // If it's in our explicit list, externalize it
-          if (existingExternals.includes(id)) return true;
-          
-          // If it's from node_modules, externalize it
-          if (id.includes('node_modules')) return true;
-          
-          // If it's a scoped package (starts with @), externalize it
-          if (id.startsWith('@') && id.includes('/')) return true;
-          
-          // For all other cases, let Vite handle it
-          return false;
+          return explicitExternals.includes(id);
         },
         input: path.resolve(__dirname, 'index.html'),
         output: {
           entryFileNames: 'assets/[name]-[hash].js',
           chunkFileNames: 'assets/[name]-[hash].js',
           assetFileNames: 'assets/[name]-[hash][extname]',
-          globals: {
-            lodash: 'lodash',
-          },
           manualChunks: {
-            // All external dependencies are now handled by the external config
-            // Keeping this empty object to maintain the configuration structure
-            // but you could potentially remove manualChunks entirely if not needed
+            // Group vendor dependencies
+            vendor: ['react', 'react-dom'],
+            mui: ['@mui/material', '@mui/icons-material'],
+            emotion: ['@emotion/react', '@emotion/styled'],
           },
         },
       },
@@ -157,27 +119,19 @@ export default defineConfig(({ mode, command: _command }) => {
       brotliSize: true,
     },
 
-    // Resolve configuration
+    // Resolve configuration - SIMPLIFIED
     resolve: {
-      // Check root node_modules first, then local node_modules
+      // Use root node_modules consistently
       modules: [
         path.resolve(__dirname, '../../node_modules'), // Root node_modules
-        path.resolve(__dirname, 'node_modules'),  // Local node_modules (fallback)
-        'node_modules/@emotion/react'
+        path.resolve(__dirname, 'node_modules'),       // Local fallback
       ],
       alias: [
-        // Emotion JSX runtime resolution
-        {
-          find: '@emotion/react/jsx-runtime',
-          replacement: '@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js'
-        },
-        // Keep existing path aliases
+        // Standard path aliases - keep existing functionality
         {
           find: /^@\/(.*)/,
           replacement: path.resolve(__dirname, '$1')
         },
-        // Explicit aliases for better performance and to avoid catch-all issues
-        // Keep explicit aliases for better performance
         {
           find: '@components',
           replacement: path.resolve(__dirname, 'components')
@@ -205,14 +159,6 @@ export default defineConfig(({ mode, command: _command }) => {
         {
           find: '@context',
           replacement: path.resolve(__dirname, '../context')
-        },
-        {
-          find: '@emotion/react/jsx-runtime',
-          replacement: new URL('../../node_modules/@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.cjs.js', import.meta.url).pathname
-        },
-        {
-          find: '@emotion/react/jsx-dev-runtime',
-          replacement: new URL('../../node_modules/@emotion/react/jsx-runtime/dist/emotion-react-jsx-runtime.development.cjs.js', import.meta.url).pathname
         },
       ],
       extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'],
@@ -268,6 +214,7 @@ export default defineConfig(({ mode, command: _command }) => {
 
     // Optimize dependencies for better build performance
     optimizeDeps: {
+      // Include all necessary packages for proper bundling
       include: [
         'react',
         'react-dom',
@@ -275,24 +222,24 @@ export default defineConfig(({ mode, command: _command }) => {
         'react-router',
         '@mui/material',
         '@emotion/react',
-        '@emotion/react/jsx-runtime',
         '@emotion/styled',
         '@emotion/cache',
         'lightweight-charts',
-        'lodash',
+        'lodash'
       ],
       exclude: ['js-big-decimal'],
       esbuildOptions: {
-        // Enable esbuild's tree shaking
-        treeShaking: true,
+        // JSX configuration - let React plugin handle JSX runtime
+        jsx: 'automatic',
         // Better compatibility
         define: { global: 'globalThis' },
         // Modern JS target
         target: 'es2020',
         supported: { bigint: true },
-        // Enable concurrent builds
-        incremental: true
+        // Performance optimizations
+        treeShaking: true,
       }
     },
   };
 });
+
