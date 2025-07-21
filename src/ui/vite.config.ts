@@ -93,7 +93,7 @@ export default defineConfig(({ mode, command: _command }) => {
       },
       // Configure rollup options
       rollupOptions: {
-        // Externalize packages as required by build errors
+        // Externalize packages as required by build errors - FIXED FOR EMOTION
         external: (id) => {
           // Packages that MUST be externalized (as required by error messages)
           const requiredExternals = [
@@ -120,11 +120,14 @@ export default defineConfig(({ mode, command: _command }) => {
           // If it's in our required externals list, externalize it
           if (requiredExternals.includes(id)) return true;
           
+          // DO NOT externalize Emotion packages - bundle them for JSX runtime
+          if (id.startsWith('@emotion/')) return false;
+          
+          // DO NOT externalize React packages - bundle them
+          if (id.startsWith('react') || id === 'react' || id === 'react-dom') return false;
+          
           // Externalize all @mui/* packages
           if (id.startsWith('@mui/')) return true;
-          
-          // Externalize react and related packages
-          if (id.startsWith('react') || id === 'react' || id === 'react-dom') return true;
           
           // If it's from node_modules, externalize it
           if (id.includes('node_modules')) return true;
@@ -141,13 +144,14 @@ export default defineConfig(({ mode, command: _command }) => {
           chunkFileNames: 'assets/[name]-[hash].js',
           assetFileNames: 'assets/[name]-[hash][extname]',
           globals: {
-            'react': 'React',
-            'react-dom': 'ReactDOM',
             'react-is': 'ReactIs',
             'lodash': 'lodash',
           },
           manualChunks: {
-            // Keep manual chunks empty since we're externalizing most dependencies
+            // Group vendor dependencies for better caching
+            vendor: ['react', 'react-dom'],
+            mui: ['@mui/material', '@mui/icons-material'],
+            emotion: ['@emotion/react', '@emotion/styled'],
           },
         },
       },
