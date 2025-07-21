@@ -148,10 +148,10 @@ export default defineConfig(({ mode, command: _command }) => {
             'lodash': 'lodash',
           },
           manualChunks: {
-            // Group vendor dependencies for better caching
+            // Only include packages that are NOT externalized
             vendor: ['react', 'react-dom'],
-            mui: ['@mui/material', '@mui/icons-material'],
             emotion: ['@emotion/react', '@emotion/styled'],
+            // REMOVED: mui packages are externalized, can't be in manualChunks
           },
         },
       },
