@@ -93,22 +93,54 @@ export default defineConfig(({ mode, command: _command }) => {
       },
       // Configure rollup options
       rollupOptions: {
-        // Simplified externalization - let Vite handle most dependencies
+        // Externalize node_modules - FIXED VERSION
         external: (id) => {
-          // Only externalize specific problematic packages
+          // Externalize specific packages that should not be bundled
           const explicitExternals = [
+            'lodash',
+            'react-router',
+            'react-router-dom',
+            '@babel/runtime/helpers/extends',
+            '@babel/runtime/helpers/objectWithoutProperties',
+            '@babel/runtime/helpers/classCallCheck',
+            '@babel/runtime/helpers/createClass',
+            '@babel/runtime/helpers/defineProperty',
+            '@babel/runtime/helpers/inherits',
+            '@babel/runtime/helpers/possibleConstructorReturn',
+            '@babel/runtime/helpers/getPrototypeOf',
+            '@babel/runtime/helpers/assertThisInitialized',
+            '@babel/runtime/helpers/typeof',
+            '@babel/runtime/helpers/asyncToGenerator',
+            '@babel/runtime/regenerator',
             'fancy-canvas',
+            '@mui/styled-engine',
           ];
           
-          return explicitExternals.includes(id);
+          // If it's in our explicit list, externalize it
+          if (explicitExternals.includes(id)) return true;
+          
+          // DO NOT externalize react-is - let it be bundled for Material-UI
+          if (id === 'react-is') return false;
+          
+          // DO NOT externalize @mui/* packages - let them be bundled
+          if (id.startsWith('@mui/')) return false;
+          
+          // DO NOT externalize react and react-dom - let them be bundled
+          if (id === 'react' || id === 'react-dom' || id.startsWith('react/')) return false;
+          
+          // For all other cases, let Vite handle it
+          return false;
         },
         input: path.resolve(__dirname, 'index.html'),
         output: {
           entryFileNames: 'assets/[name]-[hash].js',
           chunkFileNames: 'assets/[name]-[hash].js',
           assetFileNames: 'assets/[name]-[hash][extname]',
+          globals: {
+            lodash: 'lodash',
+          },
           manualChunks: {
-            // Group vendor dependencies
+            // Group vendor dependencies for better caching
             vendor: ['react', 'react-dom'],
             mui: ['@mui/material', '@mui/icons-material'],
             emotion: ['@emotion/react', '@emotion/styled'],
@@ -119,15 +151,15 @@ export default defineConfig(({ mode, command: _command }) => {
       brotliSize: true,
     },
 
-    // Resolve configuration - SIMPLIFIED
+    // Resolve configuration - FIXED
     resolve: {
-      // Use root node_modules consistently
+      // Check root node_modules first, then local node_modules
       modules: [
         path.resolve(__dirname, '../../node_modules'), // Root node_modules
-        path.resolve(__dirname, 'node_modules'),       // Local fallback
+        path.resolve(__dirname, 'node_modules'),  // Local node_modules (fallback)
       ],
       alias: [
-        // Standard path aliases - keep existing functionality
+        // Keep existing path aliases - NO JSX RUNTIME ALIASES
         {
           find: /^@\/(.*)/,
           replacement: path.resolve(__dirname, '$1')
@@ -160,6 +192,7 @@ export default defineConfig(({ mode, command: _command }) => {
           find: '@context',
           replacement: path.resolve(__dirname, '../context')
         },
+        // REMOVED PROBLEMATIC JSX RUNTIME ALIASES - Let React plugin handle JSX runtime
       ],
       extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'],
       preserveSymlinks: true,
@@ -212,9 +245,9 @@ export default defineConfig(({ mode, command: _command }) => {
       },
     },
 
-    // Optimize dependencies for better build performance
+    // Optimize dependencies for better build performance - FIXED
     optimizeDeps: {
-      // Include all necessary packages for proper bundling
+      // Include packages that need to be bundled
       include: [
         'react',
         'react-dom',
@@ -225,11 +258,12 @@ export default defineConfig(({ mode, command: _command }) => {
         '@emotion/styled',
         '@emotion/cache',
         'lightweight-charts',
-        'lodash'
+        'lodash',
+        'react-is', // Include for Material-UI (not externalized)
       ],
       exclude: ['js-big-decimal'],
       esbuildOptions: {
-        // JSX configuration - let React plugin handle JSX runtime
+        // JSX configuration - let React plugin handle JSX runtime automatically
         jsx: 'automatic',
         // Better compatibility
         define: { global: 'globalThis' },
