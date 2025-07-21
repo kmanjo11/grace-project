@@ -93,10 +93,11 @@ export default defineConfig(({ mode, command: _command }) => {
       },
       // Configure rollup options
       rollupOptions: {
-        // Externalize node_modules - FIXED VERSION
+        // Externalize packages as required by build errors
         external: (id) => {
-          // Externalize specific packages that should not be bundled
-          const explicitExternals = [
+          // Packages that MUST be externalized (as required by error messages)
+          const requiredExternals = [
+            'react-is', // REQUIRED: Material-UI needs this externalized
             'lodash',
             'react-router',
             'react-router-dom',
@@ -116,17 +117,20 @@ export default defineConfig(({ mode, command: _command }) => {
             '@mui/styled-engine',
           ];
           
-          // If it's in our explicit list, externalize it
-          if (explicitExternals.includes(id)) return true;
+          // If it's in our required externals list, externalize it
+          if (requiredExternals.includes(id)) return true;
           
-          // DO NOT externalize react-is - let it be bundled for Material-UI
-          if (id === 'react-is') return false;
+          // Externalize all @mui/* packages
+          if (id.startsWith('@mui/')) return true;
           
-          // DO NOT externalize @mui/* packages - let them be bundled
-          if (id.startsWith('@mui/')) return false;
+          // Externalize react and related packages
+          if (id.startsWith('react') || id === 'react' || id === 'react-dom') return true;
           
-          // DO NOT externalize react and react-dom - let them be bundled
-          if (id === 'react' || id === 'react-dom' || id.startsWith('react/')) return false;
+          // If it's from node_modules, externalize it
+          if (id.includes('node_modules')) return true;
+          
+          // If it's a scoped package (starts with @), externalize it
+          if (id.startsWith('@') && id.includes('/')) return true;
           
           // For all other cases, let Vite handle it
           return false;
@@ -137,13 +141,13 @@ export default defineConfig(({ mode, command: _command }) => {
           chunkFileNames: 'assets/[name]-[hash].js',
           assetFileNames: 'assets/[name]-[hash][extname]',
           globals: {
-            lodash: 'lodash',
+            'react': 'React',
+            'react-dom': 'ReactDOM',
+            'react-is': 'ReactIs',
+            'lodash': 'lodash',
           },
           manualChunks: {
-            // Group vendor dependencies for better caching
-            vendor: ['react', 'react-dom'],
-            mui: ['@mui/material', '@mui/icons-material'],
-            emotion: ['@emotion/react', '@emotion/styled'],
+            // Keep manual chunks empty since we're externalizing most dependencies
           },
         },
       },
@@ -151,7 +155,7 @@ export default defineConfig(({ mode, command: _command }) => {
       brotliSize: true,
     },
 
-    // Resolve configuration - FIXED
+    // Resolve configuration - CLEAN (NO JSX RUNTIME ALIASES)
     resolve: {
       // Check root node_modules first, then local node_modules
       modules: [
@@ -159,7 +163,7 @@ export default defineConfig(({ mode, command: _command }) => {
         path.resolve(__dirname, 'node_modules'),  // Local node_modules (fallback)
       ],
       alias: [
-        // Keep existing path aliases - NO JSX RUNTIME ALIASES
+        // Keep existing path aliases - NO EMOTION JSX RUNTIME ALIASES
         {
           find: /^@\/(.*)/,
           replacement: path.resolve(__dirname, '$1')
@@ -192,7 +196,7 @@ export default defineConfig(({ mode, command: _command }) => {
           find: '@context',
           replacement: path.resolve(__dirname, '../context')
         },
-        // REMOVED PROBLEMATIC JSX RUNTIME ALIASES - Let React plugin handle JSX runtime
+        // NO JSX RUNTIME ALIASES - Let React plugin handle JSX runtime automatically
       ],
       extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json'],
       preserveSymlinks: true,
@@ -245,9 +249,9 @@ export default defineConfig(({ mode, command: _command }) => {
       },
     },
 
-    // Optimize dependencies for better build performance - FIXED
+    // Optimize dependencies for better build performance
     optimizeDeps: {
-      // Include packages that need to be bundled
+      // Include packages for development optimization (not used in production build)
       include: [
         'react',
         'react-dom',
@@ -259,7 +263,6 @@ export default defineConfig(({ mode, command: _command }) => {
         '@emotion/cache',
         'lightweight-charts',
         'lodash',
-        'react-is', // Include for Material-UI (not externalized)
       ],
       exclude: ['js-big-decimal'],
       esbuildOptions: {
