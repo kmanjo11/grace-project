@@ -148,10 +148,7 @@ export default defineConfig(({ mode, command: _command }) => {
             'lodash': 'lodash',
           },
           manualChunks: {
-            // Only include packages that are NOT externalized
-            vendor: ['react', 'react-dom'],
-            emotion: ['@emotion/react', '@emotion/styled'],
-            // REMOVED: mui packages are externalized, can't be in manualChunks
+            // Empty - let Vite handle chunking automatically to avoid externalization conflicts
           },
         },
       },
