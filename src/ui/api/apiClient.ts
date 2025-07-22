@@ -5,7 +5,7 @@
  */
 
 // Front api constant
-const API_BASE_URL = (import.meta as any).env.VITE_API_URL || '/api';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '/api';
 
 // Auth token key for localStorage
 const AUTH_TOKEN_KEY = 'grace_auth_token';
@@ -286,7 +286,7 @@ async function apiRequest<T = any>(
 ): Promise<ApiResponse<T>> {
   try {
     // Get base URL from environment or use relative path
-    const baseUrl = process.env.REACT_APP_API_URL || '';
+    const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
     const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
     
     // Add auth headers to the request

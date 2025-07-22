@@ -16,6 +16,8 @@ let tokenMutex = Promise.resolve();
  * Uses a mutex to prevent race conditions
  */
 export async function storeAuthToken(token: string, rememberMe: boolean = false): Promise<void> {
+  if (typeof window === 'undefined') return;
+  
   // Wait for any existing operation to complete
   await tokenMutex;
   
@@ -47,15 +49,21 @@ export async function storeAuthToken(token: string, rememberMe: boolean = false)
  * Checks sessionStorage first, then falls back to localStorage
  */
 export function getAuthToken(): string | null {
-  return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY);
+  if (typeof window !== 'undefined') {
+    return sessionStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY);
+  }
+  return null;
 }
 
 /**
  * Get token expiration date
  */
 export function getTokenExpiry(): Date | null {
-  const expiryStr = localStorage.getItem(TOKEN_EXPIRY_KEY) || sessionStorage.getItem(TOKEN_EXPIRY_KEY);
-  return expiryStr ? new Date(expiryStr) : null;
+  if (typeof window !== 'undefined') {
+    const expiryStr = localStorage.getItem(TOKEN_EXPIRY_KEY) || sessionStorage.getItem(TOKEN_EXPIRY_KEY);
+    return expiryStr ? new Date(expiryStr) : null;
+  }
+  return null;
 }
 
 /**
@@ -70,11 +78,13 @@ export function isTokenExpired(): boolean {
  * Clear all authentication tokens
  */
 export function clearAuthTokens(): void {
-  // Clear from both storage locations to be safe
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(TOKEN_EXPIRY_KEY);
-  sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
+  if (typeof window !== 'undefined') {
+    // Clear from both storage locations to be safe
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_EXPIRY_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
+  }
 }
 
 /**
@@ -103,3 +113,4 @@ export function addAuthHeaders(options: RequestInit = {}): RequestInit {
 export async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   return fetch(url, addAuthHeaders(options));
 }
+

@@ -7,7 +7,7 @@ import './styles/transitions.css';
 import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './components/AuthContext';
 import ErrorBoundary from './components/ErrorBoundary';
-import Layout from './pages/Layout';
+import Layout from './pages/layout';
 
 // Add component error boundary wrapper
 const withErrorBoundary = (Component: React.ComponentType<any>, name: string) => {
@@ -20,9 +20,9 @@ const withErrorBoundary = (Component: React.ComponentType<any>, name: string) =>
 
 import Login from './pages/Login';
 import Register from './pages/Register';
-import Forgot from './pages/Forgot';
+import Forgot from './pages/forgot';
 import Reset from './pages/Reset';
-import Chat from './pages/Chat';
+import Chat from './pages/chat';
 import Wallet from './pages/Wallet';
 import Trading from './pages/Trading';
 import Social from './pages/Social';
