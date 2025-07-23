@@ -82,8 +82,8 @@ grace_instance = GraceCore(
     test_mode=os.environ.get('GRACE_TEST_MODE', '').lower() == 'true'
 )
 
-# Initialize Quart app
-app = Quart(__name__)
+# Initialize Quart app with static file serving
+app = Quart(__name__, static_folder='/app/static', static_url_path='')
 app = cors(app, allow_origin="*")  # Configure CORS appropriately for production
 
 # Register chat blueprint
@@ -3475,3 +3475,34 @@ if __name__ == "__main__":
         logger.info("Server stopped by user.")
     except Exception as e:
         logger.critical(f"Server failed to start: {e}", exc_info=True)
+
+# --- Frontend Routes ---
+@app.route('/')
+async def serve_frontend():
+    """Serve the Next.js frontend index page"""
+    try:
+        return await app.send_static_file('index.html')
+    except Exception as e:
+        logger.error(f"Error serving frontend: {e}")
+        return jsonify({"error": "Frontend not available"}), 404
+
+@app.route('/<path:path>')
+async def serve_frontend_routes(path):
+    """Serve Next.js frontend routes and static files"""
+    try:
+        # First try to serve as a static file
+        return await app.send_static_file(path)
+    except:
+        try:
+            # If not a static file, try to serve as a Next.js route
+            if '.' not in path:  # It's likely a route, not a file
+                route_file = f"{path}/index.html"
+                return await app.send_static_file(route_file)
+            else:
+                # It's a file that doesn't exist
+                return jsonify({"error": "File not found"}), 404
+        except:
+            # Fallback to main index.html for client-side routing
+            return await app.send_static_file('index.html')
+
+

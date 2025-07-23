@@ -1,0 +1,19 @@
+{
+  "/_app": "pages/_app.js",
+  "/_error": "pages/_error.js",
+  "/Layout": "pages/Layout.html",
+  "/LogoutButton": "pages/LogoutButton.html",
+  "/WidgetTest": "pages/WidgetTest.html",
+  "/chat": "pages/chat.html",
+  "/forgot": "pages/forgot.html",
+  "/": "pages/index.html",
+  "/login": "pages/login.html",
+  "/register": "pages/register.html",
+  "/reset": "pages/reset.html",
+  "/settings": "pages/settings.html",
+  "/social": "pages/social.html",
+  "/trading": "pages/trading.html",
+  "/wallet": "pages/wallet.html",
+  "/_document": "pages/_document.js",
+  "/404": "pages/404.html"
+}

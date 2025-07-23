@@ -10,7 +10,7 @@ import {
   CandlestickSeriesPartialOptions,
   ISeriesApi as ISeriesApiExtended
 } from 'lightweight-charts';
-import MangoV3Service, { OHLCVData, MangoV3Error, MarketData } from '../../services/mangoV3Service';
+import MangoV3Service, { OHLCVData, MangoV3Error, MarketData } from '../services/mangoV3Service';
 import ErrorBoundary from './ErrorBoundary';
 
 // Extend the IChartApi to include our enhanced addCandlestickSeries

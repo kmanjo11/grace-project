@@ -49,6 +49,9 @@ COPY --from=builder /app/requirements.txt .
 COPY --from=builder /app/src /app/src
 COPY --from=builder /app/user_profile_system.py /app/src/
 
+# Copy Next.js build files for frontend
+COPY src/ui/out /app/static
+
 # Reinstall open-interpreter in the final image to ensure all dependencies are properly linked
 RUN pip install --no-cache-dir open-interpreter>=0.1.13
 
