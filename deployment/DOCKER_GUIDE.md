@@ -17,7 +17,7 @@ This guide explains how to run the Grace project using Docker, which provides an
    chmod +x deployment/start_docker.sh
    ./deployment/start_docker.sh
    ```
-4. Access the Grace UI at: http://localhost:8000
+4. Access the Grace UI at: http://localhost:9000
 
 ## Configuration
 

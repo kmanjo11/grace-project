@@ -1761,5 +1761,5 @@ if __name__ == "__main__":
     # Start the API server
     from src.api_server import app
     
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 9000))
     app.run(host='0.0.0.0', port=port, debug=True)

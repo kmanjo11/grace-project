@@ -5,7 +5,7 @@
     "phone": null,
     "password_hash": "$2b$12$hKAy6PSL4cOAG.eNF9u3verybRdwvnQNFtGkNeq.tV8e0xKtBrrqq",
     "created_at": "2025-05-06T19:18:17.470662",
-    "last_login": "2025-05-07T04:10:49.361478",
+    "last_login": "2025-08-07T18:50:42.593767",
     "is_authorized": true,
     "internal_wallet": {
       "public_key": "b'E$\\x1f\\xdc\\xcb\\xde\\xdb\\xf9\\x1d\\xcc\\x885\\x80\\x16\\x1dA|\\xac\\xcbB\\xb9\\x1fU\\xc7\\xd6\\xdf\\xc1\\xbd\\x0c\\xf9\\xe5\\\\'",

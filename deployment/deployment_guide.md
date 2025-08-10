@@ -75,7 +75,7 @@ You should see the following containers running:
 - `grace-redis`: Redis for caching and session management
 - `grace-nitter`: Nitter instance for social media data
 
-Access the web interface at: `http://your-server-ip:8000`
+Access the web interface at: `http://your-server-ip:9000`
 
 ## Maintenance Operations
 

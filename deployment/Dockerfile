@@ -1,5 +1,8 @@
+# NOTE: We're using a local Next.js build instead of building in Docker
+# Run 'npm run build' in src/ui directory before building Docker
+
 # ============================
-# BUILDER STAGE
+# PYTHON BUILDER STAGE
 # ============================
 FROM python:3.11-slim AS builder
 
@@ -16,7 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy requirements first for better caching
 COPY requirements.txt .
-
 
 # Install Python deps with specific versions
 RUN pip install --no-cache-dir -r requirements.txt
@@ -49,8 +51,8 @@ COPY --from=builder /app/requirements.txt .
 COPY --from=builder /app/src /app/src
 COPY --from=builder /app/user_profile_system.py /app/src/
 
-# Copy Next.js build files for frontend
-COPY src/ui/out /app/static
+# Copy Next.js build files for frontend from local build
+COPY ../src/ui/out /app/static
 
 # Reinstall open-interpreter in the final image to ensure all dependencies are properly linked
 RUN pip install --no-cache-dir open-interpreter>=0.1.13
@@ -65,18 +67,18 @@ ARG OPENAI_API_KEY
 ENV PYTHONPATH=/app/src:${PYTHONPATH} \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8000 \
+    PORT=9000 \
     GRACE_ENV=production \
     LOG_LEVEL=info \
     OPENAI_API_KEY=${OPENAI_API_KEY}
 
 
 # Expose port
-EXPOSE 8000
+EXPOSE 9000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:8000/health || exit 1
+  CMD curl -f http://localhost:9000/health || exit 1
 
 # Run the application
 CMD ["python", "src/run_server.py"]

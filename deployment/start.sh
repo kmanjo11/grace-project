@@ -57,7 +57,7 @@ docker-compose -f ./deployment/docker-compose.yml up -d
 # Check if the application started successfully
 if [ $? -eq 0 ]; then
     echo "Grace application started successfully!"
-    echo "Web interface available at: http://localhost:8000"
+    echo "Web interface available at: http://localhost:9000"
     echo "Logs can be viewed with: docker-compose -f ./deployment/docker-compose.yml logs -f"
 else
     echo "Error: Failed to start Grace application."

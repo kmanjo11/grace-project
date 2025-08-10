@@ -57,7 +57,7 @@ done
 
 # Test the API
 echo "Testing API connection..."
-API_URL="http://localhost:8000/api/auth/verify"
+API_URL="http://localhost:9000/api/auth/verify"
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" $API_URL)
 
 if [ "$HTTP_CODE" = "401" ]; then
@@ -70,7 +70,7 @@ fi
 
 # Test the UI
 echo "Testing UI connection..."
-UI_URL="http://localhost:8000/"
+UI_URL="http://localhost:9000/"
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" $UI_URL)
 
 if [ "$HTTP_CODE" = "200" ]; then

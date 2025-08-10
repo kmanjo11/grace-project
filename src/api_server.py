@@ -89,6 +89,103 @@ app = cors(app, allow_origin="*")  # Configure CORS appropriately for production
 # Register chat blueprint
 app.register_blueprint(chat_blueprint)
 
+# Root route to serve Next.js frontend
+@app.route('/')
+async def serve_index():
+    """Serve the Next.js frontend index.html"""
+    logger.info("Serving root route with Next.js index.html")
+    try:
+        # Check if index.html exists
+        import os
+        static_path = '/app/static/index.html'
+        if os.path.exists(static_path):
+            logger.info(f"Found index.html at {static_path}, serving it")
+        else:
+            logger.error(f"index.html not found at {static_path}!")
+            files_in_dir = os.listdir('/app/static')
+            logger.info(f"Files in static directory: {files_in_dir}")
+        
+        # Always return the index.html file for root route
+        return await app.send_static_file('index.html')
+    except Exception as e:
+        logger.error(f"Error serving frontend: {e}", exc_info=True)
+        return jsonify({"status": "FastMCP server running ok - Error serving Next.js frontend"}), 500
+        
+# Explicitly handle _next directory requests for Next.js assets (CSS, JS, etc)
+@app.route('/_next/<path:path>')
+async def serve_next_assets(path):
+    """Serve static assets from the _next directory"""
+    logger.info(f"Serving Next.js asset: /_next/{path}")
+    try:
+        return await app.send_static_file(f"_next/{path}")
+    except Exception as e:
+        logger.error(f"Error serving Next.js asset /_next/{path}: {e}")
+        return "", 404
+
+# Handle assets directory requests
+@app.route('/assets/<path:path>')
+async def serve_assets(path):
+    """Serve static assets from the assets directory"""
+    logger.info(f"Serving asset: /assets/{path}")
+    try:
+        return await app.send_static_file(f"assets/{path}")
+    except Exception as e:
+        logger.error(f"Error serving asset /assets/{path}: {e}")
+        return "", 404
+        
+# Handle static directory requests
+@app.route('/static/<path:path>')
+async def serve_static_assets(path):
+    """Serve static assets from the static directory"""
+    logger.info(f"Serving static asset: /static/{path}")
+    try:
+        return await app.send_static_file(f"static/{path}")
+    except Exception as e:
+        logger.error(f"Error serving static asset /static/{path}: {e}")
+        return "", 404
+        
+# Catch-all route handler for Next.js client-side routing
+@app.route('/<path:path>')
+async def serve_routes(path):
+    """Serve static files or fall back to index.html for client-side routing"""
+    # Skip API routes - they should be handled by their own handlers
+    if path.startswith('api/'):
+        logger.debug(f"Skipping API path: {path}")
+        return jsonify({"error": "API endpoint not found"}), 404
+        
+    logger.info(f"Requested path: /{path}")
+    import os
+    
+    try:
+        # First try to serve it as a static file
+        static_path = f"/app/static/{path}"
+        if os.path.exists(static_path) and os.path.isfile(static_path):
+            logger.info(f"Serving static file: {path}")
+            return await app.send_static_file(path)
+            
+        # For Next.js routes without extensions (like /trading, /chat, etc)
+        # Try to serve the corresponding index.html
+        if '.' not in os.path.basename(path):
+            # Check if there's an index.html in a directory matching the route
+            dir_index = f"{path}/index.html"
+            if os.path.exists(f"/app/static/{dir_index}") and os.path.isfile(f"/app/static/{dir_index}"):
+                logger.info(f"Serving route index file: {dir_index}")
+                return await app.send_static_file(dir_index)
+            
+            # No matching directory, serve the main index.html for client-side routing
+            logger.info(f"No specific route file found for {path}, serving main index.html for client-side routing")
+            return await app.send_static_file('index.html')
+            
+        # File not found, return 404
+        logger.warning(f"Static file not found: {path}")
+        return jsonify({"error": "File not found"}), 404
+    except Exception as e:
+        logger.error(f"Error handling path /{path}: {str(e)}")
+        # For routes, serve index.html as fallback so client-side routing works
+        if '.' not in os.path.basename(path):
+            return await app.send_static_file('index.html')
+        return jsonify({"error": "Error serving request"}), 500
+
 # JWT Secret and Expiry
 JWT_SECRET = os.environ.get("JWT_SECRET", "grace_default_jwt_secret")
 JWT_EXPIRY = int(os.environ.get("JWT_EXPIRY", 86400))  # 24 hours
@@ -3462,7 +3559,7 @@ if __name__ == "__main__":
     import hypercorn.asyncio
     import hypercorn.config
 
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 9000))
     config = hypercorn.config.Config()
     config.bind = [f"0.0.0.0:{port}"]
     # Disable reloader in production or when running with multiple workers
@@ -3476,11 +3573,30 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Server failed to start: {e}", exc_info=True)
 
+# --- Health Check Endpoint ---
+@app.route('/health')
+async def health_check():
+    """Health check endpoint for Docker healthcheck"""
+    return jsonify({"status": "healthy"})
+
 # --- Frontend Routes ---
+# These routes need to be defined AFTER all API routes to avoid conflicts
+
+# Special route for /_next assets to ensure they're served correctly
+@app.route('/_next/<path:filename>')
+async def serve_next_static(filename):
+    """Serve Next.js static assets from /_next folder"""
+    try:
+        return await app.send_static_file(f'_next/{filename}')
+    except Exception as e:
+        logger.error(f"Error serving Next.js asset: {e}")
+        return jsonify({"error": "Next.js asset not available"}), 404
+
 @app.route('/')
 async def serve_frontend():
     """Serve the Next.js frontend index page"""
     try:
+        logger.info("Serving root index.html")
         return await app.send_static_file('index.html')
     except Exception as e:
         logger.error(f"Error serving frontend: {e}")
@@ -3489,19 +3605,29 @@ async def serve_frontend():
 @app.route('/<path:path>')
 async def serve_frontend_routes(path):
     """Serve Next.js frontend routes and static files"""
+    logger.info(f"Attempting to serve: {path}")
+    
+    # Skip API routes - they should be handled by their own handlers
+    if path.startswith('api/'):
+        return jsonify({"error": "Not found"}), 404
+        
     try:
         # First try to serve as a static file
         return await app.send_static_file(path)
-    except:
+    except Exception as e1:
+        logger.debug(f"Could not serve as static file: {e1}")
         try:
             # If not a static file, try to serve as a Next.js route
             if '.' not in path:  # It's likely a route, not a file
                 route_file = f"{path}/index.html"
+                logger.info(f"Trying to serve as route: {route_file}")
                 return await app.send_static_file(route_file)
             else:
+                logger.info(f"File not found: {path}")
                 # It's a file that doesn't exist
                 return jsonify({"error": "File not found"}), 404
-        except:
+        except Exception as e2:
+            logger.info(f"Falling back to index.html for: {path} due to {e2}")
             # Fallback to main index.html for client-side routing
             return await app.send_static_file('index.html')
 

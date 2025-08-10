@@ -22,7 +22,7 @@ def test_login():
     username = input("Enter username: ")
     password = input("Enter password: ")
 
-    url = "http://localhost:8000/api/auth/login"
+    url = "http://localhost:9000/api/auth/login"
     data = {"username": username, "password": password, "remember_me": True}
 
     try:
@@ -62,7 +62,7 @@ def test_token_verify(token):
     print_separator()
     print("TESTING TOKEN VERIFICATION")
 
-    url = "http://localhost:8000/api/auth/verify"
+    url = "http://localhost:9000/api/auth/verify"
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
@@ -103,7 +103,7 @@ def test_logout(token):
     print_separator()
     print("TESTING LOGOUT")
 
-    url = "http://localhost:8000/api/auth/logout"
+    url = "http://localhost:9000/api/auth/logout"
     headers = {"Authorization": f"Bearer {token}"}
 
     try:
@@ -150,7 +150,7 @@ def test_register():
     print(f"  Email: {email}")
     print(f"  Password: {password}")
 
-    url = "http://localhost:8000/api/auth/register"
+    url = "http://localhost:9000/api/auth/register"
     data = {"username": username, "email": email, "password": password}
 
     try:
@@ -232,7 +232,7 @@ def main():
 
         # Login with new user
         print(f"Now logging in with newly created user: {username}")
-        url = "http://localhost:8000/api/auth/login"
+        url = "http://localhost:9000/api/auth/login"
         data = {"username": username, "password": password}
 
         try:

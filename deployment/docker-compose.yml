@@ -34,7 +34,7 @@ services:
       context: ..
       dockerfile: deployment/Dockerfile
     ports:
-      - "8000:8000"
+      - "9000:9000"
     user: root
     command: sh -c "mkdir -p /app/data/conversation_data/contexts && chmod -R 777 /app/data && python -m src.run_server"
     environment:
@@ -76,7 +76,7 @@ services:
       - grace-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 30s
       timeout: 10s
       retries: 3

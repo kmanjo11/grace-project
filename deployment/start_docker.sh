@@ -64,5 +64,5 @@ for CONTAINER in $CONTAINERS; do
 done
 
 echo "===== Grace Docker Environment is now running ====="
-echo "Access the UI at: http://localhost:8000"
+echo "Access the UI at: http://localhost:9000"
 echo "To stop the environment, run: ./deployment/stop_docker.sh"
