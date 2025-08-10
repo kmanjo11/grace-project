@@ -1,6 +1,8 @@
 // src/pages/Forgot.tsx
 
 import React, { useState } from 'react';
+import { useRouter } from 'next/router';
+import Link from 'next/link';
 
 export default function Forgot() {
   const [email, setEmail] = useState('');
@@ -43,7 +45,7 @@ export default function Forgot() {
           Send Reset Link
         </button>
         <div className="mt-4 text-center text-sm text-gray-400">
-          <a href="/login" className="hover:text-red-400">Back to login</a>
+          <Link href="/login" className="hover:text-red-400">Back to login</Link>
         </div>
       </div>
     </div>

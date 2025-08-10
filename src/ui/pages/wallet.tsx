@@ -3,7 +3,7 @@
 import React, { useEffect, useState, FormEvent, useRef } from 'react';
 import { useAuth } from '../components/AuthContext';
 import { api, API_ENDPOINTS } from '../api/apiClient';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useRouter } from 'next/router';
 import LightweightPositionsWidget from '../components/LightweightPositionsWidget';
 import WalletDebugger from '../components/WalletDebugger';
 import PositionsWidgetDebugger from '../components/PositionsWidgetDebugger';
@@ -138,6 +138,7 @@ export default function Wallet() {
   const phantomWindowRef = useRef<Window | null>(null);
   const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const token = localStorage.getItem('token');
+  const router = useRouter();
 
   // Function to validate a Phantom session with the backend
   const validatePhantomSession = async (sessionId: string): Promise<boolean> => {
@@ -267,20 +268,18 @@ const calculateTotalValue = (balances) => {
     }
   }, [user]);
 
-  const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
+  // Get query params from Next.js router
   
   // Check if we're returning from Phantom authorization
   useEffect(() => {
-    const phantomWalletAddress = searchParams.get('phantom_address');
-    const sessionId = searchParams.get('session_id');
+    const { phantom_address: phantomWalletAddress, session_id: sessionId } = router.query;
     
-    if (phantomWalletAddress && sessionId) {
+    if (phantomWalletAddress && sessionId && typeof phantomWalletAddress === 'string' && typeof sessionId === 'string') {
       completePhantomConnection(sessionId, phantomWalletAddress);
       // Clean up URL params after processing
-      navigate('/wallet', { replace: true });
+      router.replace('/wallet');
     }
-  }, [searchParams]);
+  }, [router.query]);
 
   // Function to initiate Phantom wallet connection
   const connectPhantom = async () => {

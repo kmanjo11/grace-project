@@ -5,8 +5,9 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../components/AuthContext';
 import { api, API_ENDPOINTS } from '../api/apiClient';
 
-// Hardcoded logo path for direct reference
-const logoPath = '/assets/grace_logo.png';
+// Import the Grace logo from the assets directory
+// For Next.js static build, ensure this asset is copied to public or static directory
+import logoPath from '../../assets/grace_logo.png';
 
 export default function Login() {
   const [username, setUsername] = useState('');

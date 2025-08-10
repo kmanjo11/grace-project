@@ -1,22 +1,27 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
+
+const isProduction = process.env.NODE_ENV === 'production';
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || (isProduction ? 'http://localhost:9000' : '/api');
+
+module.exports = {
+  output: 'export',
+  trailingSlash: true,
   reactStrictMode: true,
-  swcMinify: true,
-  //distDir: 'out',
+  distDir: 'out',
   images: {
-    unoptimized: true,
-    domains: ['localhost'] // Add any domains from which you'll load images
+    unoptimized: true
   },
+  env: {
+    // Set NEXT_PUBLIC_API_URL for all environments
+    NEXT_PUBLIC_API_URL: apiBaseUrl,
+  },
+  // API rewrites (for development mode only, not used in static export)
   async rewrites() {
     return [
-      // Proxy API requests to your backend
       {
         source: '/api/:path*',
-        destination: 'http://localhost:8000/api/:path*', // Proxy to your backend
+        destination: 'http://localhost:9000/api/:path*',
       },
     ];
   },
-}
-
-module.exports = nextConfig
-
+};

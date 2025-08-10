@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Box, Typography, Avatar, Card, CardContent, CardMedia, CardHeader, IconButton, CircularProgress, Divider, Chip, TextField, Button, Dialog, DialogTitle, DialogContent, DialogActions, List, ListItem, Paper } from '@mui/material';
-import { Add as AddIcon, Delete as DeleteIcon, Refresh as RefreshIcon, Settings as SettingsIcon } from '@mui/icons-material';
+import React, { useState, useEffect, Fragment } from 'react';
+import { PlusIcon, TrashIcon, ArrowPathIcon, Cog6ToothIcon, HeartIcon, ArrowPathRoundedSquareIcon } from '@heroicons/react/24/outline';
+import { Dialog, Transition } from '@headlessui/react';
 import { useAppState } from '../context/AppStateContext';
 import axios from 'axios';
 
@@ -215,176 +215,221 @@ const XFeed: React.FC<XFeedProps> = ({ maxItems = 5 }) => {
   };
 
   return (
-    <Paper elevation={1} sx={{ width: '100%', p: 1, borderRadius: 2, height: '100%', maxHeight: '600px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1, flexShrink: 0 }}>
-        <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>X Feed</Typography>
-        <Box>
-          <IconButton onClick={fetchTweets} disabled={loading} size="small">
-            <RefreshIcon fontSize="small" />
-          </IconButton>
-          <IconButton onClick={() => setOpenSettings(true)} size="small" data-xfeed-settings>
-            <SettingsIcon fontSize="small" />
-          </IconButton>
-        </Box>
-      </Box>
+    <div className="p-4 h-full flex flex-col overflow-hidden bg-white rounded-md shadow">
+      <div className="flex items-center mb-4">
+        <h2 className="text-lg font-semibold flex-grow">X Feed</h2>
+        <div className="flex space-x-2">
+          <button 
+            className={`p-1 rounded-full hover:bg-gray-100 transition-colors ${loading ? 'opacity-50 cursor-not-allowed' : ''}`}
+            onClick={fetchTweets} 
+            disabled={loading}
+            aria-label="Refresh feed"
+          >
+            <ArrowPathIcon className="h-5 w-5" />
+          </button>
+          <button 
+            className="p-1 rounded-full hover:bg-gray-100 transition-colors"
+            onClick={() => setOpenSettings(true)}
+            aria-label="Feed settings"
+          >
+            <Cog6ToothIcon className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
       
-      <Box sx={{ overflow: 'auto', flex: 1 }}>
+      <div className="overflow-auto flex-1">
         {followedAccounts.length === 0 ? (
-          <Box sx={{ mb: 1, p: 2, textAlign: 'center', bgcolor: 'background.paper', borderRadius: 1 }}>
-            <Typography variant="body2" sx={{ mb: 1 }}>No accounts added</Typography>
-            <Button 
-              variant="outlined" 
-              size="small"
-              startIcon={<AddIcon />}
+          <div className="p-4 text-center">
+            <p className="text-base text-gray-600">No accounts followed</p>
+            <button 
+              className="mt-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md text-sm flex items-center mx-auto"
               onClick={() => setOpenSettings(true)}
             >
+              <PlusIcon className="h-4 w-4 mr-1" />
               Add Accounts
-            </Button>
-          </Box>
+            </button>
+          </div>
         ) : loading ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-            <CircularProgress size={24} />
-          </Box>
+          <div className="flex justify-center p-6">
+            <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500"></div>
+          </div>
         ) : error ? (
-          <Box sx={{ mb: 1, p: 1, bgcolor: 'error.main', color: 'white', borderRadius: 1 }}>
-            <Typography variant="caption">{error}</Typography>
-          </Box>
+          <div className="p-4 text-center">
+            <p className="text-base text-red-600">{error}</p>
+          </div>
         ) : tweets.length === 0 ? (
-          <Box sx={{ mb: 1, p: 1, textAlign: 'center', borderRadius: 1 }}>
-            <Typography variant="caption">No tweets found</Typography>
-          </Box>
+          <div className="p-4 text-center">
+            <p className="text-base text-gray-600">No tweets found</p>
+          </div>
         ) : (
           tweets.map(tweet => (
-            <Card key={tweet.id} sx={{ mb: 1, borderRadius: 2, transition: 'transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out', '&:hover': { transform: 'translateY(-2px)', boxShadow: 3 } }}>
-              <CardHeader
-                sx={{ p: 1 }}
-                avatar={
-                  <Avatar 
-                    src={tweet.profile_image_url} 
-                    alt={tweet.name}
-                    sx={{ width: 24, height: 24 }}
-                  >
-                    {tweet.name.charAt(0)}
-                  </Avatar>
-                }
-                title={
-                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                    <Typography variant="caption" sx={{ fontWeight: 'bold', mr: 0.5 }}>
+            <div key={tweet.id} className="mb-4 p-3 bg-white rounded-lg border border-gray-200 hover:shadow-md transition-shadow">
+              <div className="flex">
+                <div className="mr-3">
+                  {tweet.profile_image_url ? (
+                    <img 
+                      src={tweet.profile_image_url} 
+                      alt={tweet.name}
+                      className="w-10 h-10 rounded-full"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-semibold">
+                      {tweet.username.charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center">
+                    <span className="font-semibold text-sm">
                       {tweet.name}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
+                    </span>
+                    <span className="ml-1 text-xs text-gray-500">
                       @{tweet.username}
-                    </Typography>
+                    </span>
+                    <span className="ml-auto text-xs text-gray-500">
+                      {formatDate(tweet.created_at)}
+                    </span>
+                  </div>
+                  
+                  <div className="mt-1 text-sm">
+                    {tweet.text}
+                  </div>
+                  
+                  {tweet.media && tweet.media.length > 0 && tweet.media[0].type === 'photo' && (
+                    <div className="mt-2">
+                      <img
+                        src={tweet.media[0].url}
+                        alt="Tweet media"
+                        className="max-h-[150px] object-contain rounded"
+                      />
+                    </div>
+                  )}
+                  
+                  <div className="flex mt-2 text-xs text-gray-500 space-x-4">
+                    <div className="flex items-center">
+                      <HeartIcon className="h-3 w-3 mr-1" />
+                      {tweet.likes_count}
+                    </div>
+                    <div className="flex items-center">
+                      <ArrowPathRoundedSquareIcon className="h-3 w-3 mr-1" />
+                      {tweet.retweets_count}
+                    </div>
                     {tweet.heat_score !== undefined && (
-                      <Box 
-                        component="span"
-                        sx={{ 
-                          ml: 'auto', 
-                          fontSize: '0.6rem',
-                          px: 0.5,
-                          py: 0.1,
-                          borderRadius: 1,
-                          bgcolor: 
-                            tweet.heat_score > 80 ? 'error.main' : 
-                            tweet.heat_score > 50 ? 'warning.main' : 
-                            'info.main',
-                          color: 'white'
-                        }}
-                      >
+                      <div className={`ml-auto px-1.5 py-0.5 rounded text-white text-xs ${
+                        tweet.heat_score > 80 ? 'bg-red-500' : 
+                        tweet.heat_score > 50 ? 'bg-yellow-500' : 
+                        'bg-blue-500'
+                      }`}>
                         {tweet.heat_score}°
-                      </Box>
+                      </div>
                     )}
-                  </Box>
-                }
-                subheader={
-                  <Typography variant="caption" color="text.secondary">
-                    {formatDate(tweet.created_at)}
-                  </Typography>
-                }
-              />
-              <CardContent sx={{ py: 0.5, px: 1.5 }}>
-                <Typography variant="body2">{tweet.text}</Typography>
-              </CardContent>
-              
-              {tweet.media && tweet.media.length > 0 && tweet.media[0].type === 'photo' && (
-                <CardMedia
-                  component="img"
-                  image={tweet.media[0].url}
-                  alt="Tweet media"
-                  sx={{ maxHeight: 150, objectFit: 'contain' }}
-                />
-              )}
-              
-              <Box sx={{ display: 'flex', p: 0.5, pl: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ mr: 1 }}>
-                  ♥ {tweet.likes_count}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  ↻ {tweet.retweets_count}
-                </Typography>
-              </Box>
-            </Card>
+                  </div>
+                </div>
+              </div>
+            </div>
           ))
         )}
-      </Box>
-      
+      </div>
+        
       {/* Settings Dialog */}
-      <Dialog open={openSettings} onClose={() => setOpenSettings(false)} maxWidth="xs" PaperProps={{ sx: { maxHeight: '80vh' } }}>
-        <DialogTitle>X Feed Settings</DialogTitle>
-        <DialogContent>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Add X accounts to follow</Typography>
-          
-          <Box sx={{ display: 'flex', mb: 2 }}>
-            <TextField
-              fullWidth
-              variant="outlined"
-              size="small"
-              placeholder="@username"
-              value={newHandle}
-              onChange={(e) => setNewHandle(e.target.value)}
-              sx={{ mr: 1 }}
-            />
-            <Button 
-              variant="contained" 
-              size="small"
-              onClick={addHandle}
-              disabled={!newHandle}
-            >
-              Add
-            </Button>
-          </Box>
-          
-          <Divider sx={{ my: 1 }} />
-          
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>Followed Accounts</Typography>
-          
-          {followedAccounts.length === 0 ? (
-            <Typography variant="body2" color="text.secondary">
-              No accounts added yet
-            </Typography>
-          ) : (
-            <List dense disablePadding>
-              {followedAccounts.map(handle => (
-                <ListItem
-                  key={handle}
-                  dense
-                  secondaryAction={
-                    <IconButton edge="end" onClick={() => handleRemoveAccount(handle)} size="small">
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  }
-                >
-                  <Typography variant="body2">@{handle}</Typography>
-                </ListItem>
-              ))}
-            </List>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setOpenSettings(false)} size="small">Close</Button>
-        </DialogActions>
-      </Dialog>
-    </Paper>
+      <Transition appear show={openSettings} as={Fragment}>
+        <Dialog as="div" className="relative z-10" onClose={() => setOpenSettings(false)}>
+          <Transition.Child
+            as={Fragment}
+            enter="ease-out duration-300"
+            enterFrom="opacity-0"
+            enterTo="opacity-100"
+            leave="ease-in duration-200"
+            leaveFrom="opacity-100"
+            leaveTo="opacity-0"
+          >
+            <div className="fixed inset-0 bg-black bg-opacity-25" />
+          </Transition.Child>
+
+          <div className="fixed inset-0 overflow-y-auto">
+            <div className="flex min-h-full items-center justify-center p-4 text-center">
+              <Transition.Child
+                as={Fragment}
+                enter="ease-out duration-300"
+                enterFrom="opacity-0 scale-95"
+                enterTo="opacity-100 scale-100"
+                leave="ease-in duration-200"
+                leaveFrom="opacity-100 scale-100"
+                leaveTo="opacity-0 scale-95"
+              >
+                <Dialog.Panel className="w-full max-w-md transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
+                  <Dialog.Title
+                    as="h3"
+                    className="text-lg font-medium leading-6 text-gray-900"
+                  >
+                    X Feed Settings
+                  </Dialog.Title>
+                  
+                  <div className="mt-4">
+                    <h4 className="text-sm font-medium text-gray-700">Add X accounts to follow</h4>
+                    
+                    <div className="mt-2 flex">
+                      <input
+                        type="text"
+                        className="flex-grow rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                        placeholder="@username"
+                        value={newHandle}
+                        onChange={(e) => setNewHandle(e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className={`ml-2 rounded-md bg-blue-600 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${!newHandle.trim() ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        onClick={addHandle}
+                        disabled={!newHandle.trim()}
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="border-t border-gray-200 pt-4">
+                      <h4 className="text-sm font-medium text-gray-700">Followed Accounts</h4>
+                      
+                      {followedAccounts.length === 0 ? (
+                        <p className="mt-1 text-sm text-gray-500">
+                          No accounts added yet
+                        </p>
+                      ) : (
+                        <ul className="mt-2 space-y-2">
+                          {followedAccounts.map(handle => (
+                            <li key={handle} className="flex items-center justify-between">
+                              <span className="text-sm">@{handle}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveAccount(handle)}
+                                className="rounded-full p-1 text-gray-400 hover:text-red-600 hover:bg-red-50"
+                              >
+                                <TrashIcon className="h-4 w-4" />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex justify-end">
+                    <button
+                      type="button"
+                      className="rounded-md bg-gray-100 px-3.5 py-1.5 text-sm font-semibold text-gray-900 shadow-sm hover:bg-gray-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-600"
+                      onClick={() => setOpenSettings(false)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                </Dialog.Panel>
+              </Transition.Child>
+            </div>
+          </div>
+        </Dialog>
+      </Transition>
+    </div>
   );
 };
 

@@ -40,22 +40,10 @@
       "namedRegex": "^/(?:/)?$"
     },
     {
-      "page": "/Layout",
-      "regex": "^/Layout(?:/)?$",
+      "page": "/404",
+      "regex": "^/404(?:/)?$",
       "routeKeys": {},
-      "namedRegex": "^/Layout(?:/)?$"
-    },
-    {
-      "page": "/LogoutButton",
-      "regex": "^/LogoutButton(?:/)?$",
-      "routeKeys": {},
-      "namedRegex": "^/LogoutButton(?:/)?$"
-    },
-    {
-      "page": "/WidgetTest",
-      "regex": "^/WidgetTest(?:/)?$",
-      "routeKeys": {},
-      "namedRegex": "^/WidgetTest(?:/)?$"
+      "namedRegex": "^/404(?:/)?$"
     },
     {
       "page": "/chat",
@@ -70,10 +58,22 @@
       "namedRegex": "^/forgot(?:/)?$"
     },
     {
+      "page": "/layout",
+      "regex": "^/layout(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/layout(?:/)?$"
+    },
+    {
       "page": "/login",
       "regex": "^/login(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/login(?:/)?$"
+    },
+    {
+      "page": "/logoutbutton",
+      "regex": "^/logoutbutton(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/logoutbutton(?:/)?$"
     },
     {
       "page": "/register",
@@ -110,6 +110,12 @@
       "regex": "^/wallet(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/wallet(?:/)?$"
+    },
+    {
+      "page": "/widgettest",
+      "regex": "^/widgettest(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/widgettest(?:/)?$"
     }
   ],
   "dataRoutes": [],

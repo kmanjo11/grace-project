@@ -1,4 +1,4 @@
-import { NavigateFunction } from 'react-router-dom';
+import { NextRouter } from 'next/router';
 import StateOperationLock from './StateOperationLock';
 
 // Define the shape of our persistent state
@@ -401,13 +401,13 @@ class StatePersistenceManager {
   }
 
   // Hydrate application state
-  static hydrateState(navigate?: NavigateFunction): Partial<DynamicStateSnapshot> {
+  static hydrateState(router?: NextRouter): Partial<DynamicStateSnapshot> {
     const snapshot = this.retrieveSnapshot();
     
     if (snapshot) {
       // Optionally navigate to last visited path
-      if (navigate && snapshot.pageState.lastVisitedPath) {
-        navigate(snapshot.pageState.lastVisitedPath);
+      if (router && snapshot.pageState.lastVisitedPath) {
+        router.push(snapshot.pageState.lastVisitedPath);
       }
 
       return snapshot;

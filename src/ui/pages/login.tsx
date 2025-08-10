@@ -1,11 +1,13 @@
 // src/pages/Login.tsx
 
-import React, { useState, FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, FormEvent, useEffect } from 'react';
+import { useRouter } from 'next/router';
+import Link from 'next/link';
 import { useAuth } from '../components/AuthContext';
 import { api, API_ENDPOINTS } from '../api/apiClient';
+import { toast } from 'react-toastify';
 
-// Hardcoded logo path for direct reference
+// Use imported logo path
 const logoPath = '/assets/grace_logo.png';
 
 export default function Login() {
@@ -13,13 +15,28 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const navigate = useNavigate();
-  const { login } = useAuth();
+  const [loginSuccess, setLoginSuccess] = useState(false);
+  const router = useRouter();
+  const { login, isAuthenticated, user } = useAuth();
+  
+  // Effect to handle navigation after successful authentication
+  useEffect(() => {
+    // Only navigate if we've already confirmed successful login AND auth state is updated
+    if (loginSuccess && isAuthenticated && user) {
+      const timer = setTimeout(() => {
+        console.log('Authentication confirmed, navigating to /chat');
+        router.push('/chat');
+      }, 800); // Small delay to ensure auth state is fully propagated
+      
+      return () => clearTimeout(timer);
+    }
+  }, [loginSuccess, isAuthenticated, user, router]);
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
     setIsSubmitting(true);
+    setLoginSuccess(false);
 
     try {
       // Use the standardized API client instead of direct fetch
@@ -30,43 +47,47 @@ export default function Login() {
       });
       
       if (success && data?.token) {
-        // Log the entire response data structure to see what we're getting
-        console.log('Login response data:', JSON.stringify(data, null, 2));
-        console.log('Login successful, token received:', data.token.substring(0, 15) + '...');
+        console.log('Login successful, token received');
         
         // Store token directly here as backup
-        const rememberMe = true; // Force localStorage for testing
         localStorage.setItem('grace_token', data.token);
-        console.log('Token manually stored in localStorage');
         
-        // Then call login function
-        login(data);
+        // Show success toast
+        toast.success('Login successful! Redirecting...', {
+          position: 'bottom-right',
+          autoClose: 2000,
+        });
         
-        // Debug token storage after login
-        setTimeout(() => {
-          const storedToken = localStorage.getItem('grace_token') || sessionStorage.getItem('grace_token');
-          console.log('Token in storage after login check:', storedToken ? storedToken.substring(0, 15) + '...' : 'None');
-        }, 500);
+        // Call login function and wait for it to complete
+        await login(data);
         
-        navigate('/chat');
+        // Mark login as successful - navigation will happen via useEffect
+        setLoginSuccess(true);
       } else {
+        // Show error toast
+        toast.error(data?.message || 'Login failed', {
+          position: 'bottom-right',
+        });
         setError(data?.message || 'Login failed');
       }
     } catch (err: any) {
-      setError('Connection error');
+      const errorMsg = err?.message || 'Connection error';
+      toast.error(errorMsg, { position: 'bottom-right' });
+      setError(errorMsg);
+      console.error('Login error:', err);
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#190000]">
-      <div className="w-full max-w-sm p-8 space-y-6 rounded bg-black/80 text-white shadow-xl">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-[#140000] to-black">
+      <div className="w-full max-w-sm p-8 space-y-6 rounded bg-black/80 text-white shadow-xl border border-red-900/30">
         <div className="text-center">
           <div className="flex justify-center mb-6">
-            <img src={logoPath} alt="Grace Logo" className="w-82 h-auto" />
+            <img src={logoPath} alt="Grace Logo" className="w-64 h-auto mx-auto" />
           </div>
-          <h1 className="text-3xl font-mono text-red-300">Login</h1>
+          <h1 className="text-3xl font-mono text-red-300 mb-4">Login</h1>
         </div>
 
         {error && <div className="p-2 text-sm bg-red-600/20 text-red-400 rounded">{error}</div>}
@@ -76,10 +97,11 @@ export default function Login() {
             <label htmlFor="username" className="text-sm block mb-1">Username</label>
             <input
               id="username"
-              className="w-full p-2 rounded bg-white/10 focus:outline-none"
+              className="w-full p-2 rounded bg-white/10 focus:outline-none focus:ring-1 focus:ring-red-400 border border-white/20"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Username"
+              autoComplete="username"
             />
           </div>
 
@@ -88,27 +110,33 @@ export default function Login() {
             <input
               id="password"
               type="password"
-              className="w-full p-2 rounded bg-white/10 focus:outline-none"
+              className="w-full p-2 rounded bg-white/10 focus:outline-none focus:ring-1 focus:ring-red-400 border border-white/20"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Password"
+              autoComplete="current-password"
             />
           </div>
 
           <div className="text-right text-sm">
-            <a href="/forgot" className="text-gray-400 hover:text-white">Forgot password?</a>
+            <Link href="/forgot" className="text-gray-400 hover:text-white">Forgot password?</Link>
           </div>
 
           <button
             type="submit"
-            className="w-full py-2 text-white bg-red-700 hover:bg-red-900 rounded"
+            className="w-full py-2 text-white bg-red-700 hover:bg-red-900 rounded transition-colors"
             disabled={isSubmitting}
           >
-            {isSubmitting ? 'Signing in...' : 'Sign in'}
+            {isSubmitting ? (
+              <div className="flex items-center justify-center">
+                <span className="mr-2">Signing in</span>
+                <div className="animate-pulse">...</div>
+              </div>
+            ) : 'Sign in'}
           </button>
 
           <p className="text-center text-sm text-white">
-            Don’t have an account? <a href="/register" className="text-red-500">Sign up</a>
+            Don't have an account? <Link href="/register" className="text-red-500 hover:text-red-400 transition-colors">Sign up</Link>
           </p>
           
           <div className="mt-6 pt-4 border-t border-gray-700">
@@ -118,7 +146,8 @@ export default function Login() {
                 navigator.clipboard.writeText('5dFhFf5g2GCqNwZeTeirkZX9iwLqqFwGXuD4m5DhndD6');
                 alert('Wallet address copied to clipboard: 5dFhFf5g2GCqNwZeTeirkZX9iwLqqFwGXuD4m5DhndD6');
               }}
-              className="w-full py-2 text-white bg-green-700 hover:bg-green-800 rounded flex items-center justify-center"
+              className="w-full py-2 text-white bg-green-700 hover:bg-green-800 rounded flex items-center justify-center transition-colors"
+              type="button"
             >
               <span className="mr-2">💰</span> Donate to Grace
             </button>

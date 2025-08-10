@@ -1,22 +1,24 @@
 // src/ui/pages/Layout.tsx
 
 import React, { useState, useEffect, ReactNode } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import Link from 'next/link';
+import { useRouter } from 'next/router';
 import { useAuth } from '../components/AuthContext';
 import { useAppState } from '../context/AppStateContext';
 import LogoutButton from '../components/LogoutButton';
 import { preventUnintendedRefresh } from '../utils/StatePersistence';
 
-// Import using relative URL instead of direct import
-const logoPath = '/assets/grace_logo_gold.png';
+// Import the Grace logo from the assets directory
+// For Next.js static build, ensure this asset is copied to public directory
+import logoPath from '../assets/grace_logo_gold.png';
 
 interface LayoutProps {
   children?: ReactNode;
 }
 
 export default function Layout({ children }: LayoutProps) {
-  const { pathname } = useLocation();
-  const navigate = useNavigate();
+  const router = useRouter();
+  const { pathname } = router;
   const { user } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -44,9 +46,9 @@ export default function Layout({ children }: LayoutProps) {
   // Hydrate state on initial load
   useEffect(() => {
     if (user) {
-      hydrateFromStorage(navigate);
+      hydrateFromStorage((path) => router.push(path));
     }
-  }, [user, navigate, hydrateFromStorage]);
+  }, [user, router, hydrateFromStorage]);
 
   const navLinks = [
     { name: 'Chat', path: '/chat' },
@@ -86,11 +88,12 @@ export default function Layout({ children }: LayoutProps) {
           {navLinks.map((link) => (
             <Link
               key={link.path}
-              to={link.path}
-              className={`transition-all hover:text-red-400 pb-1 ${pathname === link.path ? 'text-red-300 border-b border-red-500' : 'text-white'}`}
+              href={link.path}
               onClick={() => setMobileMenuOpen(false)}
             >
-              {link.name}
+              <a className={`transition-all hover:text-red-400 pb-1 ${pathname === link.path ? 'text-red-300 border-b border-red-500' : 'text-white'}`}>
+                {link.name}
+              </a>
             </Link>
           ))}
           <LogoutButton />

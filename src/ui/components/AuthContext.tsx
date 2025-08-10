@@ -16,6 +16,10 @@ import {
   TOKEN_KEY
 } from '../utils/authUtils';
 
+const TOKEN_EXPIRY_KEY = 'grace_token_expiry';
+const REFRESH_TOKEN_KEY = 'grace_refresh_token';
+const TOKEN_VERIFY_INTERVAL = 60000; // Check token validity every 60 seconds
+
 // Improved session persistence utility to avoid conflicts with form state
 const SessionPersistence = {
   STORAGE_KEY: 'GRACE_SESSION_SNAPSHOT',
@@ -99,7 +103,7 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  login: (data: any) => Promise<void>;
+  login: (data: any) => Promise<boolean>;
   logout: () => void;
   loading: boolean;
   refreshToken: () => Promise<boolean>;
@@ -131,83 +135,83 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Combined effect to handle authentication verification with safeguards
-  // This is a single effect to avoid race conditions from multiple effects
+  // Verify auth tokens on mount and set interval
   useEffect(() => {
-    // Create a request identifier to handle race conditions with concurrent requests
-    const requestId = Date.now();
     let isMounted = true;
     
-    const verifyAuthentication = async () => {
-      // Skip verification if we just logged in to avoid race conditions
-      if (skipNextVerification) {
-        setSkipNextVerification(false);
-        setLoading(false);
+    const verifyOnMount = async () => {
+      // Skip initial verification if there's no token
+      if (typeof window !== 'undefined' && !getAuthToken()) {
+        console.log('AuthContext: No token found on mount, skipping verification');
+        if (isMounted) setLoading(false);
         return;
       }
       
-      if (!token) {
-        if (isMounted) setLoading(false);
-        return;
-      }
-
-      try {
-        // Introduce a small delay to avoid blocking UI rendering
-        // This prevents form rendering issues during verification
-        await new Promise(resolve => setTimeout(resolve, 50));
-        
-        // Early exit if component unmounted during the delay
-        if (!isMounted) return;
-        
-        // Check if token is expired using standardized function
-        if (isTokenExpired()) {
-          // Token expired, attempt to refresh
-          const refreshSuccessful = await refreshToken();
-          if (!refreshSuccessful) {
-            throw new Error('Token refresh failed');
-          }
-        } else {
-          // Verify token using apiClient with proper endpoint constant
-          const { success, data } = await api.get(API_ENDPOINTS.AUTH.VERIFY_TOKEN);
-          
-          // Early exit if component unmounted during API call
-          if (!isMounted) return;
-          
-          if (!success) throw new Error('Token verification failed');
-          
-          // Extract user data from the backend response
-          if (data.success && data.user) {
-            const newUser = data.user;
-            setUser(newUser);
-            setIsAuthenticated(true);
-
-            // Capture session snapshot - won't interfere with form rendering now
-            SessionPersistence.captureSnapshot(newUser, token);
-          } else {
-            throw new Error('Invalid user data');
-          }
-        }
-      } catch (error) {
-        // Only proceed if this is still the active request
-        if (!isMounted) return;
-        
-        // Any error in verification flow leads to logout
-        clearAuthTokens();
-        setToken(null);
-        setUser(null);
-        setIsAuthenticated(false);
-      } finally {
-        if (isMounted) setLoading(false);
-      }
+      console.log('AuthContext: Verifying token on mount');
+      // Verify token on component mount
+      await verifyToken();
+      
+      // Handle case where verification completed but component was unmounted
+      if (isMounted) setLoading(false);
     };
     
-    verifyAuthentication();
+    verifyOnMount();
     
-    // Cleanup function to prevent race conditions
+    // Set up periodic token verification
+    const interval = setInterval(() => {
+      if (!skipNextVerification) {
+        verifyToken();
+      } else {
+        // Reset skip flag after using it once
+        setSkipNextVerification(false);
+      }
+    }, TOKEN_VERIFY_INTERVAL);
+    
     return () => {
       isMounted = false;
+      clearInterval(interval);
     };
-  }, [token]); // Only depend on token to avoid race conditions
+  }, []);     
+
+  // Verify user token with backend
+  const verifyToken = async () => {
+    // If no token exists, there's nothing to verify
+    const token = getAuthToken();
+    if (!token) {
+      console.log('AuthContext: No token to verify');
+      setIsAuthenticated(false);
+      setUser(null);
+      setLoading(false);
+      return false;
+    }
+
+    try {
+      console.log('AuthContext: Verifying token with backend');
+      setLoading(true);
+      const response = await api.get(API_ENDPOINTS.AUTH.VERIFY_TOKEN);
+      
+      if (response.success && response.data) {
+        // Token is valid, update user data
+        console.log('AuthContext: Token verified successfully');
+        setIsAuthenticated(true);
+        setUser(response.data.user || {});
+        setToken(token); // Ensure token state matches storage
+        return true;
+      } else {
+        // Invalid token, clear authentication
+        console.log('AuthContext: Token verification failed - invalid token');
+        clearAuthState();
+        return false;
+      }
+    } catch (error) {
+      console.error('Token verification failed:', error);
+      // On error, clear authentication state
+      clearAuthState();
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Enhanced logging utility for authentication events
   const logAuthEvent = (eventType: string, details: any = {}) => {
@@ -335,11 +339,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const login = async (data: any) => {
+  // Login with credentials
+  const login = async (data: any): Promise<boolean> => {
     try {
       if (!data.token) {
         throw new Error('No token found in login data');
       }
+      
+      console.log('AuthContext: Processing login with token');
       
       // Store token with remember me preference if provided
       const rememberMe = data.remember_me !== undefined ? data.remember_me : true; // Default to true for persistent login
@@ -351,6 +358,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setToken(data.token); // Ensure token state is synchronized
       setUser(data.user || {});
       setIsAuthenticated(true);
+      setLoading(false); // Ensure loading state is turned off
       
       // Capture minimal session data after successful login
       if (data.user) {
@@ -360,42 +368,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Set flag to skip next verification cycle to avoid race condition
       setSkipNextVerification(true);
       
+      // Log successful login state update
+      console.log('AuthContext: Login complete, auth state updated');
+      
       // Automatically check for wallet and generate if needed
       // This ensures every user has a wallet automatically
       setTimeout(() => {
         checkAndGenerateWallet();
       }, 500); // Small delay to ensure auth is fully established
+      
+      return true; // Signal successful login
     } catch (error) {
       console.error('Login failed:', error instanceof Error ? error.message : 'Unknown error');
       // Ensure auth state is reset if login fails
-      setTimeout(() => {
-        clearAuthTokens();
-        SessionPersistence.clearSnapshot();
-      }, 0);
+      clearAuthTokens();
+      SessionPersistence.clearSnapshot();
+      
       setToken(null);
       setUser(null);
       setIsAuthenticated(false);
+      setLoading(false);
+      
+      return false; // Signal failed login
     }
   };
 
+  // Clear auth state - reusable function for both logout and failed auth
+  const clearAuthState = () => {
+    clearAuthTokens();
+    setToken(null);
+    setUser(null);
+    setIsAuthenticated(false);
+    SessionPersistence.clearSnapshot();
+  };
+  
+  // Clear auth state
   const logout = async () => {
+    logAuthEvent('logout_initiated');
     try {
-      // Call logout endpoint if token exists
-      if (token) {
-        // Use standardized apiClient for logout
+      // Attempt to call logout endpoint if we have a token
+      if (getAuthToken()) {
         await api.post(API_ENDPOINTS.AUTH.LOGOUT, {});
       }
     } catch (error) {
-      console.error('Logout error:', error);
+      console.error('Error during logout:', error);
+      // Continue with logout regardless of API errors
     } finally {
-      // Clear session snapshot
-      SessionPersistence.clearSnapshot();
-
-      // Always clear local token storage
-      clearAuthTokens();
-      setToken(null);
-      setUser(null);
-      setIsAuthenticated(false);
+      // Always clear local state and storage
+      clearAuthState();
+      
+      // Log the event
+      logAuthEvent('logout_complete');
     }
   };
 

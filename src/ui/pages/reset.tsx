@@ -1,22 +1,23 @@
 // src/pages/Reset.tsx
 
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useRouter } from 'next/router';
+import Link from 'next/link';
 
 export default function Reset() {
   const [password, setPassword] = useState('');
   const [token, setToken] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [params] = useSearchParams();
-  const navigate = useNavigate();
+  const router = useRouter();
+  
 
   useEffect(() => {
-    const tokenFromUrl = params.get('token');
-    if (tokenFromUrl) {
+    const { token: tokenFromUrl } = router.query;
+    if (tokenFromUrl && typeof tokenFromUrl === 'string') {
       setToken(tokenFromUrl);
     }
-  }, [params]);
+  }, [router.query]);
 
   const handleReset = async () => {
     try {
@@ -31,7 +32,7 @@ export default function Reset() {
         return;
       }
       setMessage('Password successfully reset. You may now log in.');
-      setTimeout(() => navigate('/login'), 3000);
+      setTimeout(() => router.push('/login'), 3000);
     } catch (err) {
       console.error('Reset error:', err);
       setError('Connection error');
@@ -55,7 +56,7 @@ export default function Reset() {
           Reset Password
         </button>
         <div className="mt-4 text-center text-sm text-gray-400">
-          <a href="/login" className="hover:text-red-400">Return to login</a>
+          <Link href="/login" className="hover:text-red-400">Return to login</Link>
         </div>
       </div>
     </div>

@@ -1,10 +1,10 @@
 // src/components/LogoutButton.tsx
 
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useRouter } from 'next/router';
 
 export default function LogoutButton() {
-  const navigate = useNavigate();
+  const router = useRouter();
 
   const handleLogout = async () => {
     const token = localStorage.getItem('token');
@@ -20,7 +20,7 @@ export default function LogoutButton() {
       console.error('Logout request failed', err);
     } finally {
       localStorage.removeItem('token');
-      navigate('/login');
+      router.push('/login');
     }
   };
 
