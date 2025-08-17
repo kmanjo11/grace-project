@@ -283,7 +283,7 @@ class GraceCore:
         except Exception as e:
             logger.error(f"Error initializing conversation manager: {str(e)}")
             # Create a basic fallback conversation manager if initialization fails
-            from conversation_management import ConversationManager
+            from src.conversation_management import ConversationManager
             return ConversationManager(conversation_dir)
         finally:
             # Always remove the lock file when done
@@ -511,7 +511,7 @@ class GraceCore:
         )
             
         # Import the conversation manager for process_message tasks
-        from conversation_management import ConversationManager
+        from src.conversation_management import ConversationManager
         conversation_storage_dir = os.path.join(self.data_dir, "conversations")
         os.makedirs(conversation_storage_dir, exist_ok=True)
         conversation_manager = ConversationManager(storage_dir=conversation_storage_dir)
@@ -594,7 +594,7 @@ class GraceCore:
         )
         
         # Import the conversation manager for process_message tasks
-        from conversation_management import ConversationManager
+        from src.conversation_management import ConversationManager
         conversation_storage_dir = os.path.join(self.data_dir, "conversations")
         os.makedirs(conversation_storage_dir, exist_ok=True)
         conversation_manager = ConversationManager(storage_dir=conversation_storage_dir)
