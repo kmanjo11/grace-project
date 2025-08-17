@@ -84,32 +84,25 @@ grace_instance = GraceCore(
 
 # Initialize Quart app with static file serving
 app = Quart(__name__, static_folder='/app/static', static_url_path='')
-app = cors(app, allow_origin="*")  # Configure CORS appropriately for production
+app = cors(app, allow_origin=["http://localhost:3000", "http://127.0.0.1:3000"], allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
 
 # Register chat blueprint
 app.register_blueprint(chat_blueprint)
 
-# Root route to serve Next.js frontend
+# Root route - API status for development mode
 @app.route('/')
-async def serve_index():
-    """Serve the Next.js frontend index.html"""
-    logger.info("Serving root route with Next.js index.html")
-    try:
-        # Check if index.html exists
-        import os
-        static_path = '/app/static/index.html'
-        if os.path.exists(static_path):
-            logger.info(f"Found index.html at {static_path}, serving it")
-        else:
-            logger.error(f"index.html not found at {static_path}!")
-            files_in_dir = os.listdir('/app/static')
-            logger.info(f"Files in static directory: {files_in_dir}")
-        
-        # Always return the index.html file for root route
-        return await app.send_static_file('index.html')
-    except Exception as e:
-        logger.error(f"Error serving frontend: {e}", exc_info=True)
-        return jsonify({"status": "FastMCP server running ok - Error serving Next.js frontend"}), 500
+async def api_status():
+    """Return API status - frontend runs separately in development"""
+    return jsonify({
+        "status": "Grace API server running", 
+        "mode": "development",
+        "frontend": "Run separately with 'pnpm run dev' in src/ui/",
+        "endpoints": {
+            "health": "/health",
+            "api": "/api/*",
+            "chat": "/chat/*"
+        }
+    })
         
 # Explicitly handle _next directory requests for Next.js assets (CSS, JS, etc)
 @app.route('/_next/<path:path>')
@@ -3573,11 +3566,16 @@ if __name__ == "__main__":
     except Exception as e:
         logger.critical(f"Server failed to start: {e}", exc_info=True)
 
-# --- Health Check Endpoint ---
+# --- Health Check Endpoints ---
 @app.route('/health')
 async def health_check():
     """Health check endpoint for Docker healthcheck"""
     return jsonify({"status": "healthy"})
+
+@app.route('/api/health')
+async def api_health_check():
+    """API health check endpoint"""
+    return jsonify({"status": "healthy", "api": "Grace API v1.0"})
 
 # --- Frontend Routes ---
 # These routes need to be defined AFTER all API routes to avoid conflicts

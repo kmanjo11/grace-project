@@ -289,6 +289,8 @@ async function apiRequest<T = any>(
     const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
     const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
     
+    console.log('API Request:', { baseUrl, endpoint, url });
+    
     // Add auth headers to the request
     const requestOptions = addAuthHeaders({
       ...options,
@@ -299,7 +301,9 @@ async function apiRequest<T = any>(
       },
     });
     
+    console.log('Making fetch request to:', url, 'with options:', requestOptions);
     const response = await fetch(url, requestOptions);
+    console.log('Response received:', response.status, response.statusText);
 
     return await processResponse<T>(response);
   } catch (error) {
