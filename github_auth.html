@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GitHub OAuth - Grace Project</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 50px; text-align: center; }
+        .auth-button { 
+            background: #24292e; 
+            color: white; 
+            padding: 15px 30px; 
+            text-decoration: none; 
+            border-radius: 6px; 
+            font-size: 16px;
+            display: inline-block;
+            margin: 20px;
+        }
+        .auth-button:hover { background: #444d56; }
+    </style>
+</head>
+<body>
+    <h1>🔐 GitHub Authentication</h1>
+    <h2>Grace Project - Push to Repository</h2>
+    
+    <p>Click the button below to authenticate with GitHub:</p>
+    
+    <a href="https://github.com/login/oauth/authorize?client_id=178c6fc778ccc68e1d6a&scope=repo&redirect_uri=http://localhost:8080/callback&state=grace-project-push" 
+       class="auth-button" target="_blank">
+        🚀 Authorize GitHub Access
+    </a>
+    
+    <p><strong>Instructions:</strong></p>
+    <ol style="text-align: left; max-width: 500px; margin: 0 auto;">
+        <li>Click the "Authorize GitHub Access" button above</li>
+        <li>Log in with your <strong>kmanjo11</strong> GitHub account</li>
+        <li>Authorize the application to access your repositories</li>
+        <li>Copy the authorization code from the redirect page</li>
+        <li>Return here and provide the code to complete the push</li>
+    </ol>
+    
+    <p style="margin-top: 30px; color: #666;">
+        This will give us permission to push your backend-frontend integration fixes to the grace-project repository.
+    </p>
+</body>
+</html>
