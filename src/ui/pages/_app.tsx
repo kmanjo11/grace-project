@@ -7,7 +7,7 @@ import ErrorBoundary from '../components/ErrorBoundary';
 import StateLoader from '../components/StateLoader';
 import LoadingPage from '../components/LoadingPage';
 import { ToastContainer } from 'react-toastify';
-import Layout from './layout';
+import Layout from './Layout';
 import '../index.css';
 import 'react-toastify/dist/ReactToastify.css';
 import '../styles/animations.css';

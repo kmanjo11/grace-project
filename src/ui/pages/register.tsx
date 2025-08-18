@@ -186,6 +186,7 @@ export default function Register() {
         {/* Submit button */}
         <button
           type="submit"
+          onClick={handleRegister}
           className="w-full py-2 text-white bg-red-700 hover:bg-red-900 rounded transition-colors"
           disabled={isSubmitting}
         >

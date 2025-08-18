@@ -64,3 +64,32 @@
 - [ ] Conduct security testing
 - [ ] Create comprehensive documentation
 - [ ] Prepare deployment instructions
+
+
+## Frontend-Backend Connectivity Fixes (Current Session)
+
+### Issues Identified and Fixed
+- [x] **Environment Configuration**: Created `.env.local` with `NEXT_PUBLIC_API_URL=http://localhost:9000`
+- [x] **Register Page Button**: Added missing `onClick={handleRegister}` to submit button
+- [x] **API Client URL Construction**: Fixed API_BASE_URL to handle environment variables properly
+
+### Backend Configuration Verified
+- [x] Server runs on port 9000 (0.0.0.0:9000)
+- [x] CORS allows localhost:3000 and 127.0.0.1:3000
+- [x] Auth endpoints exist: `/api/auth/login`, `/api/auth/register`
+- [x] Next.js rewrite rule configured: `/api/*` → `http://localhost:9000/api/*`
+
+### Ready for Testing
+- [x] Start backend: `python src/run_server.py`
+- [x] Start frontend: `pnpm run dev` in `src/ui/`
+- [x] Test login functionality
+- [x] Test register functionality
+- [x] Verify navigation after authentication
+
+### ✅ CONNECTIVITY ISSUES RESOLVED
+**Status**: Frontend-backend connectivity is now working correctly!
+- CORS configuration fixed with `allow_credentials=True`
+- API requests successfully reaching backend (confirmed via server logs)
+- Login/register buttons are functional
+- Next.js rewrite rules working properly
+
