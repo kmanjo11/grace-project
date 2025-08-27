@@ -12,6 +12,15 @@ from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Util.Padding import pad, unpad
 
+# Import Keypair - try real Solana first, fallback to mock
+try:
+    from solana.keypair import Keypair
+except ImportError:
+    try:
+        from solders.keypair import Keypair
+    except ImportError:
+        from src.mock_solana import Keypair
+
 
 class SecureDataManager:
     """Handles encryption and decryption of sensitive user data."""
@@ -69,13 +78,24 @@ class InternalWallet:
     def generate_wallet(self) -> Dict[str, Any]:
         """Generate a new Solana wallet."""
         keypair = Keypair()
-        public_key = str(keypair.public_key)
+        # Use pubkey() method for solders.keypair.Keypair
+        try:
+            public_key = str(keypair.pubkey())
+        except AttributeError:
+            # Fallback for other Keypair implementations
+            public_key = str(keypair.public_key)
+        
         # Encrypt private key before storing
         try:
-            private_key_bytes = keypair.secret_key.decode("latin1")
+            # For solders.keypair.Keypair, use secret() method
+            private_key_bytes = bytes(keypair.secret()).decode("latin1")
         except AttributeError:
-            # Handle case where mock implementation is used
-            private_key_bytes = str(keypair.secret_key)
+            try:
+                # For other implementations that have secret_key attribute
+                private_key_bytes = keypair.secret_key.decode("latin1")
+            except AttributeError:
+                # Handle case where mock implementation is used
+                private_key_bytes = str(keypair.secret_key)
         encrypted_private_key = self.secure_manager.encrypt(private_key_bytes)
 
         return {

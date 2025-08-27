@@ -1,14 +1,14 @@
 // src/components/LogoutButton.tsx
 
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useRouter } from 'next/router';
 import { useAuth } from './AuthContext';
 import api from '../api/apiClient';
 import { API_ENDPOINTS } from '../api/apiClient';
 import StatePersistenceManager from '../utils/StatePersistence';
 
 export default function LogoutButton() {
-  const navigate = useNavigate();
+  const router = useRouter();
   const { logout } = useAuth(); // Use the standardized logout function from AuthContext
 
   const handleLogout = async () => {
@@ -20,11 +20,11 @@ export default function LogoutButton() {
       await logout();
       
       // After successful logout, redirect to login page
-      navigate('/login');
+      router.push('/login');
     } catch (err) {
       console.error('Logout failed:', err);
       // Still navigate to login even if the API call fails
-      navigate('/login');
+      router.push('/login');
     }
   };
 

@@ -84,8 +84,8 @@ async def get_user_id_from_request():
 
         token = auth_header.replace("Bearer ", "")
 
-        # We'll use the token verification from the main app
-        from api_server import verify_token_and_get_user_id
+        # We'll use the token verification from the main app (use absolute import)
+        from src.api_server import verify_token_and_get_user_id
 
         result = await verify_token_and_get_user_id()
 

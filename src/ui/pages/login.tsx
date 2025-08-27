@@ -19,18 +19,11 @@ export default function Login() {
   const router = useRouter();
   const { login, isAuthenticated, user } = useAuth();
   
-  // Effect to handle navigation after successful authentication
+  // Effect retained only for diagnostics; navigation is handled by AuthGuard to avoid races
   useEffect(() => {
-    // Only navigate if we've already confirmed successful login AND auth state is updated
-    if (loginSuccess && isAuthenticated && user) {
-      const timer = setTimeout(() => {
-        console.log('Authentication confirmed, navigating to /chat');
-        router.push('/chat');
-      }, 800); // Small delay to ensure auth state is fully propagated
-      
-      return () => clearTimeout(timer);
-    }
-  }, [loginSuccess, isAuthenticated, user, router]);
+    console.log('Navigation check:', { loginSuccess, isAuthenticated, user: !!user });
+    // Intentionally no navigation here to prevent double redirects and remount loops
+  }, [loginSuccess, isAuthenticated, user]);
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -46,11 +39,16 @@ export default function Login() {
         remember_me: true // Set remember_me to true for persistent login
       });
       
-      if (success && data?.token) {
-        console.log('Login successful, token received');
+      console.log('API Response:', { data, success });
+      console.log('Token check:', { hasToken: !!data?.token, token: data?.token });
+      
+      if (success) {
+        console.log('Login successful, token received:', data);
         
-        // Store token directly here as backup
-        localStorage.setItem('grace_token', data.token);
+        // Store token directly here as backup if present (api client may have already stored)
+        if (data?.token) {
+          localStorage.setItem('grace_token', data.token);
+        }
         
         // Show success toast
         toast.success('Login successful! Redirecting...', {
@@ -59,10 +57,20 @@ export default function Login() {
         });
         
         // Call login function and wait for it to complete
-        await login(data);
+        console.log('Calling AuthContext login function with data:', data);
+        const loginResult = await login(data);
+        console.log('Login function result:', loginResult);
         
         // Mark login as successful - navigation will happen via useEffect
         setLoginSuccess(true);
+
+        // Set a post-login redirect flag to help AuthGuard coordinate navigation
+        try {
+          sessionStorage.setItem('GRACE_POST_LOGIN_REDIRECT', '1');
+        } catch {}
+
+        // Do not navigate here to avoid racing with AuthGuard.
+        // Navigation is centralized in useEffect when auth state updates.
       } else {
         // Show error toast
         toast.error(data?.message || 'Login failed', {
@@ -97,6 +105,7 @@ export default function Login() {
             <label htmlFor="username" className="text-sm block mb-1">Username</label>
             <input
               id="username"
+              name="username"
               className="w-full p-2 rounded bg-white/10 focus:outline-none focus:ring-1 focus:ring-red-400 border border-white/20"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -110,6 +119,7 @@ export default function Login() {
             <input
               id="password"
               type="password"
+              name="password"
               className="w-full p-2 rounded bg-white/10 focus:outline-none focus:ring-1 focus:ring-red-400 border border-white/20"
               value={password}
               onChange={(e) => setPassword(e.target.value)}

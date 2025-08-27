@@ -2,24 +2,19 @@
 
 import React from 'react';
 import { useRouter } from 'next/router';
+import { useAuth } from '../components/AuthContext';
 
 export default function LogoutButton() {
   const router = useRouter();
+  const { logout } = useAuth();
 
   const handleLogout = async () => {
-    const token = localStorage.getItem('token');
     try {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      // Use centralized auth flow which clears tokens consistently
+      await logout();
     } catch (err) {
-      console.error('Logout request failed', err);
+      console.error('Logout error', err);
     } finally {
-      localStorage.removeItem('token');
       router.push('/login');
     }
   };

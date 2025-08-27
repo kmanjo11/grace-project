@@ -4,31 +4,53 @@
  * Provides standardized error handling and response processing for all API calls.
  */
 
-// Front api constant
+// Front api constant and robust resolver for base URL
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
+
+// Resolve base URL; prefer env var, else use relative path to avoid CORS issues
+const resolveBaseUrl = (): string => {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (envUrl && envUrl.trim() !== '') {
+    return envUrl.endsWith('/') ? envUrl.slice(0, -1) : envUrl;
+  }
+  // Fallback to relative base to use same-origin or dev proxy
+  return '';
+};
 
 // Auth token key for localStorage
 const AUTH_TOKEN_KEY = 'grace_auth_token';
+const ALT_TOKEN_KEY = 'grace_token';
 
-// Get auth token from localStorage
+// Get auth token from storage (checks both session and local, and both keys)
 export const getAuthToken = (): string | null => {
   if (typeof window !== 'undefined') {
-    return localStorage.getItem(AUTH_TOKEN_KEY);
+    return (
+      // Prefer sessionStorage for current session
+      sessionStorage.getItem(AUTH_TOKEN_KEY) ||
+      sessionStorage.getItem(ALT_TOKEN_KEY) ||
+      // Fallback to localStorage
+      localStorage.getItem(AUTH_TOKEN_KEY) ||
+      localStorage.getItem(ALT_TOKEN_KEY)
+    );
   }
   return null;
 };
 
-// Save auth token to localStorage
+// Save auth token to localStorage under both keys for compatibility
 export const saveAuthToken = (token: string): void => {
   if (typeof window !== 'undefined') {
     localStorage.setItem(AUTH_TOKEN_KEY, token);
+    localStorage.setItem(ALT_TOKEN_KEY, token);
   }
 };
 
-// Remove auth token from localStorage
+// Remove auth token from both storage locations and keys
 export const removeAuthToken = (): void => {
   if (typeof window !== 'undefined') {
     localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(ALT_TOKEN_KEY);
+    sessionStorage.removeItem(AUTH_TOKEN_KEY);
+    sessionStorage.removeItem(ALT_TOKEN_KEY);
   }
 };
 
@@ -74,12 +96,13 @@ export class ApiError extends Error {
 
 // API configuration - use environment variable if available, otherwise use relative path
 
-// Ensure API_BASE_URL ends with a slash
+// Ensure API_BASE_URL ends with a slash (kept for backward compatibility)
 const getBaseUrl = () => {
-  if (API_BASE_URL.endsWith('/')) {
-    return API_BASE_URL.slice(0, -1);
+  const base = API_BASE_URL;
+  if (base && base.endsWith('/')) {
+    return base.slice(0, -1);
   }
-  return API_BASE_URL;
+  return base;
 };
 
 // API endpoints constants
@@ -87,9 +110,9 @@ export const API_ENDPOINTS = {
   AUTH: {
     LOGIN: '/api/auth/login',
     REGISTER: '/api/auth/register',
-    VERIFY_TOKEN: '/api/auth/verify_token',
+    VERIFY_TOKEN: '/api/auth/verify',
     LOGOUT: '/api/auth/logout',
-    REFRESH_TOKEN: '/api/auth/refresh',
+    REFRESH_TOKEN: '/auth/refresh-token',
     FORGOT_PASSWORD: '/api/auth/forgot-password',
     RESET_PASSWORD: '/api/auth/reset-password'
   },
@@ -222,21 +245,29 @@ async function processResponse<T>(response: Response): Promise<ApiResponse<T>> {
     // Clone the response so we can read it multiple times
     const responseClone = response.clone();
     
-    // First try to parse as JSON, but handle non-JSON responses gracefully
-    let data;
+    // Read body ONCE as text, then attempt to parse JSON from it.
+    const bodyText = await response.text();
+    let data: any = undefined;
     try {
-      data = await response.json();
-      
+      data = bodyText ? JSON.parse(bodyText) : undefined;
       // If we get a new token in the response, save it
       if (data && data.token) {
         saveAuthToken(data.token);
       }
     } catch (e) {
-      // If we can't parse as JSON, return the text response
-      const text = await response.text();
+      // Non-JSON body; treat as text error payload when not ok
+      if (!response.ok) {
+        return {
+          success: false,
+          error: bodyText || 'Invalid response format',
+          statusCode: response.status,
+          rawResponse: responseClone
+        };
+      }
+      // If OK status but non-JSON, pass raw text as data
       return {
-        success: false,
-        error: text || 'Invalid response format',
+        success: true,
+        data: bodyText as unknown as T,
         statusCode: response.status,
         rawResponse: responseClone
       };
@@ -244,13 +275,7 @@ async function processResponse<T>(response: Response): Promise<ApiResponse<T>> {
     
     // Handle HTTP error status codes
     if (!response.ok) {
-      // If we get a 401, clear the auth token
-      if (response.status === 401) {
-        removeAuthToken();
-        // You might want to redirect to login here or handle the unauthorized state
-        window.location.href = '/login';
-      }
-      
+      // Do not perform global side effects here; let callers decide how to handle 401/403
       return {
         success: false,
         error: data?.message || data?.error || `HTTP error ${response.status}`,
@@ -285,8 +310,8 @@ async function apiRequest<T = any>(
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
   try {
-    // Get base URL from environment or use empty string for relative paths
-    const baseUrl = process.env.NEXT_PUBLIC_API_URL || '';
+    // Get base URL from environment or use robust fallback
+    const baseUrl = resolveBaseUrl();
     const url = endpoint.startsWith('http') ? endpoint : `${baseUrl}${endpoint}`;
     
     console.log('API Request:', { baseUrl, endpoint, url });

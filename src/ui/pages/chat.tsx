@@ -70,7 +70,7 @@ export default function Chat() {
   
   // Helper function to persist messages to localStorage with timestamp
   const persistMessages = (sid: string, msgs: ChatMessage[]) => {
-    if (!sid || !msgs) return;
+    if (!sid || !msgs || msgs.length === 0) return; // avoid persisting empty arrays
     try {
       // Only store a limited number of messages to prevent localStorage overflows
       const messagesToStore = msgs.slice(-50); // Store just the last 50 messages
@@ -106,6 +106,10 @@ export default function Chat() {
   
   // Track if component is mounted to prevent state updates after unmounting
   const isMountedRef = useRef(true);
+  // Guard to ensure we only attempt session restoration once per mount
+  const restoredOnceRef = useRef(false);
+  // Dedup guard for history loads per session
+  const lastHistoryLoadRef = useRef<Record<string, number>>({});
   
   // Initialize from persisted state on component mount
   useEffect(() => {
@@ -302,6 +306,13 @@ export default function Chat() {
   // Function to load messages for a session (memoized with useCallback)
   const loadSessionMessages = useCallback(async (sid: string) => {
     if (!sid || !isAuthenticated) return;
+    const now = Date.now();
+    const last = lastHistoryLoadRef.current[sid] || 0;
+    // Skip if called again within 800ms for the same session to avoid duplicates
+    if (now - last < 800) {
+      return;
+    }
+    lastHistoryLoadRef.current[sid] = now;
     
     // Check if we have cached messages first
     const cachedMessages = loadMessagesFromCache(sid);
@@ -411,31 +422,36 @@ export default function Chat() {
 
   // On component mount, try to restore the last active session from localStorage
   useEffect(() => {
-    // If not authenticated or sessions not loaded yet, return early
-    if (!isAuthenticated || !sessionsLoaded) return;
-    
+    // If not authenticated or sessions not loaded yet, or already restored, return early
+    if (!isAuthenticated || !sessionsLoaded || restoredOnceRef.current) return;
+
     console.log('Attempting to restore previous session');
-    
-    // Sort sessions by last activity
-    const sortedSessions = [...sessions].sort((a, b) => {
+
+    // Sort sessions by last activity only if needed
+    const sorted = [...sessions].sort((a, b) => {
       return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
     });
-    setSessions(sortedSessions);
-    
+
+    // Only update sessions if the order actually changed to avoid loops
+    const orderChanged = JSON.stringify(sessions.map(s => s.session_id || s.id)) !== JSON.stringify(sorted.map(s => s.session_id || s.id));
+    if (orderChanged) {
+      setSessions(sorted);
+    }
+
     // Try to restore previous session if available
     const savedSessionId = localStorage.getItem('activeSessionId');
-    
-    if (savedSessionId && sortedSessions.some(s => (s.session_id || s.id) === savedSessionId)) {
+
+    if (savedSessionId && sorted.some(s => (s.session_id || s.id) === savedSessionId)) {
       console.log('Found previous session in loaded sessions:', savedSessionId);
-      
-      // Set the session ID - this will trigger the useEffect that loads messages
       setSessionId(savedSessionId);
-    } else if (sortedSessions.length > 0) {
-      // If no saved session but we have sessions, automatically select the most recent one
+    } else if (sorted.length > 0) {
       console.log('No saved session found, selecting most recent session');
-      setSessionId(sortedSessions[0].session_id || sortedSessions[0].id);
+      setSessionId(sorted[0].session_id || sorted[0].id);
     }
-  }, [isAuthenticated, sessionsLoaded, sessions]);
+
+    // Mark restoration as done to prevent repeating
+    restoredOnceRef.current = true;
+  }, [isAuthenticated, sessionsLoaded]);
 
   // Scroll to bottom whenever messages change
   useEffect(() => {
@@ -500,8 +516,7 @@ export default function Chat() {
         // Set the session ID
         setSessionId(newSession.session_id);
         
-        // Initialize empty cache for this session
-        persistMessages(newSession.session_id, []);
+        // Do not persist empty cache to avoid loops
         
         // Store the session ID in localStorage to maintain across page navigations
         localStorage.setItem('activeSessionId', newSession.session_id);
@@ -538,7 +553,7 @@ export default function Chat() {
       setSessionId(fallbackId);
       
       // Initialize empty cache for this session
-      persistMessages(fallbackId, []);
+      // Do not persist empty cache to avoid loops
       
       // Store even fallback session ID
       localStorage.setItem('activeSessionId', fallbackId);

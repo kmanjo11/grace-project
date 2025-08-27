@@ -6,11 +6,9 @@ import { useRouter } from 'next/router';
 import { useAuth } from '../components/AuthContext';
 import { useAppState } from '../context/AppStateContext';
 import LogoutButton from '../components/LogoutButton';
-import { preventUnintendedRefresh } from '../utils/StatePersistence';
 
-// Import the Grace logo from the assets directory
-// For Next.js static build, ensure this asset is copied to public directory
-import logoPath from '../assets/grace_logo_gold.png';
+// Use a static public path for the logo to avoid bundling object URLs
+const logoPath = '/assets/grace_logo_gold.png';
 
 interface LayoutProps {
   children?: ReactNode;
@@ -35,18 +33,12 @@ export default function Layout({ children }: LayoutProps) {
     }
   }, [pathname, user, dispatch]);
 
-  // Prevent unintended refresh for unsaved changes
-  useEffect(() => {
-    window.addEventListener('beforeunload', preventUnintendedRefresh);
-    return () => {
-      window.removeEventListener('beforeunload', preventUnintendedRefresh);
-    };
-  }, []);
+  // Removed beforeunload prompt to allow smooth navigation
 
   // Hydrate state on initial load
   useEffect(() => {
     if (user) {
-      hydrateFromStorage((path) => router.push(path));
+      hydrateFromStorage((path) => { router.push(path); });
     }
   }, [user, router, hydrateFromStorage]);
 
@@ -90,10 +82,9 @@ export default function Layout({ children }: LayoutProps) {
               key={link.path}
               href={link.path}
               onClick={() => setMobileMenuOpen(false)}
+              className={`transition-all hover:text-red-400 pb-1 ${pathname === link.path ? 'text-red-300 border-b border-red-500' : 'text-white'}`}
             >
-              <a className={`transition-all hover:text-red-400 pb-1 ${pathname === link.path ? 'text-red-300 border-b border-red-500' : 'text-white'}`}>
-                {link.name}
-              </a>
+              {link.name}
             </Link>
           ))}
           <LogoutButton />

@@ -704,8 +704,6 @@ async def register():
         create_result = await run_grace_sync(
             grace_instance.user_profile_system.create_user,
             username=username,
-            first_name=first_name,
-            last_name=last_name,
             email=email,
             password=password,
             phone=data.get("phone"),

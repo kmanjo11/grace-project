@@ -25,8 +25,9 @@ class StateBackupService {
    */
   public async initialize(): Promise<boolean> {
     try {
-      // Register service worker if supported
-      if ('serviceWorker' in navigator && !this.isRegistering) {
+      // Register service worker only in production builds to avoid 404s in dev
+      const isProd = process.env.NODE_ENV === 'production';
+      if (isProd && 'serviceWorker' in navigator && !this.isRegistering) {
         this.isRegistering = true;
         try {
           this.serviceWorkerRegistration = await navigator.serviceWorker.register('/serviceWorker.js', {
@@ -50,8 +51,12 @@ class StateBackupService {
           return false;
         }
       } else {
-        // Fallback for browsers without service worker support
-        console.log('Service Workers not supported or already registering, using local storage only');
+        // Fallback for browsers without SW support or in development
+        if (!isProd) {
+          console.log('Skipping Service Worker in development; using local storage backups only');
+        } else {
+          console.log('Service Workers not supported or already registering, using local storage only');
+        }
         this.startPeriodicBackup();
         return false;
       }

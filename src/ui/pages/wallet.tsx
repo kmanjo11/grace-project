@@ -137,7 +137,6 @@ export default function Wallet() {
   const [txResult, setTxResult] = useState<string>('');
   const phantomWindowRef = useRef<Window | null>(null);
   const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const token = localStorage.getItem('token');
   const router = useRouter();
 
   // Function to validate a Phantom session with the backend

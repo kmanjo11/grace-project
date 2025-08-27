@@ -189,7 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.log('AuthContext: Verifying token with backend');
       setLoading(true);
       const response = await api.get(API_ENDPOINTS.AUTH.VERIFY_TOKEN);
-      
+
       if (response.success && response.data) {
         // Token is valid, update user data
         console.log('AuthContext: Token verified successfully');
@@ -197,16 +197,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(response.data.user || {});
         setToken(token); // Ensure token state matches storage
         return true;
-      } else {
-        // Invalid token, clear authentication
-        console.log('AuthContext: Token verification failed - invalid token');
+      }
+
+      // Non-success HTTP response
+      const status = response.statusCode ?? 0;
+      if (status === 401 || status === 403) {
+        console.log('AuthContext: Token verification failed with unauthorized status:', status);
         clearAuthState();
         return false;
       }
+
+      // For other errors (5xx, 0, etc.), keep current auth state to avoid flicker
+      console.warn('AuthContext: Verification non-success but not unauthorized. Preserving auth state.', {
+        status,
+        error: response.error
+      });
+      return false;
     } catch (error) {
-      console.error('Token verification failed:', error);
-      // On error, clear authentication state
-      clearAuthState();
+      // Network or unexpected error: preserve current auth state
+      const msg = error instanceof Error ? error.message : 'Unknown error';
+      console.error('Token verification error, preserving auth state:', msg);
       return false;
     } finally {
       setLoading(false);
@@ -342,8 +352,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Login with credentials
   const login = async (data: any): Promise<boolean> => {
     try {
+      console.log('AuthContext: login function called with data:', data);
+      // Some API clients save the token directly to storage and strip it from payload
+      // Fall back to reading from storage if not present on the response object
       if (!data.token) {
-        throw new Error('No token found in login data');
+        const storedToken = getAuthToken();
+        console.log('AuthContext: token missing in payload, using stored token:', !!storedToken);
+        if (storedToken) {
+          data.token = storedToken;
+        } else {
+          throw new Error('No token found in login data or storage');
+        }
       }
       
       console.log('AuthContext: Processing login with token');
@@ -353,12 +372,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       // Store token and wait for it to complete
       await storeAuthToken(data.token, rememberMe);
+      console.log('AuthContext: Token stored successfully');
       
       // Update application state
       setToken(data.token); // Ensure token state is synchronized
       setUser(data.user || {});
       setIsAuthenticated(true);
       setLoading(false); // Ensure loading state is turned off
+      console.log('AuthContext: State updated - isAuthenticated: true, user:', data.user);
       
       // Capture minimal session data after successful login
       if (data.user) {

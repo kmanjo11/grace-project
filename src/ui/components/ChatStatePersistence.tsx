@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useCallback } from 'react';
 import { useAppState } from '../context/AppStateContext';
 
 // Match the exact ChatMessage interface from Chat.tsx
@@ -164,17 +164,22 @@ export const useChatStatePersistence = (
             topic: session.topic || session.name,
             name: session.name,
             created_at: session.created_at || session.lastActivity,
-            updated_at: session.lastActivity || new Date().toISOString(),
-            preview_message: session.messages && session.messages.length > 0 ? 
-              (session.messages[session.messages.length-1].text || 
-               session.messages[session.messages.length-1].user || 
-               session.messages[session.messages.length-1].bot) : '',
-            messages: session.messages.map(msg => ({
-              id: msg.timestamp || new Date().toISOString(),
-              content: msg.text || msg.user || msg.bot || '',
-              role: msg.sender === 'user' ? 'user' : 'assistant',
-              timestamp: msg.timestamp || new Date().toISOString()
-            })),
+            // IMPORTANT: Avoid generating a fresh timestamp on every render which
+            // causes JSON.stringify(sessionMap) to change and retrigger dispatch loops.
+            // Prefer stable values in this effect.
+            updated_at:
+              // keep any existing persisted updated_at if available
+              (state.chatState?.sessions?.[sessionKey]?.updated_at as string | undefined)
+              // otherwise fall back to session-provided timestamps
+              || session.updated_at
+              || session.lastActivity,
+            preview_message: session.messages && session.messages.length > 0 ?
+              (session.messages[session.messages.length - 1].text ||
+               session.messages[session.messages.length - 1].user ||
+               session.messages[session.messages.length - 1].bot) : '',
+            // Preserve existing messages reference from global state to keep
+            // sessionMap stable and avoid flip-flopping with the messages sync effect.
+            messages: (state.chatState?.sessions?.[sessionKey]?.messages as any[]) || [],
             scrollPosition: session.scrollPosition,
             unread_count: session.unread_count || 0
           };
@@ -182,23 +187,36 @@ export const useChatStatePersistence = (
         return acc;
       }, {});
 
-      // Update global state
-      dispatch({
-        type: 'SET_CHAT_STATE',
-        payload: {
-          activeSessions: sessions.map(s => s.session_id || s.id),
-          currentSessionId: sessionId,
-          sessions: sessionMap,
-          draftMessages: {
-            ...(state.chatState?.draftMessages || {}),
-            [sessionId]: draftMessage
+      // Guard: Only dispatch if something actually changed
+      const prev = state.chatState || {} as any;
+      const prevActive = Array.isArray(prev.activeSessions) ? prev.activeSessions.join('|') : '';
+      const nextActive = sessions.map(s => s.session_id || s.id).join('|');
+      const prevCurrent = prev.currentSessionId || '';
+      const prevDraft = prev.draftMessages?.[sessionId] || '';
+      const nextDraft = draftMessage || '';
+      const prevSessionsStr = JSON.stringify(prev.sessions || {});
+      const nextSessionsStr = JSON.stringify(sessionMap);
+
+      const changed = prevActive !== nextActive || prevCurrent !== sessionId || prevDraft !== nextDraft || prevSessionsStr !== nextSessionsStr;
+
+      if (changed) {
+        dispatch({
+          type: 'SET_CHAT_STATE',
+          payload: {
+            activeSessions: sessions.map(s => s.session_id || s.id),
+            currentSessionId: sessionId,
+            sessions: sessionMap,
+            draftMessages: {
+              ...(state.chatState?.draftMessages || {}),
+              [sessionId]: draftMessage
+            }
           }
-        }
-      });
+        });
+      }
       
-      // Also use the same localStorage persistence as Chat.tsx
+      // Persist to localStorage only (avoid dispatch from here to prevent loops)
       const currentSession = sessions.find(s => s.id === sessionId || s.session_id === sessionId);
-      if (currentSession && currentSession.messages) {
+      if (currentSession && Array.isArray(currentSession.messages) && currentSession.messages.length > 0) {
         persistMessages(sessionId, currentSession.messages);
       }
     }
@@ -216,6 +234,7 @@ export const useChatStatePersistence = (
           [sessionKey]: {
             ...currentSession,
             messages: messages,
+            // Only bump updated_at when messages actually change; otherwise leave as-is
             updated_at: new Date().toISOString()
           }
         };
@@ -232,15 +251,23 @@ export const useChatStatePersistence = (
 
   // Helper to compare arrays
   const arraysEqual = (a: any[], b: any[]) => {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
     if (a.length !== b.length) return false;
-    
-    // Simple length-based check for performance
-    return a.length === b.length;
+    // Deep-ish compare by value; messages are small arrays
+    try {
+      return JSON.stringify(a) === JSON.stringify(b);
+    } catch {
+      return false;
+    }
   };
 
   // Helper function to persist messages - match the function in Chat.tsx
-  const persistMessages = (sid: string, msgs: ChatMessage[]) => {
-    if (!sid || !msgs) return;
+  const persistMessages = useCallback((sid: string, msgs: ChatMessage[]) => {
+    if (!sid || !msgs || msgs.length === 0) {
+      // Skip persisting empty arrays to avoid loops and noise
+      return;
+    }
     try {
       console.log(`Persisting ${msgs.length} messages for session ${sid}`);
       
@@ -251,52 +278,15 @@ export const useChatStatePersistence = (
       localStorage.setItem(`messages_${sid}`, JSON.stringify(messagesToStore));
       localStorage.setItem(`lastSynced_${sid}`, new Date().toISOString());
       localStorage.setItem('activeSessionId', sid);
-      
-      // Also store in global AppState for better persistence across refreshes
-      // Convert to the format expected by the AppState
-      const persistentMessages = messagesToStore.map(msg => ({
-        id: Math.random().toString(36).substring(2, 15),
-        content: msg.text || msg.user || msg.bot || '',
-        role: msg.sender === 'user' || msg.user ? 'user' : 'assistant',
-        timestamp: msg.timestamp || new Date().toISOString()
-      }));
-      
-      // Update chatContext for DynamicStateSnapshot compatibility
-      dispatch({
-        type: 'SET_CHAT_CONTEXT',
-        payload: {
-          currentConversationId: sid,
-          lastMessageTimestamp: new Date().getTime()
-        }
-      });
-      
-      // Update chat state in global AppState
-      dispatch({
-        type: 'SET_CHAT_STATE',
-        payload: {
-          currentSessionId: sid,
-          sessions: {
-            ...(state.chatState?.sessions || {}),
-            [sid]: {
-              id: sid,
-              session_id: sid,
-              messages: persistentMessages,
-              updated_at: new Date().toISOString(),
-              // Preserve existing metadata if available
-              ...(state.chatState?.sessions?.[sid] || {}),
-              // Update with latest message info
-              preview_message: messagesToStore[messagesToStore.length - 1]?.text || ''
-            }
-          }
-        }
-      });
+
+      // Note: Do NOT dispatch global state updates here to avoid recursive update loops.
     } catch (e) {
       console.error('Failed to store messages:', e);
     }
-  };
+  }, []);
   
   // Function to initialize sessions from persisted state if available
-  const initializeFromPersistedState = (setSessionsFunc: (sessions: ChatSession[]) => void, setSessionIdFunc: (id: string | null) => void) => {
+  const initializeFromPersistedState = useCallback((setSessionsFunc: (sessions: ChatSession[]) => void, setSessionIdFunc: (id: string | null) => void) => {
     const storedSessions = getStoredSessions();
     
     if (storedSessions.length > 0 && sessions.length === 0) {
@@ -330,7 +320,7 @@ export const useChatStatePersistence = (
     }
     
     return false; // Indicate that we did not restore (no stored sessions or sessions already loaded)
-  };
+  }, [sessions.length, state.chatState?.currentSessionId]);
   
   return {
     // Main functions for state initialization and persistence
@@ -340,7 +330,7 @@ export const useChatStatePersistence = (
     persistMessages,
     
     // Functions to sync specific aspects of chat state
-    syncScrollPosition: (position: number) => {
+    syncScrollPosition: useCallback((position: number) => {
       if (!sessionId) return;
       
       // Save scroll position in both localStorage and global state
@@ -358,10 +348,10 @@ export const useChatStatePersistence = (
           }
         }
       });
-    },
+    }, [sessionId, state.chatState?.sessions, dispatch]),
     
     // Get saved scroll position for current session - check both localStorage and global state
-    getSavedScrollPosition: () => {
+    getSavedScrollPosition: useCallback(() => {
       if (!sessionId) return null;
       
       // First check localStorage (Chat.tsx approach)
@@ -376,10 +366,10 @@ export const useChatStatePersistence = (
       }
       
       return null;
-    },
+    }, [sessionId, state.chatState?.sessions]),
     
     // Get saved draft message for current session
-    getSavedDraftMessage: () => {
+    getSavedDraftMessage: useCallback(() => {
       if (!sessionId) return '';
       
       // First check localStorage (Chat.tsx approach)
@@ -394,11 +384,17 @@ export const useChatStatePersistence = (
       }
       
       return '';
-    },
+    }, [sessionId, state.chatState?.draftMessages]),
     
     // Directly update draft message
-    updateDraftMessage: (message: string) => {
+    updateDraftMessage: useCallback((message: string) => {
       if (!sessionId) return;
+      
+      // Skip if unchanged to avoid noisy dispatch loops
+      const current = state.chatState?.draftMessages?.[sessionId] || '';
+      if (current === message) {
+        return;
+      }
       
       // Save in both localStorage and global state for consistent behavior with Chat.tsx
       localStorage.setItem(`draft_${sessionId}`, message);
@@ -412,7 +408,7 @@ export const useChatStatePersistence = (
           }
         }
       });
-    }
+    }, [sessionId, dispatch])
   };
 };
 

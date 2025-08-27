@@ -1,1 +1,54 @@
-{}
+{
+  "user_1": {
+    "username": "test_user3",
+    "email": "test_user@yahoo.com",
+    "phone": "",
+    "password_hash": "$2b$12$NJG5J8oBm1nH23ZjDzQNsOKLZzqi9jNj3ZXI0EdhMSA69GZ3uywN6",
+    "created_at": "2025-08-19T23:39:02.740579",
+    "last_login": "2025-08-20T07:30:22.024556",
+    "is_authorized": false,
+    "internal_wallet": {
+      "public_key": "HnoTvi1BJ82vB2WrXw5PEsuMz2w6kjATiSp7sVqCnF6k",
+      "encrypted_private_key": {
+        "iv": "2BFM9kihD9yjmH3gdSnBsg==",
+        "ciphertext": "j8LcOeMV8xbSTojELm8gdFMntCsCntnSkFHIpLr1Qp5t1eCsUTDcfRgzXsjqJ7zPnSuXjV0w1tVTa9rn9p1JqQ=="
+      },
+      "balance": {
+        "solana": 0.0,
+        "tether_usd": 0.0
+      },
+      "created_at": "2025-08-19T23:39:02.732931"
+    },
+    "mango_markets_link": {
+      "status": false,
+      "message": "Not attempted",
+      "linked_at": null
+    }
+  },
+  "user_2": {
+    "username": "test_user5",
+    "email": "test@t.com",
+    "phone": "",
+    "password_hash": "$2b$12$AyZTdwv3ldWxsByUUDwEk.i52bcE.8PNOzMtNQfqUEJ0j1QkCDWoa",
+    "created_at": "2025-08-26T07:46:40.306706",
+    "last_login": "2025-08-27T10:24:57.263448",
+    "is_authorized": false,
+    "internal_wallet": {
+      "public_key": "E4TDNia9NvRMjTbXymSFvFXNm4nqoJPzMRVyVX4yDCZG",
+      "encrypted_private_key": {
+        "iv": "IsdPr0NgSCy3/ERCLVqXAA==",
+        "ciphertext": "Eu/FPIY4SPivHOAL/t5Lsl9NdkSmN4rfYRneqG8p3RPlgQrL+Kj3Xzak8KZqedYV"
+      },
+      "balance": {
+        "solana": 0.0,
+        "tether_usd": 0.0
+      },
+      "created_at": "2025-08-26T07:46:40.299683"
+    },
+    "mango_markets_link": {
+      "status": false,
+      "message": "Not attempted",
+      "linked_at": null
+    }
+  }
+}
