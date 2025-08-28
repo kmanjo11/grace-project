@@ -1,6 +1,6 @@
 // src/pages/Chat.tsx
 
-import React, { useEffect, useState, FormEvent, useRef, useCallback } from 'react';
+import React, { useEffect, useState, FormEvent, useRef, useCallback, useMemo } from 'react';
 import { api, API_ENDPOINTS } from '../api/apiClient';
 import { useAuth } from '../components/AuthContext';
 import { getAuthToken } from '../utils/authUtils';
@@ -174,7 +174,7 @@ export default function Chat() {
     };
   }, []);
   
-  // Load sessions from backend when authenticated
+  // FIXED: Stabilized main session loading effect
   useEffect(() => {
     const loadSessions = async () => {
       if (!isAuthenticated || !token) {
@@ -201,7 +201,11 @@ export default function Chat() {
         return;
       }
       
+      // Skip if sessions already loaded to prevent repeated calls
+      if (sessionsLoaded) return;
+      
       try {
+        console.log('Loading sessions from backend...');
         const { data, success } = await api.get(API_ENDPOINTS.CHAT.SESSIONS);
         
         if (success && data && Array.isArray(data)) {
@@ -241,75 +245,35 @@ export default function Chat() {
           );
           
           setSessions(sortedSessions);
+          setSessionsLoaded(true); // Mark sessions as loaded
           
-          // Try to restore last active session from localStorage
-          const savedSessionId = localStorage.getItem('activeSessionId');
-          const sessionExists = sortedSessions.some(s => 
-            s.session_id === savedSessionId || s.id === savedSessionId
-          );
-          
-          if (savedSessionId && sessionExists) {
-            // Restore previous session
-            setSessionId(savedSessionId);
-            
-            // Try to restore messages from localStorage first for instant display
-            try {
-              const savedMessages = localStorage.getItem(`messages_${savedSessionId}`);
-              if (savedMessages) {
-                try {
-                  const parsedMessages = JSON.parse(savedMessages);
-                  console.log(`Restored ${parsedMessages.length} messages for session ${savedSessionId} from localStorage`);
-                  setMessages(parsedMessages);
-                  // Mark these messages as from cache, so backend fetch won't replace them if they're identical
-                  setMessagesFromCache(true);
-                  
-                  // Ensure the active session ID is saved in localStorage
-                  localStorage.setItem('activeSessionId', savedSessionId);
-                } catch (parseError) {
-                  console.error('Failed to parse saved messages:', parseError);
-                  // If parsing fails, we'll rely solely on backend data
-                }
-              }
-            } catch (e) {
-              console.error('Failed to access localStorage:', e);
-            }
-            
-            // Still load messages from backend for latest updates
-            loadSessionMessages(savedSessionId);
-          } else if (sortedSessions.length > 0) {
-            // Select first session if available
-            setSessionId(sortedSessions[0].session_id || sortedSessions[0].id);
-            // Load messages for this session
-            loadSessionMessages(sortedSessions[0].session_id || sortedSessions[0].id);
-          } else {
-            // If no sessions, create a default session
-            await createNewSession();
-          }
+          // Session restoration will be handled by the separate restoration effect
         } else {
-          // If no sessions or error, create a default session
-          await createNewSession();
+          console.log('No sessions found, sessions loaded flag set to true');
+          setSessionsLoaded(true); // Mark as loaded even if empty
         }
       } catch (err) {
         console.error('Failed to load sessions:', err);
         setError('Failed to load chat sessions');
-        // If error loading sessions, create a default one
-        await createNewSession();
+        setSessionsLoaded(true); // Mark as loaded to prevent retry loops
       }
     };
     
     loadSessions();
-  }, [isAuthenticated, token]); // Re-run when auth state changes
+  }, [isAuthenticated, token, sessionsLoaded]); // Only depend on auth state and loaded flag
 
   // Track if messages were loaded from cache to handle merging with backend data
   const [messagesFromCache, setMessagesFromCache] = useState<boolean>(false);
 
-  // Function to load messages for a session (memoized with useCallback)
+  // FIXED: Properly memoized loadSessionMessages with improved deduplication
   const loadSessionMessages = useCallback(async (sid: string) => {
     if (!sid || !isAuthenticated) return;
+    
     const now = Date.now();
     const last = lastHistoryLoadRef.current[sid] || 0;
-    // Skip if called again within 800ms for the same session to avoid duplicates
-    if (now - last < 800) {
+    // FIXED: Increased deduplication window to 2 seconds to prevent rapid calls
+    if (now - last < 2000) {
+      console.log(`Skipping duplicate API call for session ${sid} (within 2s window)`);
       return;
     }
     lastHistoryLoadRef.current[sid] = now;
@@ -319,14 +283,13 @@ export default function Chat() {
     const hasExistingMessages = cachedMessages.length > 0;
     
     // If we have cached messages, use them immediately
-    if (hasExistingMessages) {
+    if (hasExistingMessages && sessionId === sid) {
       console.log('Using cached messages while backend loads for session:', sid);
-      // Only set messages if they're different from current messages to avoid unnecessary renders
-      if (JSON.stringify(cachedMessages) !== JSON.stringify(messages)) {
+      // Only set messages if they're for the current session and different from current messages
+      const currentMessagesStr = JSON.stringify(messages);
+      const cachedMessagesStr = JSON.stringify(cachedMessages);
+      if (currentMessagesStr !== cachedMessagesStr) {
         setMessages(cachedMessages);
-        // Mark these messages as from cache, so backend fetch won't replace them if they're identical
-        setMessagesFromCache(true);
-        // Ensure the active session is saved in localStorage
         localStorage.setItem('activeSessionId', sid);
       }
     }
@@ -340,6 +303,7 @@ export default function Chat() {
         return;
       }
       
+      console.log(`Loading messages from backend for session: ${sid}`);
       const { data, success } = await api.get(API_ENDPOINTS.CHAT.HISTORY(sid));
       
       if (success && data && Array.isArray(data)) {
@@ -355,58 +319,24 @@ export default function Chat() {
           }
         });
         
-        // If backend returned messages
-        if (formattedMessages.length > 0) {
-          // If we have cached messages, we need to handle merging carefully
-          if (hasExistingMessages) {
-            // If backend has more messages than cache, use backend data
-            if (formattedMessages.length > cachedMessages.length) {
-              console.log('Backend has more messages than cache, updating');
-              setMessages(formattedMessages);
-              persistMessages(sid, formattedMessages);
-            } else {
-              // Check for any local messages that might not have synced yet
-              const lastServerMessageTime = formattedMessages.length > 0 ? 
-                new Date(formattedMessages[formattedMessages.length - 1].timestamp).getTime() : 0;
-              
-              // Keep local messages sent after the last server message
-              const localNewMessages = cachedMessages.filter(m => 
-                new Date(m.timestamp || Date.now()).getTime() > lastServerMessageTime
-              );
-              
-              // Combine server messages with any newer local ones
-              if (localNewMessages.length > 0) {
-                console.log('Merging backend messages with local messages');
-                const mergedMessages = [...formattedMessages, ...localNewMessages];
-                setMessages(mergedMessages);
-                persistMessages(sid, mergedMessages);
-              } else if (JSON.stringify(formattedMessages) !== JSON.stringify(cachedMessages)) {
-                // Only update if different to avoid unnecessary renders
-                setMessages(formattedMessages);
-                persistMessages(sid, formattedMessages);
-              }
-            }
-          } else {
-            // No cache, use backend data
-            console.log('Setting messages from backend, no cache available');
-            setMessages(formattedMessages);
-            persistMessages(sid, formattedMessages);
-          }
-        } else if (!hasExistingMessages) {
+        // FIXED: Simplified message merging logic
+        if (formattedMessages.length > 0 && sessionId === sid) {
+          console.log(`Setting ${formattedMessages.length} messages from backend for session ${sid}`);
+          setMessages(formattedMessages);
+          persistMessages(sid, formattedMessages);
+        } else if (!hasExistingMessages && sessionId === sid) {
           // Backend returned empty and we have no cache
           setMessages([]);
         }
       }
     } catch (err) {
-      console.error(`Failed to load messages for session ${sid}:`, err);
-      // If we have cached messages, keep using them on error
-      if (!hasExistingMessages) {
-        setMessages([]);
-      }
+      console.error('Failed to load session messages:', err);
+      setError('Failed to load messages');
+      // Keep cached messages if backend fails
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, sessionId, messages, loadMessagesFromCache, persistMessages]); // Stable dependencies
 
-  // Load messages when session ID changes
+  // FIXED: Stabilized session loading effect
   useEffect(() => {
     // If any required condition is missing, return early
     if (!sessionId || !isAuthenticated || !sessionsLoaded) return;
@@ -418,42 +348,36 @@ export default function Chat() {
     
     // Load from backend (our updated function now handles cache properly)
     loadSessionMessages(sessionId);
-  }, [sessionId, loadSessionMessages, isAuthenticated, sessionsLoaded]);
+  }, [sessionId, isAuthenticated, sessionsLoaded, loadSessionMessages]); // Stable dependencies
 
-  // On component mount, try to restore the last active session from localStorage
+  // FIXED: Stabilized session restoration effect
   useEffect(() => {
     // If not authenticated or sessions not loaded yet, or already restored, return early
-    if (!isAuthenticated || !sessionsLoaded || restoredOnceRef.current) return;
+    if (!isAuthenticated || !sessionsLoaded || restoredOnceRef.current || sessions.length === 0) return;
 
     console.log('Attempting to restore previous session');
 
-    // Sort sessions by last activity only if needed
-    const sorted = [...sessions].sort((a, b) => {
-      return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
-    });
-
-    // Only update sessions if the order actually changed to avoid loops
-    const orderChanged = JSON.stringify(sessions.map(s => s.session_id || s.id)) !== JSON.stringify(sorted.map(s => s.session_id || s.id));
-    if (orderChanged) {
-      setSessions(sorted);
-    }
-
     // Try to restore previous session if available
     const savedSessionId = localStorage.getItem('activeSessionId');
+    const sessionExists = sessions.some(s => (s.session_id || s.id) === savedSessionId);
 
-    if (savedSessionId && sorted.some(s => (s.session_id || s.id) === savedSessionId)) {
+    if (savedSessionId && sessionExists) {
       console.log('Found previous session in loaded sessions:', savedSessionId);
       setSessionId(savedSessionId);
-    } else if (sorted.length > 0) {
+    } else if (sessions.length > 0) {
       console.log('No saved session found, selecting most recent session');
-      setSessionId(sorted[0].session_id || sorted[0].id);
+      // Sort by lastActivity and select the most recent
+      const mostRecent = sessions.reduce((latest, current) => {
+        return new Date(current.lastActivity) > new Date(latest.lastActivity) ? current : latest;
+      });
+      setSessionId(mostRecent.session_id || mostRecent.id);
     }
 
     // Mark restoration as done to prevent repeating
     restoredOnceRef.current = true;
-  }, [isAuthenticated, sessionsLoaded]);
+  }, [isAuthenticated, sessionsLoaded, sessions.length]); // Only depend on length, not full sessions array
 
-  // Scroll to bottom whenever messages change
+  // FIXED: Stabilized scroll effect
   useEffect(() => {
     // Scroll to bottom of messages
     if (messagesEndRef.current) {
@@ -463,11 +387,11 @@ export default function Chat() {
       }, 100);
     }
     
-    // Store messages in localStorage using our helper function
+    // Store messages in localStorage using our helper function (only if we have messages)
     if (sessionId && messages.length > 0) {
       persistMessages(sessionId, messages);
     }
-  }, [messages, sessionId]);
+  }, [messages.length, sessionId, persistMessages]); // Only depend on length, not full messages array
 
   // Refresh sessions list from backend (memoized with useCallback)
   const refreshSessions = useCallback(async () => {

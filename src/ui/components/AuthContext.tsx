@@ -1,6 +1,6 @@
 // src/ui/components/AuthContext.tsx
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { API_ENDPOINTS } from '../api/apiClient';
 import api from '../api/apiClient';
 // Import admin backdoor utilities
@@ -135,7 +135,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Verify auth tokens on mount and set interval
+  // FIXED: Stabilized verification on mount and periodic checks
   useEffect(() => {
     let isMounted = true;
     
@@ -148,8 +148,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       
       console.log('AuthContext: Verifying token on mount');
-      // Verify token on component mount
-      await verifyToken();
+      // Verify token on component mount (force = true to bypass debouncing)
+      await verifyToken(true);
       
       // Handle case where verification completed but component was unmounted
       if (isMounted) setLoading(false);
@@ -157,15 +157,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     
     verifyOnMount();
     
-    // Set up periodic token verification
+    // FIXED: Increased interval to reduce verification frequency
     const interval = setInterval(() => {
       if (!skipNextVerification) {
-        verifyToken();
+        verifyToken(); // Use debounced version for periodic checks
       } else {
         // Reset skip flag after using it once
         setSkipNextVerification(false);
       }
-    }, TOKEN_VERIFY_INTERVAL);
+    }, 120000); // FIXED: Increased to 2 minutes to reduce server load
     
     return () => {
       isMounted = false;
@@ -173,8 +173,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);     
 
-  // Verify user token with backend
-  const verifyToken = async () => {
+  // FIXED: Add debouncing to prevent rapid verification calls
+  const verifyTokenDebounced = useRef<NodeJS.Timeout | null>(null);
+  const lastVerifyAttempt = useRef<number>(0);
+  
+  // Verify user token with backend (FIXED: Added debouncing and better error handling)
+  const verifyToken = async (force: boolean = false) => {
     // If no token exists, there's nothing to verify
     const token = getAuthToken();
     if (!token) {
@@ -184,6 +188,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       return false;
     }
+
+    // FIXED: Debounce verification calls to prevent rapid requests
+    const now = Date.now();
+    if (!force && now - lastVerifyAttempt.current < 5000) {
+      console.log('AuthContext: Skipping verification (debounced)');
+      return false;
+    }
+    lastVerifyAttempt.current = now;
 
     try {
       console.log('AuthContext: Verifying token with backend');
@@ -207,14 +219,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
 
-      // For other errors (5xx, 0, etc.), keep current auth state to avoid flicker
+      // FIXED: For other errors (5xx, 0, etc.), keep current auth state to avoid flicker
       console.warn('AuthContext: Verification non-success but not unauthorized. Preserving auth state.', {
         status,
         error: response.error
       });
       return false;
     } catch (error) {
-      // Network or unexpected error: preserve current auth state
+      // FIXED: Network or unexpected error: preserve current auth state to prevent bouncing
       const msg = error instanceof Error ? error.message : 'Unknown error';
       console.error('Token verification error, preserving auth state:', msg);
       return false;

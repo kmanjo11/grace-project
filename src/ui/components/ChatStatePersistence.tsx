@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback } from 'react';
+import React, { useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAppState } from '../context/AppStateContext';
 
 // Match the exact ChatMessage interface from Chat.tsx
@@ -47,6 +47,7 @@ interface PersistentChatSession {
 /**
  * Hook to manage chat state persistence
  * This syncs the Chat component state with our global persistence layer
+ * FIXED: All callbacks memoized, stable dependencies, no timestamp regeneration
  */
 export const useChatStatePersistence = (
   sessionId: string | null,
@@ -55,9 +56,14 @@ export const useChatStatePersistence = (
   draftMessage: string = ''
 ) => {
   const { state, dispatch } = useAppState();
+  
+  // Refs to prevent unnecessary effect triggers
+  const lastSessionsRef = useRef<string>('');
+  const lastMessagesRef = useRef<string>('');
+  const lastDraftRef = useRef<string>('');
 
-  // Get stored sessions from state - ensure compatibility with Chat.tsx structure
-  const getStoredSessions = (): ChatSession[] => {
+  // FIXED: Memoized getStoredSessions to prevent unnecessary recalculations
+  const getStoredSessions = useCallback((): ChatSession[] => {
     // First check if there are any sessions in our persistent state
     if (state.chatState?.sessions && Object.keys(state.chatState.sessions).length > 0) {
       // Convert the sessions object to a properly structured array
@@ -104,10 +110,10 @@ export const useChatStatePersistence = (
     }
     
     return [];
-  };
+  }, [state.chatState?.sessions]); // Only depend on sessions object
   
-  // Helper to load messages from cache - match the function in Chat.tsx
-  const loadMessagesFromCache = (sid: string): ChatMessage[] => {
+  // FIXED: Memoized loadMessagesFromCache to prevent unnecessary recalculations
+  const loadMessagesFromCache = useCallback((sid: string): ChatMessage[] => {
     if (!sid) return [];
     
     // Try multiple sources in order of preference
@@ -139,130 +145,112 @@ export const useChatStatePersistence = (
     }
     
     return [];
-  };
+  }, [state.chatState?.sessions]); // Only depend on sessions object
   
-  // Effect to log when we have sessions available in state
+  // FIXED: Stabilized effect with refs to prevent loops
   useEffect(() => {
     const storedSessions = getStoredSessions();
     if (storedSessions.length > 0 && sessions.length === 0) {
       console.log('Chat sessions available in persistent state', storedSessions);
     }
-  }, [state.chatState?.sessions, sessions]);
+  }, [getStoredSessions, sessions.length]); // Only depend on memoized function and length
 
-  // Save the current session state whenever it changes
+  // FIXED: Save session state with structural equality checks to prevent loops
   useEffect(() => {
-    if (sessionId && sessions.length > 0) {
-      // Convert sessions array to a record indexed by session ID
-      // Use the same sessionId format as in Chat.tsx
-      const sessionMap = sessions.reduce<Record<string, PersistentChatSession>>((acc, session) => {
-        const sessionKey = session.session_id || session.id;
-        if (sessionKey) {
-          // Transform to the format our persistence expects
-          acc[sessionKey] = {
-            id: session.id,
-            session_id: session.session_id || session.id,
-            topic: session.topic || session.name,
-            name: session.name,
-            created_at: session.created_at || session.lastActivity,
-            // IMPORTANT: Avoid generating a fresh timestamp on every render which
-            // causes JSON.stringify(sessionMap) to change and retrigger dispatch loops.
-            // Prefer stable values in this effect.
-            updated_at:
-              // keep any existing persisted updated_at if available
-              (state.chatState?.sessions?.[sessionKey]?.updated_at as string | undefined)
-              // otherwise fall back to session-provided timestamps
-              || session.updated_at
-              || session.lastActivity,
-            preview_message: session.messages && session.messages.length > 0 ?
-              (session.messages[session.messages.length - 1].text ||
-               session.messages[session.messages.length - 1].user ||
-               session.messages[session.messages.length - 1].bot) : '',
-            // Preserve existing messages reference from global state to keep
-            // sessionMap stable and avoid flip-flopping with the messages sync effect.
-            messages: (state.chatState?.sessions?.[sessionKey]?.messages as any[]) || [],
-            scrollPosition: session.scrollPosition,
-            unread_count: session.unread_count || 0
-          };
-        }
-        return acc;
-      }, {});
-
-      // Guard: Only dispatch if something actually changed
-      const prev = state.chatState || {} as any;
-      const prevActive = Array.isArray(prev.activeSessions) ? prev.activeSessions.join('|') : '';
-      const nextActive = sessions.map(s => s.session_id || s.id).join('|');
-      const prevCurrent = prev.currentSessionId || '';
-      const prevDraft = prev.draftMessages?.[sessionId] || '';
-      const nextDraft = draftMessage || '';
-      const prevSessionsStr = JSON.stringify(prev.sessions || {});
-      const nextSessionsStr = JSON.stringify(sessionMap);
-
-      const changed = prevActive !== nextActive || prevCurrent !== sessionId || prevDraft !== nextDraft || prevSessionsStr !== nextSessionsStr;
-
-      if (changed) {
-        dispatch({
-          type: 'SET_CHAT_STATE',
-          payload: {
-            activeSessions: sessions.map(s => s.session_id || s.id),
-            currentSessionId: sessionId,
-            sessions: sessionMap,
-            draftMessages: {
-              ...(state.chatState?.draftMessages || {}),
-              [sessionId]: draftMessage
-            }
-          }
-        });
-      }
-      
-      // Persist to localStorage only (avoid dispatch from here to prevent loops)
-      const currentSession = sessions.find(s => s.id === sessionId || s.session_id === sessionId);
-      if (currentSession && Array.isArray(currentSession.messages) && currentSession.messages.length > 0) {
-        persistMessages(sessionId, currentSession.messages);
-      }
-    }
-  }, [sessions, sessionId, messages, draftMessage, dispatch]);
-
-  // Sync message state between local and global
-  useEffect(() => {
-    if (sessionId && messages.length > 0 && state.chatState?.sessions) {
-      const sessionKey = sessionId;
-      const currentSession = state.chatState.sessions[sessionKey];
-      
-      if (currentSession && !arraysEqual(currentSession.messages || [], messages)) {
-        const updatedSessions = {
-          ...state.chatState.sessions,
-          [sessionKey]: {
-            ...currentSession,
-            messages: messages,
-            // Only bump updated_at when messages actually change; otherwise leave as-is
-            updated_at: new Date().toISOString()
-          }
+    if (!sessionId || sessions.length === 0) return;
+    
+    // Create stable session map
+    const sessionMap = sessions.reduce<Record<string, PersistentChatSession>>((acc, session) => {
+      const sessionKey = session.session_id || session.id;
+      if (sessionKey) {
+        // FIXED: Use existing timestamp to avoid regeneration
+        const existingSession = state.chatState?.sessions?.[sessionKey];
+        acc[sessionKey] = {
+          id: session.id,
+          session_id: session.session_id || session.id,
+          topic: session.topic || session.name,
+          name: session.name,
+          created_at: session.created_at || session.lastActivity,
+          // FIXED: Keep existing updated_at to prevent timestamp churn
+          updated_at: existingSession?.updated_at || session.updated_at || session.lastActivity,
+          preview_message: session.messages && session.messages.length > 0 ?
+            (session.messages[session.messages.length - 1].text ||
+             session.messages[session.messages.length - 1].user ||
+             session.messages[session.messages.length - 1].bot) : '',
+          // FIXED: Preserve existing messages to prevent flip-flopping
+          messages: existingSession?.messages || [],
+          scrollPosition: session.scrollPosition,
+          unread_count: session.unread_count || 0
         };
-        
-        dispatch({
-          type: 'SET_CHAT_STATE',
-          payload: {
-            sessions: updatedSessions
-          }
-        });
       }
-    }
-  }, [messages, sessionId, state.chatState?.sessions, dispatch]);
+      return acc;
+    }, {});
 
-  // Helper to compare arrays
-  const arraysEqual = (a: any[], b: any[]) => {
-    if (a === b) return true;
-    if (!Array.isArray(a) || !Array.isArray(b)) return false;
-    if (a.length !== b.length) return false;
-    // Deep-ish compare by value; messages are small arrays
-    try {
-      return JSON.stringify(a) === JSON.stringify(b);
-    } catch {
-      return false;
+    // FIXED: Use refs to check if anything actually changed
+    const currentSessionsStr = JSON.stringify(sessionMap);
+    const currentActive = sessions.map(s => s.session_id || s.id).join('|');
+    const currentDraft = draftMessage || '';
+    
+    if (lastSessionsRef.current !== currentSessionsStr || 
+        lastDraftRef.current !== currentDraft ||
+        state.chatState?.currentSessionId !== sessionId) {
+      
+      lastSessionsRef.current = currentSessionsStr;
+      lastDraftRef.current = currentDraft;
+      
+      dispatch({
+        type: 'SET_CHAT_STATE',
+        payload: {
+          activeSessions: sessions.map(s => s.session_id || s.id),
+          currentSessionId: sessionId,
+          sessions: sessionMap,
+          draftMessages: {
+            ...(state.chatState?.draftMessages || {}),
+            [sessionId]: draftMessage
+          }
+        }
+      });
     }
-  };
+    
+    // Persist to localStorage (separate from dispatch to prevent loops)
+    const currentSession = sessions.find(s => s.id === sessionId || s.session_id === sessionId);
+    if (currentSession && Array.isArray(currentSession.messages) && currentSession.messages.length > 0) {
+      persistMessages(sessionId, currentSession.messages);
+    }
+  }, [sessionId, sessions, draftMessage, state.chatState?.sessions, state.chatState?.currentSessionId, dispatch]);
 
-  // Helper function to persist messages - match the function in Chat.tsx
+  // FIXED: Stabilized message sync effect with refs to prevent loops
+  useEffect(() => {
+    if (!sessionId || messages.length === 0 || !state.chatState?.sessions) return;
+    
+    const sessionKey = sessionId;
+    const currentSession = state.chatState.sessions[sessionKey];
+    const currentMessagesStr = JSON.stringify(messages);
+    
+    // Only update if messages actually changed
+    if (currentSession && lastMessagesRef.current !== currentMessagesStr) {
+      lastMessagesRef.current = currentMessagesStr;
+      
+      const updatedSessions = {
+        ...state.chatState.sessions,
+        [sessionKey]: {
+          ...currentSession,
+          messages: messages,
+          // FIXED: Only update timestamp when messages actually change
+          updated_at: new Date().toISOString()
+        }
+      };
+      
+      dispatch({
+        type: 'SET_CHAT_STATE',
+        payload: {
+          sessions: updatedSessions
+        }
+      });
+    }
+  }, [sessionId, messages, state.chatState?.sessions, dispatch]);
+
+  // FIXED: Memoized persistMessages function
   const persistMessages = useCallback((sid: string, msgs: ChatMessage[]) => {
     if (!sid || !msgs || msgs.length === 0) {
       // Skip persisting empty arrays to avoid loops and noise
@@ -283,9 +271,9 @@ export const useChatStatePersistence = (
     } catch (e) {
       console.error('Failed to store messages:', e);
     }
-  }, []);
+  }, []); // No dependencies needed - pure function
   
-  // Function to initialize sessions from persisted state if available
+  // FIXED: Properly memoized initializeFromPersistedState function
   const initializeFromPersistedState = useCallback((setSessionsFunc: (sessions: ChatSession[]) => void, setSessionIdFunc: (id: string | null) => void) => {
     const storedSessions = getStoredSessions();
     
@@ -320,7 +308,7 @@ export const useChatStatePersistence = (
     }
     
     return false; // Indicate that we did not restore (no stored sessions or sessions already loaded)
-  }, [sessions.length, state.chatState?.currentSessionId]);
+  }, [getStoredSessions, sessions.length, state.chatState?.currentSessionId]);
   
   return {
     // Main functions for state initialization and persistence
@@ -329,7 +317,7 @@ export const useChatStatePersistence = (
     loadMessagesFromCache,
     persistMessages,
     
-    // Functions to sync specific aspects of chat state
+    // FIXED: All callback functions properly memoized
     syncScrollPosition: useCallback((position: number) => {
       if (!sessionId) return;
       
@@ -350,7 +338,7 @@ export const useChatStatePersistence = (
       });
     }, [sessionId, state.chatState?.sessions, dispatch]),
     
-    // Get saved scroll position for current session - check both localStorage and global state
+    // FIXED: Memoized getSavedScrollPosition
     getSavedScrollPosition: useCallback(() => {
       if (!sessionId) return null;
       
@@ -368,7 +356,7 @@ export const useChatStatePersistence = (
       return null;
     }, [sessionId, state.chatState?.sessions]),
     
-    // Get saved draft message for current session
+    // FIXED: Memoized getSavedDraftMessage
     getSavedDraftMessage: useCallback(() => {
       if (!sessionId) return '';
       
@@ -386,7 +374,7 @@ export const useChatStatePersistence = (
       return '';
     }, [sessionId, state.chatState?.draftMessages]),
     
-    // Directly update draft message
+    // FIXED: Memoized updateDraftMessage with change detection
     updateDraftMessage: useCallback((message: string) => {
       if (!sessionId) return;
       
@@ -408,7 +396,7 @@ export const useChatStatePersistence = (
           }
         }
       });
-    }, [sessionId, dispatch])
+    }, [sessionId, state.chatState?.draftMessages, dispatch])
   };
 };
 

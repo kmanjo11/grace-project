@@ -19,7 +19,7 @@ const pagesWithLayout = ['/chat', '/wallet', '/trading', '/social', '/settings']
 // Pages that don't require authentication
 const publicPages = ['/login', '/register', '/forgot', '/reset'];
 
-// Auth guard component to protect routes
+// FIXED: Simplified and stabilized AuthGuard component
 function AuthGuard({ children, router }: { children: React.ReactNode, router: any }) {
   const { user, loading, isAuthenticated } = useAuth();
   const isPublicPage = publicPages.includes(router.pathname);
@@ -28,32 +28,24 @@ function AuthGuard({ children, router }: { children: React.ReactNode, router: an
   const initialLoadComplete = useRef(false);
   const unauthGraceUntilRef = useRef<number>(0);
   
-  // Once the initial load is complete, we'll handle redirects
+  // FIXED: Extended grace window and better token handling
   useEffect(() => {
     if (!loading) {
       initialLoadComplete.current = true;
-      // If a token exists, provide a short grace window to avoid bouncing to login
+      // If a token exists, provide a longer grace window to avoid bouncing to login
       const tokenExists = !!getAuthToken();
       if (tokenExists) {
-        unauthGraceUntilRef.current = Date.now() + 2000; // 2s grace to accommodate remounts
+        unauthGraceUntilRef.current = Date.now() + 5000; // FIXED: Extended to 5s grace
+        console.log('AuthGuard: Token exists, setting 5s grace window');
       } else {
         unauthGraceUntilRef.current = 0;
       }
     }
   }, [loading]);
   
-  // Handle redirects separately, but only after initial auth check
+  // FIXED: Simplified redirect logic with better grace handling
   useEffect(() => {
-    if (!initialLoadComplete.current) return;
-
-    // If still loading auth, don't redirect yet
-    if (loading) return;
-
-    // Skip navigation if:
-    // 1. Still loading authentication state
-    // 2. Already navigating
-    // 3. Initial load hasn't completed
-    if (loading || isNavigating || !initialLoadComplete.current) {
+    if (!initialLoadComplete.current || loading || isNavigating) {
       return;
     }
     
@@ -62,34 +54,40 @@ function AuthGuard({ children, router }: { children: React.ReactNode, router: an
       const now = Date.now();
       const withinGrace = now < unauthGraceUntilRef.current;
       const tokenExists = !!getAuthToken();
-      // Never redirect away from chat if a token exists; allow auth to settle
-      if (router.pathname === '/chat' && tokenExists) {
-        console.log('AuthGuard: On /chat with token present; suppressing unauth redirect');
+      
+      // FIXED: Never redirect away from chat if a token exists during grace period
+      if (router.pathname === '/chat' && (tokenExists || withinGrace)) {
+        console.log('AuthGuard: On /chat with token/grace present; suppressing unauth redirect');
         return;
       }
-      if (withinGrace || tokenExists) {
-        // Skip redirect during grace or if a token exists; let AuthContext settle
-        console.log('AuthGuard: Skipping unauth redirect (grace/token present)', {
-          withinGrace,
-          tokenExists,
-        });
-      } else {
-        console.log('AuthGuard: Redirecting unauthenticated user to login');
-        setIsNavigating(true);
-        router.replace('/login')
-          .then(() => setIsNavigating(false))
-          .catch((error) => {
-            console.error('Navigation error:', error);
-            setIsNavigating(false);
-          });
+      
+      if (withinGrace) {
+        console.log('AuthGuard: Skipping unauth redirect (within grace period)');
+        return;
       }
+      
+      // Throttle repeated redirects
+      const now2 = Date.now();
+      const recentlyRedirected = now2 - lastRedirectAtRef.current < 2000;
+      if (recentlyRedirected) {
+        console.log('AuthGuard: Skipping redirect (recently redirected)');
+        return;
+      }
+      
+      console.log('AuthGuard: Redirecting unauthenticated user to login');
+      lastRedirectAtRef.current = now2;
+      setIsNavigating(true);
+      router.replace('/login')
+        .then(() => setIsNavigating(false))
+        .catch((error) => {
+          console.error('Navigation error:', error);
+          setIsNavigating(false);
+        });
     }
     
-    // If authenticated and on a public page, redirect to chat
-    // But only if there isn't an explicit navigation happening from login/register
-    // (which is handled by the useEffect in those components)
+    // FIXED: Simplified authenticated user redirect logic
     if (isAuthenticated && user && isPublicPage) {
-      // Coordination flag set by login/register to avoid double redirects
+      // Check for coordination flags to avoid double redirects
       let skipPublicRedirect = false;
       try {
         skipPublicRedirect = sessionStorage.getItem('GRACE_POST_LOGIN_REDIRECT') === '1';
@@ -97,15 +95,9 @@ function AuthGuard({ children, router }: { children: React.ReactNode, router: an
 
       // Throttle repeated redirects within a short window
       const now = Date.now();
-      const recentlyRedirected = now - lastRedirectAtRef.current < 1000;
+      const recentlyRedirected = now - lastRedirectAtRef.current < 2000;
 
-      // Persist a one-time guard to avoid repeated redirects across remounts
-      let alreadyRedirected = false;
-      try {
-        alreadyRedirected = sessionStorage.getItem('GRACE_ALREADY_REDIRECTED') === '1';
-      } catch {}
-
-      if (!skipPublicRedirect && !recentlyRedirected && !alreadyRedirected) {
+      if (!skipPublicRedirect && !recentlyRedirected) {
         console.log('AuthGuard: Redirecting authenticated user to chat');
         lastRedirectAtRef.current = now;
         setIsNavigating(true);
@@ -121,16 +113,16 @@ function AuthGuard({ children, router }: { children: React.ReactNode, router: an
         try { sessionStorage.removeItem('GRACE_POST_LOGIN_REDIRECT'); } catch {}
       }
     }
-  }, [isAuthenticated, user, isPublicPage, loading, router]);
+  }, [isAuthenticated, user, isPublicPage, loading, router, isNavigating]);
 
-  // Clear the one-time redirect guard when we are on /chat
+  // FIXED: Clear redirect guard when on /chat
   useEffect(() => {
     if (router.pathname === '/chat') {
       try { sessionStorage.removeItem('GRACE_ALREADY_REDIRECTED'); } catch {}
     }
   }, [router.pathname]);
 
-  // Show enhanced loading states
+  // FIXED: Simplified loading states
   if (loading) {
     return <LoadingPage message="Loading authentication..." />;
   }
@@ -140,7 +132,7 @@ function AuthGuard({ children, router }: { children: React.ReactNode, router: an
     return <LoadingPage message="Navigating..." />;
   }
   
-  // Don't render children until auth check is complete
+  // Don't render children until auth check is complete for protected pages
   if (!loading && !user && !isPublicPage) {
     return <LoadingPage message="Redirecting to login..." />;
   }
