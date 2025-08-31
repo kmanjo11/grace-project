@@ -63,7 +63,7 @@ services:
       - SHORT_TERM_MEMORY_SIZE=${SHORT_TERM_MEMORY_SIZE:-10}
       - MEDIUM_TERM_MEMORY_EXPIRY=${MEDIUM_TERM_MEMORY_EXPIRY:-2592000}
       - MEMORY_THRESHOLD=${MEMORY_THRESHOLD:-0.7}
-      - OPENAI_API_KEY=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
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - MANGO_V3_BASE_URL=http://mango-v3-service:8080
       - MANGO_V3_PRIVATE_KEY_PATH=/app/keys/mango_private_key.pem  
     volumes:
@@ -76,7 +76,7 @@ services:
       - grace-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

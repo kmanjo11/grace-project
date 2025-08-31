@@ -19,9 +19,9 @@ services:
       - MANGO_V3_BASE_URL=${MANGO_V3_BASE_URL:-http://mango_v3_service:8080}
       - JWT_SECRET=${JWT_SECRET:-your-secret-key}
       - JWT_EXPIRES_IN=${JWT_EXPIRES_IN:-1d}
-      - CORS_ORIGINS=http://localhost:9000
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:9000
       - PIP_CACHE_DIR=/root/.cache/pip
-      - OPENAI_API_KEY=${OPENAI_API_KEY} 
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       - ./keys:/app/keys
       - ./data:/app/data
