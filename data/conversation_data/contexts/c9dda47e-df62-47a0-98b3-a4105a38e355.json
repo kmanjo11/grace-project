@@ -1,0 +1,37 @@
+{
+  "context_id": "c9dda47e-df62-47a0-98b3-a4105a38e355",
+  "user_id": "user_2",
+  "session_id": "default_user_2",
+  "created_at": 1756611393.039538,
+  "last_updated": 1756611424.578882,
+  "history": [
+    {
+      "role": "user",
+      "content": "like a lonng while",
+      "timestamp": 1756611393.039697,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "It looks like there might be a bit of context missing from your message. Could you please clarify or let me know what specific topic or question you're referring to? I'm here to help!",
+      "timestamp": 1756611396.1738932,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "regarding love",
+      "timestamp": 1756611421.589366,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Thanks for clarifying! When it comes to matters of love, whether it's moving on after heartbreak, nurturing a long-term relationship, or anything else related, the journey can indeed feel quite long and sometimes challenging. If you're looking for advice, personal anecdotes, or just a sympathetic ear on this topic, feel free to share more details or ask a specific question. I'm here to help however I can!",
+      "timestamp": 1756611424.5788102,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

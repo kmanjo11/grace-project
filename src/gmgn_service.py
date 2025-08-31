@@ -486,6 +486,22 @@ class GMGNService:
                 "error": {"message": str(e), "code": "POSITION_RETRIEVAL_ERROR"},
             }
 
+    def get_user_spot_positions(self, user_identifier: str) -> Dict[str, Any]:
+        """Retrieve user spot positions.
+
+        This is a thin wrapper around `get_user_leverage_positions` that requests
+        only spot positions via the `PositionType.SPOT` filter.
+
+        Args:
+            user_identifier: User's unique identifier
+
+        Returns:
+            Dict[str, Any]: Response containing spot positions and metadata
+        """
+        return self.get_user_leverage_positions(
+            user_identifier=user_identifier, position_type=PositionType.SPOT
+        )
+
     def _parse_natural_language_request(self, request: str) -> Dict[str, Any]:
         """
         Parse a natural language request to determine the appropriate function and parameters.

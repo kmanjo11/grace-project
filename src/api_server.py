@@ -1234,7 +1234,7 @@ async def get_limit_orders():
 
 @app.route("/api/user/leverage_positions", methods=["GET"])
 @jwt_required()
-def get_user_leverage_positions():
+async def get_user_leverage_positions():
     try:
         # Get the current user's ID from the JWT
         user_id = get_jwt_identity()
@@ -1242,8 +1242,11 @@ def get_user_leverage_positions():
         # Initialize the GMGN service
         gmgn_service = grace_instance.gmgn_service
 
-        # Retrieve leverage positions
-        leverage_positions = gmgn_service.get_user_leverage_positions(user_id)
+        # Retrieve leverage positions via executor to keep async compatibility
+        leverage_positions = await run_grace_sync(
+            gmgn_service.get_user_leverage_positions,
+            user_identifier=user_id,
+        )
 
         # Format the response
         formatted_response = {
@@ -1271,7 +1274,7 @@ def get_user_leverage_positions():
 
 @app.route("/api/user/spot_positions", methods=["GET"])
 @jwt_required()
-def get_user_spot_positions():
+async def get_user_spot_positions():
     try:
         # Get the current user's ID from the JWT
         user_id = get_jwt_identity()
@@ -1279,8 +1282,11 @@ def get_user_spot_positions():
         # Initialize the GMGN service
         gmgn_service = grace_instance.gmgn_service
 
-        # Retrieve spot positions
-        spot_positions = gmgn_service.get_user_spot_positions(user_id)
+        # Retrieve spot positions via executor
+        spot_positions = await run_grace_sync(
+            gmgn_service.get_user_spot_positions,
+            user_identifier=user_id,
+        )
 
         # Format the response
         formatted_response = {

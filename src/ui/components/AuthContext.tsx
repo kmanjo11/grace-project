@@ -107,6 +107,7 @@ interface User {
   id?: string;
   username?: string;
   email?: string;
+  displayName?: string;
   [key: string]: any;
 }
 
@@ -117,6 +118,7 @@ interface AuthContextType {
   loading: boolean;
   refreshToken: () => Promise<boolean>;
   isAuthenticated: boolean;
+  updateUser: (partial: Partial<User>) => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -226,8 +228,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Token is valid, update user data
         console.log('AuthContext: Token verified successfully');
         setIsAuthenticated(true);
-        setUser(response.data.user || {});
+        // Merge cached displayName if backend user payload lacks it to avoid UI fallback to username
+        const initialUser = { ...(response.data.user || {}) } as any;
+        try {
+          if (typeof window !== 'undefined' && !initialUser.displayName) {
+            const cachedDN = localStorage.getItem('displayName');
+            if (cachedDN) initialUser.displayName = cachedDN;
+          }
+        } catch {}
+        setUser(initialUser);
         setToken(token); // Ensure token state matches storage
+        // Fetch user settings ONLY if displayName is missing; avoids duplicate GETs with Settings page
+        try {
+          const hasDisplayName = !!(response.data.user && response.data.user.displayName);
+          if (!hasDisplayName) {
+            const settingsResp = await api.get(API_ENDPOINTS.SETTINGS.PROFILE);
+            const payload: any = settingsResp.data as any;
+            // Sanitize nested { success, settings } wrappers
+            const sanitize = (input: any): any => {
+              let current = input;
+              const seen = new Set<any>();
+              while (current && typeof current === 'object' && !Array.isArray(current) && !seen.has(current)) {
+                seen.add(current);
+                if ('success' in current && Object.keys(current).length >= 1) {
+                  const { success: _s, ...rest } = current as any;
+                  current = rest;
+                }
+                if (current && typeof current === 'object' && 'settings' in current && Object.keys(current).length <= 2) {
+                  current = (current as any).settings;
+                  continue;
+                }
+                break;
+              }
+              return current;
+            };
+            const flat = sanitize(payload?.settings ?? payload);
+            if (flat && flat.displayName) {
+              setUser(prev => ({ ...(prev || {}), displayName: flat.displayName }));
+              try { if (typeof window !== 'undefined') localStorage.setItem('displayName', flat.displayName); } catch {}
+            }
+          }
+        } catch (e) {
+          console.warn('AuthContext: Failed to load user settings for displayName merge');
+        }
         return true;
       }
 
@@ -465,6 +508,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setIsAuthenticated(false);
     SessionPersistence.clearSnapshot();
+    // Clear cached display name to avoid cross-user leakage
+    try { if (typeof window !== 'undefined') localStorage.removeItem('displayName'); } catch {}
+  };
+  
+  // Allow consumers to update parts of the user object (e.g., displayName)
+  const updateUser = (partial: Partial<User>) => {
+    setUser(prev => ({ ...(prev || {}), ...partial }));
   };
   
   // Clear auth state
@@ -494,7 +544,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout, 
       loading,
       refreshToken,
-      isAuthenticated
+      isAuthenticated,
+      updateUser
     }}>
       {children}
     </AuthContext.Provider>

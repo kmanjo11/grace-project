@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # Mango V3 HTTP service (microwavedcola)
+  mango-v3-service:
+    image: microwavedcola/mango-service-v3:latest
+    container_name: mango-v3-service
+    # Service listens on 3000 internally; no host publish (fronted by nginx proxy)
+    environment:
+      # All envs are optional per upstream README
+      # CLUSTER_URL: You can set a custom Solana RPC URL if desired
+      # MANGO_ACCOUNT: Public key of mango account (optional)
+      # PRIVATE_KEY_PATH defaults to /root/.config/solana/id.json
+      # PORT defaults to 3000
+      - NODE_ENV=production
+      - CLUSTER_URL=${SOLANA_RPC_URL}
+      - GROUP=mainnet.1
+    volumes:
+      # Mount Solana keypair JSON for signing (host path is relative to deployment/)
+      - ./keys/id.json:/root/.config/solana/id.json:ro
+    # No keypair mounted: public-data endpoints should work; signed ops will be unavailable
+    networks:
+      - grace-network
+    restart: unless-stopped
+
+  # Nginx reverse proxy to map /api/* -> /* and forward to mango-v3-service:3000
+  mango-proxy:
+    image: nginx:alpine
+    container_name: mango-v3-proxy
+    depends_on:
+      - mango-v3-service
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx/mango.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - grace-network
+    restart: unless-stopped
+
+networks:
+  grace-network:
+    external: true
+    name: grace-network

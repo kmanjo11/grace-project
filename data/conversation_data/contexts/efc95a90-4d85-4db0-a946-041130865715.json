@@ -1,0 +1,25 @@
+{
+  "context_id": "efc95a90-4d85-4db0-a946-041130865715",
+  "user_id": "user_2",
+  "session_id": "b58185d6-7983-4703-b006-b4a13ba9c3ba",
+  "created_at": 1756611983.35479,
+  "last_updated": 1756611984.963882,
+  "history": [
+    {
+      "role": "user",
+      "content": "im good for now",
+      "timestamp": 1756611983.354871,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Alright! If you think of anything else or need assistance later, just let me know. Have a great day!",
+      "timestamp": 1756611984.956927,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

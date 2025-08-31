@@ -1,0 +1,94 @@
+Grace Dev Run Guide (3-Terminal Workflow)
+
+This guide lets you run:
+- Terminal A: Python backend (port 9000)
+- Terminal B: UI with pnpm (port 3000)
+- Terminal C: Docker external services (Mango proxy/service on 8080, Redis on 6379)
+
+Assumptions
+- macOS + zsh
+- You created deployment/keys/id.json (Solana JSON keypair) and it’s valid
+- Docker Desktop is running
+
+-------------------------------------------------------------------------------
+Terminal A — Backend (local Python)
+-------------------------------------------------------------------------------
+# Navigate to the project root in this terminal, then run:
+
+# Core env (safe defaults; override as needed)
+export GRACE_ENV=development
+export LOG_LEVEL=debug
+export SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"   # or your Helius URL
+export MANGO_V3_BASE_URL="http://localhost:8080"              # points to docker nginx proxy
+# Optional: supply if your backend features need it
+# export OPENAI_API_KEY=sk-...
+
+# Run backend
+python -m src.run_server
+
+# Health check (in another shell)
+curl -sS http://localhost:9000/api/health | jq .
+
+-------------------------------------------------------------------------------
+Terminal B — UI (local pnpm)
+-------------------------------------------------------------------------------
+# From project root (or cd src/ui), then run:
+
+# UI env for production-style Next.js run
+export NODE_ENV=production
+# Next.js runtime/public envs
+export NEXT_PUBLIC_API_URL="/api"                              # your UI’s base API path
+export NEXT_PUBLIC_MANGO_V3_BASE_URL="http://localhost:8080"   # same proxy as backend
+# Optional compatibility (if code references VITE_* envs)
+export VITE_API_URL="/api"
+export VITE_MANGO_V3_BASE_URL="http://localhost:8080"
+
+# Build and start Next.js
+cd src/ui
+pnpm install
+pnpm build
+pnpm next start -p 3000
+
+# UI will be at http://localhost:3000
+
+-------------------------------------------------------------------------------
+Terminal C — External Services (Docker)
+-------------------------------------------------------------------------------
+# Run Mango v3 service + Nginx proxy + Redis using base + override compose files
+# This uses deployment/docker-compose.override.yml which mounts deployment/keys/id.json
+
+docker compose \
+  -f deployment/docker-compose.yml \
+  -f deployment/docker-compose.override.yml \
+  up -d redis mango-v3-service mango-proxy
+
+# Tail Mango service logs
+docker compose \
+  -f deployment/docker-compose.yml \
+  -f deployment/docker-compose.override.yml \
+  logs -f --tail=200 mango-v3-service
+
+# Quick checks
+curl -sS http://localhost:8080/api/markets | head
+redis-cli -h 127.0.0.1 -p 6379 ping   # expect PONG
+
+-------------------------------------------------------------------------------
+Notes & Tips
+-------------------------------------------------------------------------------
+- Keypair expectations:
+  - Mango REST (container) signs with deployment/keys/id.json (JSON array), mounted read-only.
+  - Your Python PEM (deployment/keys/mango_private_key.pem) is not used by the REST service.
+- If you later run the backend in Docker instead of locally, it already points to
+  http://mango-v3-service:8080 via environment in deployment/docker-compose.yml.
+- If SOLANA_RPC_URL is not set locally, compose may inject a default for containers,
+  but the local backend uses your shell’s exported value.
+- To stop services:
+  docker compose -f deployment/docker-compose.yml -f deployment/docker-compose.override.yml down
+
+-------------------------------------------------------------------------------
+Troubleshooting
+-------------------------------------------------------------------------------
+- If /api/markets returns 404, wait for service to finish initializing (check logs).
+- Ensure GROUP=mainnet.1 is present in deployment/docker-compose.override.yml for Mango.
+- Ensure deployment/keys/id.json exists and has chmod 600.
+- Ensure MANGO_V3_BASE_URL is http://localhost:8080 for local backend/UI.

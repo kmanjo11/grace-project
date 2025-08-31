@@ -1,12 +1,10 @@
 {
   "user_id": "user_2",
   "session_id": "default_user_2",
-  "context_id": "093b5b3b-7b21-4ed6-9324-5a1bee076771",
-  "created_at": 1756601595.9932008,
-  "last_updated": 1756607816.63975,
+  "context_id": "6639cd13-a5fc-4150-988a-5fcaa60f30b9",
+  "created_at": 1756613009.791476,
+  "last_updated": 1756613015.4905531,
   "state": "active",
-  "active_topics": [
-    "wallet"
-  ],
-  "message_count": 20
+  "active_topics": [],
+  "message_count": 2
 }

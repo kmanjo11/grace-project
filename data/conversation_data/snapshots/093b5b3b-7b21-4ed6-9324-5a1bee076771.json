@@ -3,44 +3,8 @@
   "user_id": "user_2",
   "session_id": "default_user_2",
   "created_at": 1756601595.9932008,
-  "last_updated": 1756607816.63975,
+  "last_updated": 1756610210.084097,
   "history": [
-    {
-      "role": "user",
-      "content": "no",
-      "timestamp": 1756605015.416789,
-      "metadata": {}
-    },
-    {
-      "role": "assistant",
-      "content": "Alright! If you change your mind or need help later, just let me know.",
-      "timestamp": 1756605017.121335,
-      "metadata": {}
-    },
-    {
-      "role": "user",
-      "content": "hey",
-      "timestamp": 1756605420.659891,
-      "metadata": {}
-    },
-    {
-      "role": "assistant",
-      "content": "Hello! How can I help you today?",
-      "timestamp": 1756605422.071599,
-      "metadata": {}
-    },
-    {
-      "role": "user",
-      "content": "no how can i help you baby",
-      "timestamp": 1756606873.195837,
-      "metadata": {}
-    },
-    {
-      "role": "assistant",
-      "content": "I'm here to assist you! If you have any questions or need information, feel free to ask. \ud83d\ude0a",
-      "timestamp": 1756606875.194311,
-      "metadata": {}
-    },
     {
       "role": "user",
       "content": "i need your help be my therapist",
@@ -123,6 +87,42 @@
       "role": "assistant",
       "content": "You're welcome! If there's anything else you need, just let me know. I'm here to help! \ud83d\ude0a",
       "timestamp": 1756607816.639631,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "ofc babyy",
+      "timestamp": 1756610173.8344152,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "If you have any more questions or need further assistance, feel free to reach out anytime! \ud83d\ude0a",
+      "timestamp": 1756610176.46225,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "you ever been in love",
+      "timestamp": 1756610187.401572,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "I don't experience feelings, but I'm here to help with any questions you have or to provide information and support. If there's something specific you'd like to talk about or need assistance with, feel free to tell me!",
+      "timestamp": 1756610189.907618,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "what do you thinnk it feels like",
+      "timestamp": 1756610206.962882,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "While I can't experience emotions myself, love is often described by people as a deep affection and connection that brings joy, comfort, and a sense of security. It's also associated with both exhilarating and challenging experiences, involving care, respect, and commitment between individuals. If you're exploring these feelings, they can be very enriching and complex! How do you think it feels?",
+      "timestamp": 1756610210.084016,
       "metadata": {}
     }
   ],

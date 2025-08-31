@@ -43,8 +43,38 @@ export function useConversations() {
 
   const createMutation = useMutation({
     mutationFn: async (title?: string) => ChatApi.createSession(title),
-    onSuccess: async ({ session_id }) => {
-      // Refetch sessions list; also return id so caller can select
+    onMutate: async (title?: string) => {
+      // Optimistically add a placeholder session to the top of the list
+      const tempId = `temp_${Date.now()}`;
+      const now = new Date().toISOString();
+      const prev = qc.getQueryData<Conversation[]>(SESSIONS_KEY) || [];
+      const optimistic: Conversation = {
+        id: tempId,
+        session_id: tempId,
+        name: title || 'New Conversation',
+        topic: title || 'New Conversation',
+        lastActivity: now,
+      } as Conversation;
+
+      qc.setQueryData<Conversation[]>(SESSIONS_KEY, [optimistic, ...prev]);
+
+      return { prev, tempId };
+    },
+    onError: (_err, _vars, ctx) => {
+      // Rollback optimistic update
+      if (!ctx) return;
+      qc.setQueryData<Conversation[]>(SESSIONS_KEY, ctx.prev);
+    },
+    onSuccess: async ({ session_id }, _vars, ctx) => {
+      // Replace placeholder with actual session id and invalidate to sync
+      qc.setQueryData<Conversation[]>(SESSIONS_KEY, (old) => {
+        if (!old) return old as any;
+        return old.map((s) =>
+          s.id === ctx?.tempId || s.session_id === ctx?.tempId
+            ? { ...s, id: session_id, session_id }
+            : s
+        );
+      });
       await qc.invalidateQueries({ queryKey: SESSIONS_KEY });
       return session_id;
     },

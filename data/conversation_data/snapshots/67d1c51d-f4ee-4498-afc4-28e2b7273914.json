@@ -1,0 +1,25 @@
+{
+  "context_id": "67d1c51d-f4ee-4498-afc4-28e2b7273914",
+  "user_id": "user_2",
+  "session_id": "default_user_2",
+  "created_at": 1756611840.572573,
+  "last_updated": 1756611841.970758,
+  "history": [
+    {
+      "role": "user",
+      "content": "thank you",
+      "timestamp": 1756611840.572662,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "You're welcome! If there's anything else you need, just let me know.",
+      "timestamp": 1756611841.964674,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

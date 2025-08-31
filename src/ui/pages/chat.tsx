@@ -523,7 +523,7 @@ export default function Chat() {
           <div className="flex items-center justify-between border-b border-red-800/60 px-4 py-2 text-xs text-red-300/80">
             <div>
               <span className="mr-2">Active session:</span>
-              <code className="bg-red-900/30 px-2 py-0.5 rounded">{(user && user.username) ? user.username : (sessionId || 'none')}</code>
+              <code className="bg-red-900/30 px-2 py-0.5 rounded">{(user && (user.displayName || user.username)) ? (user.displayName || user.username) : (sessionId || 'none')}</code>
             </div>
             {PERSIST_DISABLED ? (
               <span className="text-yellow-400">persistence: off</span>

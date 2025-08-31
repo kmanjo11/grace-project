@@ -232,7 +232,7 @@ async def create_session():
             "lastActivity": timestamp,  # For React frontend
             "name": "New Chat",  # For React frontend
             "topic": "New Chat",  # For compatibility
-            "messages": [],  # Empty messages array
+            "messages": [],  # Only used in in-memory fallback; DO NOT store lists in Redis hashes
         }
 
         # Store session data based on storage availability
@@ -256,7 +256,9 @@ async def create_session():
         else:
             # Use Redis
             await redis.sadd(f"user:{user_id}:sessions", session_id)
-            await redis.hmset_dict(f"chat:{session_id}:meta", session_data)
+            # Redis hashes only accept string/number values; exclude list fields like 'messages'
+            meta_for_redis = {k: v for k, v in session_data.items() if k != "messages"}
+            await redis.hset(f"chat:{session_id}:meta", mapping=meta_for_redis)
 
         return jsonify({"session_id": session_id, "id": session_id})
     except Exception as e:
@@ -379,7 +381,7 @@ async def handle_chat_message_with_session(user_id, message, session_id=None):
                 "lastActivity": timestamp,
                 "name": "New Chat",
                 "topic": "New Chat",
-                "messages": [],
+                "messages": [],  # For in-memory only
             }
 
             # Store session data based on storage availability
@@ -403,7 +405,9 @@ async def handle_chat_message_with_session(user_id, message, session_id=None):
             else:
                 # Use Redis
                 await redis.sadd(f"user:{user_id}:sessions", session_id)
-                await redis.hmset_dict(f"chat:{session_id}:meta", session_data)
+                # Exclude list fields like 'messages' when writing to Redis hashes
+                meta_for_redis = {k: v for k, v in session_data.items() if k != "messages"}
+                await redis.hset(f"chat:{session_id}:meta", mapping=meta_for_redis)
 
         # Create user message with appropriate format
         user_message = {"sender": "user", "text": message, "timestamp": timestamp}
