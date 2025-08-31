@@ -123,7 +123,7 @@ fi
 echo -e "\n${GREEN}=== Grace Project is now running! ===${NC}"
 echo -e "Access the application at:"
 echo -e "  Frontend: ${YELLOW}http://localhost:3000${NC}"
-echo -e "  Backend API: ${YELLOW}http://localhost:8000${NC}"
+echo -e "  Backend API: ${YELLOW}http://localhost:9000${NC}"
 echo -e "\nTo view logs:"
 echo -e "  ${YELLOW}docker-compose logs -f${NC}"
 echo -e "\nTo stop the application:"

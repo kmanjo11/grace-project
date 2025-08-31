@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
+import { api, API_ENDPOINTS } from '../api/apiClient';
 
 export default function Forgot() {
   const [email, setEmail] = useState('');
@@ -11,20 +12,16 @@ export default function Forgot() {
 
   const handleForgot = async () => {
     try {
-      const res = await fetch('/api/auth/forgot-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data?.message || 'Request failed');
+      const res = await api.post(API_ENDPOINTS.AUTH.FORGOT_PASSWORD, { email });
+      if (!res.success) {
+        setError(res.error || (res.data as any)?.message || 'Request failed');
         return;
       }
+      setError('');
       setMessage('Check your inbox for password reset instructions.');
     } catch (err) {
       console.error('Forgot error:', err);
-      setError('Connection error');
+      setError(err instanceof Error ? err.message : 'Connection error');
     }
   };
 

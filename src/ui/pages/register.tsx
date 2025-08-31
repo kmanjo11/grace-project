@@ -19,17 +19,14 @@ export default function Register() {
   const router = useRouter();
   const { login, isAuthenticated, user } = useAuth();
 
-  // Effect to handle navigation after successful registration and authentication
+  // After successful registration, rely on AuthGuard for navigation to avoid races
   useEffect(() => {
     if (registerSuccess && isAuthenticated && user) {
-      const timer = setTimeout(() => {
-        console.log('Registration and authentication confirmed, navigating to /chat');
-        router.push('/chat');
-      }, 1000); // Slightly longer delay for registration
-
-      return () => clearTimeout(timer);
+      console.log('Registration and authentication confirmed; navigation handled by AuthGuard');
+      // Optionally set a one-time flag similar to login, if desired
+      try { sessionStorage.setItem('GRACE_POST_LOGIN_REDIRECT', '1'); } catch {}
     }
-  }, [registerSuccess, isAuthenticated, user, router]);
+  }, [registerSuccess, isAuthenticated, user]);
 
   const handleRegister = async () => {
     setIsSubmitting(true);
@@ -64,23 +61,20 @@ export default function Register() {
         phone
       });
 
-      if (response.success && response.data?.token) {
+      if (response.success) {
         // Show success toast
         toast.success('Registration successful! Redirecting...', {
           position: 'bottom-right',
           autoClose: 2000,
         });
 
-        // Store token directly as backup
-        localStorage.setItem('grace_token', response.data.token);
-
         // Use the AuthContext to manage login state - await completion
-        await login(response.data);
+        await login(response.data || {});
 
         // Mark registration as successful - navigation will happen via useEffect
         setRegisterSuccess(true);
       } else {
-        const errorMsg = response.data?.message || 'Registration failed';
+        const errorMsg = response.error || response.data?.message || 'Registration failed';
         toast.error(errorMsg, { position: 'bottom-right' });
         setError(errorMsg);
       }

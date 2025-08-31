@@ -45,10 +45,7 @@ export default function Login() {
       if (success) {
         console.log('Login successful, token received:', data);
         
-        // Store token directly here as backup if present (api client may have already stored)
-        if (data?.token) {
-          localStorage.setItem('grace_token', data.token);
-        }
+        // Do not write token directly; persistence handled by api client/AuthContext
         
         // Show success toast
         toast.success('Login successful! Redirecting...', {

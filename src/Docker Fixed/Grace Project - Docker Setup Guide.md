@@ -101,7 +101,7 @@ You should see all services (frontend, backend, redis, mango-v3-service) in the 
 ## Accessing the Application
 
 - **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:8000
+- **Backend API**: http://localhost:9000
 
 ## Troubleshooting
 
@@ -157,7 +157,7 @@ The Docker setup consists of four main services:
 
 1. **Frontend (React)**: Serves the UI on port 3000, built with Vite and React.
 
-2. **Backend (Python)**: Runs the API server on port 8000, built with Quart/Flask.
+2. **Backend (Python)**: Runs the API server on port 9000, built with Quart/Flask.
 
 3. **Redis**: Provides caching and session storage for the backend.
 

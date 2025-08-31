@@ -21,12 +21,15 @@ const REFRESH_TOKEN_KEY = 'grace_refresh_token';
 const TOKEN_VERIFY_INTERVAL = 60000; // Check token validity every 60 seconds
 
 // Improved session persistence utility to avoid conflicts with form state
+const PERSIST_DISABLED = (process.env.NEXT_PUBLIC_DISABLE_STATE_PERSIST || '').toString() === '1' || (process.env.NEXT_PUBLIC_DISABLE_STATE_PERSIST || '').toString().toLowerCase() === 'true';
+
 const SessionPersistence = {
   STORAGE_KEY: 'GRACE_SESSION_SNAPSHOT',
   
   // Safely capture session snapshot with minimal data to avoid interference
   captureSnapshot(user: User | null, token: string | null) {
     try {
+      if (PERSIST_DISABLED) return;
       if (!user || !token) {
         this.clearSnapshot();
         return;
@@ -47,7 +50,9 @@ const SessionPersistence = {
 
       // Use sessionStorage instead of localStorage to avoid persisting between browser sessions
       // This helps prevent stale data from affecting forms on future visits
-      sessionStorage.setItem(this.STORAGE_KEY, JSON.stringify(snapshot));
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(this.STORAGE_KEY, JSON.stringify(snapshot));
+      }
     } catch (error) {
       console.warn('Failed to capture session snapshot', error);
       // Silently fail - don't let snapshot errors affect the application
@@ -57,7 +62,8 @@ const SessionPersistence = {
   // Retrieve session snapshot with validation
   retrieveSnapshot(): { user: User | null, token: string | null } {
     try {
-      const snapshotStr = sessionStorage.getItem(this.STORAGE_KEY);
+      if (PERSIST_DISABLED) return { user: null, token: null };
+      const snapshotStr = typeof window !== 'undefined' ? sessionStorage.getItem(this.STORAGE_KEY) : null;
       if (!snapshotStr) return { user: null, token: null };
 
       const snapshot = JSON.parse(snapshotStr);
@@ -87,7 +93,10 @@ const SessionPersistence = {
   // Clear session snapshot
   clearSnapshot() {
     try {
-      sessionStorage.removeItem(this.STORAGE_KEY);
+      if (PERSIST_DISABLED) return;
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem(this.STORAGE_KEY);
+      }
     } catch (error) {
       console.warn('Failed to clear session snapshot', error);
     }
@@ -121,6 +130,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(getAuthToken());
   // Add flag to prevent verification immediately after login
   const [skipNextVerification, setSkipNextVerification] = useState<boolean>(false);
+  // Grace window to avoid immediate unauth flips when token is briefly missing
+  const noTokenGraceUntil = useRef<number>(0);
   
   // Update token state whenever auth state changes
   useEffect(() => {
@@ -140,6 +151,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let isMounted = true;
     
     const verifyOnMount = async () => {
+      // Start short grace on mount to tolerate brief token propagation
+      noTokenGraceUntil.current = Date.now() + 1500;
       // Skip initial verification if there's no token
       if (typeof window !== 'undefined' && !getAuthToken()) {
         console.log('AuthContext: No token found on mount, skipping verification');
@@ -182,7 +195,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // If no token exists, there's nothing to verify
     const token = getAuthToken();
     if (!token) {
-      console.log('AuthContext: No token to verify');
+      const withinGrace = Date.now() < noTokenGraceUntil.current;
+      console.log('AuthContext: No token to verify', { withinGrace });
+      if (withinGrace) {
+        // Do not flip auth state during grace; just stop loading
+        setLoading(false);
+        return false;
+      }
+      // Outside grace: clear auth state
       setIsAuthenticated(false);
       setUser(null);
       setLoading(false);
@@ -249,10 +269,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     
     // Store in local storage for potential debugging
     try {
-      const authLogs = JSON.parse(localStorage.getItem('auth_logs') || '[]');
-      authLogs.push(logEntry);
-      // Keep only last 50 log entries
-      localStorage.setItem('auth_logs', JSON.stringify(authLogs.slice(-50)));
+      if (!PERSIST_DISABLED) {
+        const authLogs = JSON.parse((typeof window !== 'undefined' ? localStorage.getItem('auth_logs') : '[]') || '[]');
+        authLogs.push(logEntry);
+        // Keep only last 50 log entries
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('auth_logs', JSON.stringify(authLogs.slice(-50)));
+        }
+      }
     } catch (e) {
       console.error('Failed to log authentication event', e);
     }
@@ -313,26 +337,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Use the dedicated refresh token endpoint
-      const response = await api.post<{token: string, username?: string}>(API_ENDPOINTS.AUTH.REFRESH_TOKEN, {});
-      
-      if (!response.success || !response.data?.token) {
-        throw new Error('Token refresh failed: Invalid response');
+      const response = await api.post<{ token?: string; username?: string }>(API_ENDPOINTS.AUTH.REFRESH_TOKEN, {});
+
+      if (!response.success) {
+        throw new Error('Token refresh failed: Unsuccessful response');
       }
-      
-      const { token, username } = response.data;
-      
+
+      // The API client persists token automatically if present in response body.
+      // Read the current token from storage as the source of truth.
+      const newToken = getAuthToken() || response.data?.token || null;
+      if (!newToken) {
+        throw new Error('Token refresh failed: No token available after refresh');
+      }
+
       // Determine storage type based on where the current token is stored
       const inLocalStorage = localStorage.getItem(TOKEN_KEY) !== null;
-      const rememberMe = inLocalStorage; // If in localStorage, user wanted persistent login
-      
-      // Store the new token with the same preference
-      await storeAuthToken(token, rememberMe);
-      
-      // Update local token state
-      setToken(token);
+      const rememberMe = inLocalStorage;
+
+      // Ensure storage is consistent with previous preference if we obtained token via response
+      if (response.data?.token) {
+        await storeAuthToken(newToken, rememberMe);
+      }
+
+      // Update local auth state
+      setToken(newToken);
       setIsAuthenticated(true);
-      
+
       // Optional: Update username if provided
+      const username = response.data?.username;
       if (username) {
         setUser(prevUser => ({ ...prevUser, username }));
       }

@@ -4,11 +4,11 @@
  * Provides standardized token management compatible with the existing auth-utils.js system.
  */
 
-// Token storage constants - exported for consistency across the codebase
-export const TOKEN_KEY = 'grace_token';
+// Token storage constants - unified single key in localStorage
+export const TOKEN_KEY = 'grace_auth_token';
 export const TOKEN_EXPIRY_KEY = 'grace_token_expiry';
-// Backward/parallel compatibility: some modules may use this alternate key
-const ALT_TOKEN_KEY = 'grace_auth_token';
+// Legacy key kept only for clearing during migration
+const LEGACY_TOKEN_KEY = 'grace_token';
 
 // Simple mutex to prevent race conditions
 let tokenMutex = Promise.resolve();
@@ -30,19 +30,16 @@ export async function storeAuthToken(token: string, rememberMe: boolean = false)
   });
   
   try {
-    // Clear both to prevent any token conflicts
+    // Clear any existing tokens to prevent conflicts
     clearAuthTokens();
-    
-    // Store in the appropriate location
-    const storage = rememberMe ? localStorage : sessionStorage;
-    // Write under both keys for compatibility
-    storage.setItem(TOKEN_KEY, token);
-    storage.setItem(ALT_TOKEN_KEY, token);
-    
-    // Set expiry date (24 hours from now)
+
+    // Unified: always persist in localStorage under the single canonical key
+    localStorage.setItem(TOKEN_KEY, token);
+
+    // Set expiry date (24 hours from now) in localStorage
     const expiry = new Date();
     expiry.setHours(expiry.getHours() + 24);
-    storage.setItem(TOKEN_EXPIRY_KEY, expiry.toISOString());
+    localStorage.setItem(TOKEN_EXPIRY_KEY, expiry.toISOString());
   } finally {
     releaseLock!();
   }
@@ -54,14 +51,8 @@ export async function storeAuthToken(token: string, rememberMe: boolean = false)
  */
 export function getAuthToken(): string | null {
   if (typeof window !== 'undefined') {
-    // Prefer sessionStorage for current session, then localStorage
-    // Check both primary and alternate keys
-    return (
-      sessionStorage.getItem(TOKEN_KEY) ||
-      sessionStorage.getItem(ALT_TOKEN_KEY) ||
-      localStorage.getItem(TOKEN_KEY) ||
-      localStorage.getItem(ALT_TOKEN_KEY)
-    );
+    // Unified: read only the canonical key from localStorage
+    return localStorage.getItem(TOKEN_KEY);
   }
   return null;
 }
@@ -71,7 +62,7 @@ export function getAuthToken(): string | null {
  */
 export function getTokenExpiry(): Date | null {
   if (typeof window !== 'undefined') {
-    const expiryStr = localStorage.getItem(TOKEN_EXPIRY_KEY) || sessionStorage.getItem(TOKEN_EXPIRY_KEY);
+    const expiryStr = localStorage.getItem(TOKEN_EXPIRY_KEY);
     return expiryStr ? new Date(expiryStr) : null;
   }
   return null;
@@ -90,12 +81,12 @@ export function isTokenExpired(): boolean {
  */
 export function clearAuthTokens(): void {
   if (typeof window !== 'undefined') {
-    // Clear from both storage locations to be safe
+    // Remove canonical and legacy keys from both storages (migration-safe)
     localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(ALT_TOKEN_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     localStorage.removeItem(TOKEN_EXPIRY_KEY);
     sessionStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(ALT_TOKEN_KEY);
+    sessionStorage.removeItem(LEGACY_TOKEN_KEY);
     sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
   }
 }

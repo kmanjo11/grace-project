@@ -1,9 +1,11 @@
 This Grace project has 2 docker files... one in deployment, and one in the root folder. 
 There are 2 package.json files, one in root folder .. and another in src/ui folder. 
-The backend runs at port 8000 and the frontend runs at port 3000. 
+The backend runs at port 9000 and the frontend runs at port 3000. 
 The front end dockerfile is in the root folder, and the backend dockerfile is in deployment folder. 
 The root docker however is based on /src (types and services) and src/ui folder, and the deployment dockerfile is based on the root folder. 
-Grace Project is ran mainly out of Dockerfile in Deployment. 
+Grace Project is ran mainly out of Dockerfile in Deployment this is only when final (when we discuss assume im running pnpm next starts with python in sep terminal). 
 Context of file should always be put in perspective prior to making edits. 
 Understand the contextual relalationship between dockerfile and dockercompose file in deployment folder. 
+in testing i am running python3 backend and pnpm start for the UI. these run in 2 seperate terminals
+
 

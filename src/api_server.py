@@ -20,6 +20,7 @@ from typing import Dict, Any, Optional
 import jwt
 from quart import Quart, request, jsonify, current_app, send_file, Response
 from quart_cors import cors
+from logging.handlers import TimedRotatingFileHandler
 
 # Configure logging
 logging.basicConfig(
@@ -27,6 +28,26 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("GraceAPI")  # Named logger for consistency with GraceCore
+
+# Client log configuration (rotating daily files with retention)
+CLIENT_LOG_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'logs'))
+os.makedirs(CLIENT_LOG_DIR, exist_ok=True)
+
+client_logger = logging.getLogger("GraceClient")
+client_logger.setLevel(logging.INFO)
+
+def _ensure_client_log_handler():
+    # Avoid adding multiple handlers in hot-reload scenarios
+    if any(isinstance(h, TimedRotatingFileHandler) for h in client_logger.handlers):
+        return
+    log_file = os.path.join(CLIENT_LOG_DIR, 'client.log')
+    handler = TimedRotatingFileHandler(log_file, when='D', interval=1, backupCount=7, encoding='utf-8', utc=True)
+    formatter = logging.Formatter('%(asctime)s %(message)s')
+    handler.setFormatter(formatter)
+    client_logger.addHandler(handler)
+    # Also emit to stderr for visibility in dev
+    if not any(isinstance(h, logging.StreamHandler) for h in client_logger.handlers):
+        client_logger.addHandler(logging.StreamHandler())
 
 # Custom jwt_required decorator for Quart
 def jwt_required():
@@ -45,7 +66,8 @@ def jwt_required():
                 
             # Verify token using our existing verify_jwt_token function
             result = verify_jwt_token(token)
-            if not result.get("valid", False):
+            # verify_jwt_token returns a dict with 'success' boolean
+            if not result.get("success", False):
                 return jsonify({"error": "Invalid or expired token"}), 401
                 
             # Set user_id in request context for get_jwt_identity function
@@ -84,7 +106,13 @@ grace_instance = GraceCore(
 
 # Initialize Quart app with static file serving
 app = Quart(__name__, static_folder='/app/static', static_url_path='')
-app = cors(app, allow_origin=["http://localhost:3000", "http://127.0.0.1:3000"], allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
+app = cors(
+    app,
+    allow_origin=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+    allow_credentials=True,
+)
 
 # Register chat blueprint
 app.register_blueprint(chat_blueprint)
@@ -364,7 +392,9 @@ async def load_sessions():
 
 
 # Refresh Token Endpoint
+# Support both legacy and standardized paths to work across local and Docker setups
 @app.route("/auth/refresh-token", methods=["POST"])
+@app.route("/api/auth/refresh-token", methods=["POST"])
 async def refresh_token():
     """Endpoint to refresh authentication token"""
     try:
@@ -535,7 +565,7 @@ async def forgot_password():
         user_id = user["user_id"]
 
         # Generate reset URL
-        base_url = request.headers.get("Origin", "http://localhost:8000")
+        base_url = request.headers.get("Origin", "http://localhost:9000")
         reset_url = f"{base_url}/reset-password.html"
 
         # Initiate recovery
@@ -1076,7 +1106,18 @@ async def process_chat_message():  # Renamed from process_message
     try:
         # First, integrate with the chat sessions system
         # Import here to avoid circular imports
-        from chat_sessions_quart import handle_chat_message_with_session
+        try:
+            from src.chat_sessions_quart import (
+                handle_chat_message_with_session,
+                IN_MEMORY_STORAGE as CSQ_IN_MEMORY_STORAGE,
+                redis as CSQ_REDIS,
+            )
+        except ImportError:
+            from chat_sessions_quart import (
+                handle_chat_message_with_session,
+                IN_MEMORY_STORAGE as CSQ_IN_MEMORY_STORAGE,
+                redis as CSQ_REDIS,
+            )
 
         # Register the message with the chat sessions system
         session_result = await handle_chat_message_with_session(
@@ -1117,16 +1158,12 @@ async def process_chat_message():  # Renamed from process_message
             # session_result is a dictionary, not an object, so check with get()
             if session_result.get("using_fallback", False):
                 # Using fallback in-memory storage
-                from chat_sessions_quart import IN_MEMORY_STORAGE
-
-                if session_id in IN_MEMORY_STORAGE["messages"]:
-                    IN_MEMORY_STORAGE["messages"][session_id].append(bot_response)
+                if session_id in CSQ_IN_MEMORY_STORAGE["messages"]:
+                    CSQ_IN_MEMORY_STORAGE["messages"][session_id].append(bot_response)
             else:
                 # Try to use Redis
-                from chat_sessions_quart import redis
-
-                if redis:
-                    await redis.rpush(
+                if CSQ_REDIS:
+                    await CSQ_REDIS.rpush(
                         f"chat:{session_id}:messages", json.dumps(bot_response)
                     )
         except Exception as e:
@@ -3528,22 +3565,70 @@ async def static_files(path):
 async def startup():
     """Initialize components before serving."""
     global active_sessions
-    # Load sessions asynchronously
-    active_sessions = await load_sessions()
-    logger.info("Loaded %d sessions from persistent storage", len(active_sessions))
+    # Enforce fresh auth login on every server boot: do NOT restore prior sessions
+    active_sessions = {}
+    logger.info("Session persistence disabled on startup: cleared active sessions to require fresh login")
 
-    # Start periodic session saving task
-    app.background_tasks.add(asyncio.create_task(periodic_session_save()))
-    logger.info("Session persistence initialized with asyncio")
+    # Optionally: do not schedule periodic persistence when enforcing fresh login
+    # If you still want runtime saves for debugging, re-enable the line below
+    # app.background_tasks.add(asyncio.create_task(periodic_session_save()))
+    _ensure_client_log_handler()
 
 
 @app.after_serving
 async def shutdown():
     """Clean up resources on shutdown."""
-    # Save sessions before server stops
-    logger.info("Saving sessions before shutdown...")
-    await save_sessions()
-    logger.info("Saved %d sessions on shutdown", len(active_sessions))
+    # Session persistence disabled: do not save sessions on shutdown
+    logger.info("Session persistence disabled: not saving sessions on shutdown")
+
+@app.route("/api/logs", methods=["GET"])
+async def get_client_logs():
+    """Lightweight no-op endpoint to satisfy frontend log polling in dev."""
+    return jsonify({"success": True})
+
+@app.route("/api/logs", methods=["POST"])
+async def receive_client_logs():
+    """Receive batched client logs from the frontend and write to rotating file.
+    Accepts either an object { entries: LogEntry[] } or a raw array LogEntry[].
+    Each entry is appended as a compact JSON line for easy parsing.
+    """
+    try:
+        payload = await request.get_json()
+        if payload is None:
+            return jsonify({"success": False, "message": "Invalid JSON"}), 400
+
+        entries = payload.get("entries") if isinstance(payload, dict) else payload
+        if not isinstance(entries, list):
+            return jsonify({"success": False, "message": "Expected an array of entries"}), 400
+
+        # Add server-side context to each entry
+        ip_address = request.headers.get("X-Forwarded-For", request.remote_addr)
+        user_agent = request.headers.get("User-Agent", "Unknown")
+
+        count = 0
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            record = {
+                **e,
+                "_server": {
+                    "ts": datetime.utcnow().isoformat() + "Z",
+                    "ip": ip_address,
+                    "ua": user_agent,
+                    "path": request.path,
+                },
+            }
+            try:
+                client_logger.info(json.dumps(record, ensure_ascii=False))
+                count += 1
+            except Exception:
+                # Ensure one bad entry doesn't break the batch
+                pass
+
+        return jsonify({"success": True, "written": count})
+    except Exception as e:
+        logger.error(f"Error receiving client logs: {e}", exc_info=True)
+        return jsonify({"success": False, "message": "Failed to persist logs"}), 500
 
 
 if __name__ == "__main__":

@@ -69,6 +69,8 @@ class StatePersistenceManager {
   private static MAX_SNAPSHOT_AGE = 24 * 60 * 60 * 1000; // 24 hours
   private static STORAGE_VERSION = 1; // Used for schema migrations
   private static MAX_STORAGE_SIZE = 4 * 1024 * 1024; // 4MB max size (localStorage is typically 5MB)
+  private static LAST_WARN_AT: number = 0;
+  private static WARN_COOLDOWN_MS = 2000; // throttle repeating warnings
 
   // Advanced logging mechanism
   private static log(message: string, level: 'info' | 'warn' | 'error' = 'info') {
@@ -327,7 +329,14 @@ class StatePersistenceManager {
   static retrieveSnapshot(): DynamicStateSnapshot | null {
     // We don't lock for reads, but we do check if there's a write in progress
     if (StateOperationLock.isLocked('state_snapshot')) {
-      this.log('State snapshot is currently being updated, using existing snapshot', 'warn');
+      const now = Date.now();
+      if (now - this.LAST_WARN_AT > this.WARN_COOLDOWN_MS) {
+        this.log('State snapshot is currently being updated, using existing snapshot', 'warn');
+        this.LAST_WARN_AT = now;
+      } else {
+        // Downgrade to debug-level noise if within cooldown
+        console.debug('[StatePersistence:DEBUG] snapshot update in progress (throttled)');
+      }
     }
     
     try {
@@ -407,7 +416,23 @@ class StatePersistenceManager {
     if (snapshot) {
       // Optionally navigate to last visited path
       if (router && snapshot.pageState.lastVisitedPath) {
-        router.push(snapshot.pageState.lastVisitedPath);
+        try {
+          const target = snapshot.pageState.lastVisitedPath;
+          const current = (router.asPath || router.pathname || '/') as string;
+          // Only push if different and prevent rapid repeats with a short cooldown
+          const now = Date.now();
+          const navMetaRaw = sessionStorage.getItem('GRACE_NAV_META');
+          let lastPath = '';
+          let lastAt = 0;
+          if (navMetaRaw) {
+            try { ({ lastPath, lastAt } = JSON.parse(navMetaRaw)); } catch {}
+          }
+          const withinCooldown = now - (lastAt || 0) < 1000; // 1s cooldown
+          if (target !== current && !(withinCooldown && target === lastPath)) {
+            sessionStorage.setItem('GRACE_NAV_META', JSON.stringify({ lastPath: target, lastAt: now }));
+            router.push(target);
+          }
+        } catch {}
       }
 
       return snapshot;

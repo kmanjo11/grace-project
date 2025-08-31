@@ -1,7 +1,7 @@
 // Simple test script to check Mango V3 chart data
 const axios = require('axios');
 
-const MANGO_V3_BASE_URL = 'http://localhost:8000';
+const MANGO_V3_BASE_URL = 'http://localhost:8080';
 const marketName = 'SOL-PERP'; // Test with SOL perpetual market
 const resolution = '1h';
 

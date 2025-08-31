@@ -413,8 +413,8 @@ class PhantomWalletConnector:
             # Parse and validate app metadata
             self.app_metadata = {
                 "name": (app_metadata or {}).get("name", "Grace Trading Platform"),
-                "url": self._validate_url((app_metadata or {}).get("url", "http://localhost:8000")),
-                "icon": self._validate_url((app_metadata or {}).get("icon", "http://localhost:8000/icon.png"))
+                "url": self._validate_url((app_metadata or {}).get("url", "http://localhost:9000")),
+                "icon": self._validate_url((app_metadata or {}).get("icon", "http://localhost:9000/icon.png"))
             }
             
             # Initialize storage
@@ -904,7 +904,7 @@ class PhantomWalletConnector:
         """
         # Create a connection request payload
         connection_request = {
-            'app_url': self.app_metadata.get('url', 'http://localhost:8000'),
+            'app_url': self.app_metadata.get('url', 'http://localhost:9000'),
             'app_icon': self.app_metadata.get('icon', ''),
             'app_name': self.app_metadata.get('name', 'Grace Trading Platform'),
             'session_id': session_id,
@@ -1011,7 +1011,7 @@ class PhantomWalletConnector:
             deep_link = self._create_deep_link(session_id)
             
             # Generate connection URL for web
-            base_url = "http://localhost:8000"
+            base_url = "http://localhost:9000"
             connection_url = (
                 f"{self.phantom_app_url}/ul/v1/connect"
                 f"?app_url={base_url}"

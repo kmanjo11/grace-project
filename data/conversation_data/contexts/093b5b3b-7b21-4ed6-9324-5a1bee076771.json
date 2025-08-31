@@ -1,0 +1,140 @@
+{
+  "context_id": "093b5b3b-7b21-4ed6-9324-5a1bee076771",
+  "user_id": "user_2",
+  "session_id": "default_user_2",
+  "created_at": 1756601595.9932008,
+  "last_updated": 1756607816.63975,
+  "history": [
+    {
+      "role": "user",
+      "content": "no",
+      "timestamp": 1756605015.416789,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Alright! If you change your mind or need help later, just let me know.",
+      "timestamp": 1756605017.121335,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "hey",
+      "timestamp": 1756605420.659891,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! How can I help you today?",
+      "timestamp": 1756605422.071599,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "no how can i help you baby",
+      "timestamp": 1756606873.195837,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "I'm here to assist you! If you have any questions or need information, feel free to ask. \ud83d\ude0a",
+      "timestamp": 1756606875.194311,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "i need your help be my therapist",
+      "timestamp": 1756606890.549576,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "I'm here to assist you, but please remember I'm not equipped to provide professional mental health support. If you'd like to talk about general topics or need help with something else, I'm more than happy to assist! If you're seeking meaningful support, I strongly recommend speaking with a qualified mental health professional.",
+      "timestamp": 1756606893.407218,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "no we gotta make some money , thats what you here to do rt",
+      "timestamp": 1756606915.369571,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Absolutely, I can assist with that! If you're interested in trading cryptocurrencies or need insights on financial markets, feel free to ask. What specific help are you looking for to get started?",
+      "timestamp": 1756606917.7036538,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "briefly tell me what trusta ai is",
+      "timestamp": 1756606938.557704,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "It seems there might be a typo or confusion with the name \"trusta ai.\" If you're referring to a specific product, service, or technology related to AI, can you please clarify or provide more details? I'm here to help with any information or tasks related to artificial intelligence and its applications!",
+      "timestamp": 1756606940.968852,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "*trust au .. aka tausdt",
+      "timestamp": 1756606966.396429,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Thank you for clarifying! **TerraUSD (UST)**, often referred to by its ticker **TAUSDT**, is a stablecoin that aims to maintain a stable value against the US dollar through various mechanisms. Unlike typical cryptocurrencies which can be quite volatile, UST is designed to be pegged closely to USD, making it more stable and suitable for transactions where price stability is important. TerraUSD is part of the Terra blockchain platform, which uses fiat-pegged stablecoins to power price-stable global payment systems.\n\nIf you're interested in trading or learning more about how it works, let me know how I can help further!",
+      "timestamp": 1756606969.8229692,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "nno its a new coin called trust ai some web3 protocol",
+      "timestamp": 1756607001.9436579,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Thank you for the additional details. \"Trust AI\" seems to be a new entity in the cryptocurrency and Web3 space. It could potentially involve the use of artificial intelligence within the Web3 framework, enhancing smart contracts, or other blockchain operations. However, specific information about \"Trust AI\" isn't readily available in my current dataset.\n\nIf \"Trust AI\" is indeed a new coin or project related to Web3 protocol, it might involve features like decentralized governance, AI-integrated security for transactions, or automated decision-making processes in blockchain applications. \n\nTo get the most accurate and detailed information, you might want to look at the official website or whitepapers of \"Trust AI\" or check the latest discussions on cryptocurrency forums and news platforms.\n\nIf you need help finding specific details or have more queries about this or any other topic, feel free to ask!",
+      "timestamp": 1756607006.283252,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "whats my wallet address",
+      "timestamp": 1756607080.064302,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Your current internal wallet address is **E4TDNi...DCZG**. If you need any other information or actions regarding your wallet, feel free to let me know!",
+      "timestamp": 1756607082.1072419,
+      "metadata": {}
+    },
+    {
+      "role": "user",
+      "content": "thanks",
+      "timestamp": 1756607814.035572,
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "You're welcome! If there's anything else you need, just let me know. I'm here to help! \ud83d\ude0a",
+      "timestamp": 1756607816.639631,
+      "metadata": {}
+    }
+  ],
+  "active_topics": [
+    {
+      "name": "wallet",
+      "confidence": 0.8,
+      "first_mentioned": 1756607080.064331,
+      "last_mentioned": 1756607080.064331
+    }
+  ],
+  "entities": {},
+  "background_tasks": {},
+  "state": "active"
+}

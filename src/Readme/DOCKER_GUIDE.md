@@ -20,7 +20,7 @@
 
 ### Required Ports
 - 3000: Frontend development server
-- 8000: Backend API
+- 9000: Backend API
 - 8080: Mango V3 Service
 - 80/443: Nginx (production)
 
@@ -46,8 +46,8 @@
 
 5. Access the application:
    - Frontend: http://localhost:3000
-   - Backend API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
+   - Backend API: http://localhost:9000
+   - API Docs: http://localhost:9000/docs
 
 ## Development Setup
 
@@ -71,7 +71,7 @@ docker-compose exec backend pytest
 ### Backend Development
 - Automatic reload on code changes
 - Debugger configured on port 5678
-- Access API docs at http://localhost:8000/docs
+- Access API docs at http://localhost:9000/docs
 
 ## Production Deployment
 
@@ -97,7 +97,7 @@ docker-compose up -d --force-recreate
 ## Services Overview
 
 ### Backend Service
-- **Port**: 8000
+- **Port**: 9000
 - **Image**: Custom Python 3.10
 - **Features**:
   - FastAPI application
@@ -145,7 +145,7 @@ LOG_LEVEL=info
 DEBUG=false
 
 # CORS
-CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+CORS_ORIGINS=http://localhost:3000,http://localhost:9000
 
 # Rate Limiting
 RATE_LIMIT=100/minute
@@ -158,7 +158,7 @@ RATE_LIMIT=100/minute
 #### 1. Port Conflicts
 ```bash
 # Find processes using a port
-sudo lsof -i :8000
+sudo lsof -i :9000
 
 # Kill process
 kill -9 <PID>

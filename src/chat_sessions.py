@@ -4,9 +4,12 @@ from uuid import uuid4
 from datetime import datetime
 import redis
 import json
+import os
 
 router = APIRouter()
-r = redis.Redis(host="grace-redis", port=6379, decode_responses=True)
+# Default to Docker service name 'grace-redis' but allow override via REDIS_HOST for local dev
+_redis_host = os.environ.get("REDIS_HOST", "grace-redis")
+r = redis.Redis(host=_redis_host, port=6379, decode_responses=True)
 
 
 # User extraction placeholder

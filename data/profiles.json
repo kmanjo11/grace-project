@@ -31,7 +31,7 @@
     "phone": "",
     "password_hash": "$2b$12$AyZTdwv3ldWxsByUUDwEk.i52bcE.8PNOzMtNQfqUEJ0j1QkCDWoa",
     "created_at": "2025-08-26T07:46:40.306706",
-    "last_login": "2025-08-27T10:24:57.263448",
+    "last_login": "2025-08-30T22:35:21.549944",
     "is_authorized": false,
     "internal_wallet": {
       "public_key": "E4TDNia9NvRMjTbXymSFvFXNm4nqoJPzMRVyVX4yDCZG",
@@ -44,6 +44,78 @@
         "tether_usd": 0.0
       },
       "created_at": "2025-08-26T07:46:40.299683"
+    },
+    "mango_markets_link": {
+      "status": false,
+      "message": "Not attempted",
+      "linked_at": null
+    },
+    "settings": {
+      "settings": {
+        "settings": {
+          "notifications": true,
+          "privacy": {
+            "share_analytics": true,
+            "store_history": true
+          },
+          "theme": "light",
+          "trading": {
+            "auto_trading": false,
+            "max_daily_trades": 5,
+            "risk_level": "medium"
+          }
+        },
+        "success": true
+      },
+      "success": true,
+      "displayName": "bob"
+    }
+  },
+  "user_3": {
+    "username": "don1",
+    "email": "donn@2.com",
+    "phone": "",
+    "password_hash": "$2b$12$xo6eWQ4HO6LfMSX8rSCaaOC0WSafU7NdyKMjlHaxoZ7CFePFPYFe.",
+    "created_at": "2025-08-29T10:24:06.659323",
+    "last_login": "2025-08-29T10:24:49.939498",
+    "is_authorized": false,
+    "internal_wallet": {
+      "public_key": "HFqdisF1bqUHdVZ7EnC2q1BYyfEzUbAHbN8uvnXwpFDu",
+      "encrypted_private_key": {
+        "iv": "08RLp2YKbaAGcKMB+LUpew==",
+        "ciphertext": "gHeS6RcwwLLrQPeOS9PSE9Cd8fkmPPEbqkyRn8bkeb3W2iw6uHGUa/L3jBYxLp5l"
+      },
+      "balance": {
+        "solana": 0.0,
+        "tether_usd": 0.0
+      },
+      "created_at": "2025-08-29T10:24:06.657405"
+    },
+    "mango_markets_link": {
+      "status": false,
+      "message": "Not attempted",
+      "linked_at": null
+    }
+  },
+  "user_4": {
+    "username": "bibs",
+    "email": "bibs@yahoo.com",
+    "phone": "",
+    "password_hash": "$2b$12$E9qYxo8EgaE4u4G24yQ4TeO4dz3vh31glTah9N1JbD9Zhb6IWt18G",
+    "created_at": "2025-08-30T16:52:38.913946",
+    "last_login": null,
+    "is_authorized": false,
+    "internal_wallet": {
+      "public_key": "uHqMKkfCiYx8Df619k6M2jCek7JPyTUykbALgwufsRe",
+      "encrypted_private_key": {
+        "iv": "1x5zxX+fV7zeVxylhigjQQ==",
+        "ciphertext": "sFrXPVYHJYeAVxab/JAmg35+gb/fruZLTa3ZVi0r06PGufx2YgCvnvoNT0qwoY7CTQ9KBC6WWKGHQ88DxMF+UQ=="
+      },
+      "balance": {
+        "solana": 0.0,
+        "tether_usd": 0.0
+      },
+      "created_at": "2025-08-30T16:52:38.912871"
     },
     "mango_markets_link": {
       "status": false,

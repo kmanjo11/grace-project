@@ -7,6 +7,12 @@
 // Front api constant and robust resolver for base URL
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
+// Unified auth helpers
+import { addAuthHeaders, getAuthToken, storeAuthToken } from '../utils/authUtils';
+// Re-export for backward compatibility with existing imports
+export { getAuthToken } from '../utils/authUtils';
+export { addAuthHeaders } from '../utils/authUtils';
+
 // Resolve base URL; prefer env var, else use relative path to avoid CORS issues
 const resolveBaseUrl = (): string => {
   const envUrl = process.env.NEXT_PUBLIC_API_URL;
@@ -17,58 +23,6 @@ const resolveBaseUrl = (): string => {
   return '';
 };
 
-// Auth token key for localStorage
-const AUTH_TOKEN_KEY = 'grace_auth_token';
-const ALT_TOKEN_KEY = 'grace_token';
-
-// Get auth token from storage (checks both session and local, and both keys)
-export const getAuthToken = (): string | null => {
-  if (typeof window !== 'undefined') {
-    return (
-      // Prefer sessionStorage for current session
-      sessionStorage.getItem(AUTH_TOKEN_KEY) ||
-      sessionStorage.getItem(ALT_TOKEN_KEY) ||
-      // Fallback to localStorage
-      localStorage.getItem(AUTH_TOKEN_KEY) ||
-      localStorage.getItem(ALT_TOKEN_KEY)
-    );
-  }
-  return null;
-};
-
-// Save auth token to localStorage under both keys for compatibility
-export const saveAuthToken = (token: string): void => {
-  if (typeof window !== 'undefined') {
-    localStorage.setItem(AUTH_TOKEN_KEY, token);
-    localStorage.setItem(ALT_TOKEN_KEY, token);
-  }
-};
-
-// Remove auth token from both storage locations and keys
-export const removeAuthToken = (): void => {
-  if (typeof window !== 'undefined') {
-    localStorage.removeItem(AUTH_TOKEN_KEY);
-    localStorage.removeItem(ALT_TOKEN_KEY);
-    sessionStorage.removeItem(AUTH_TOKEN_KEY);
-    sessionStorage.removeItem(ALT_TOKEN_KEY);
-  }
-};
-
-// Add auth headers to request options
-export const addAuthHeaders = (options: RequestInit = {}): RequestInit => {
-  const token = getAuthToken();
-  if (token) {
-    return {
-      ...options,
-      headers: {
-        ...options.headers,
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-    };
-  }
-  return options;
-};
 import { Trade, TradeHistoryResponse, PositionHistoryResponse, TradeExecutionResult, PositionHistoryEntry, UserPositionsResponse, BasePosition } from './apiTypes';
 // No circular imports
 
@@ -112,7 +66,7 @@ export const API_ENDPOINTS = {
     REGISTER: '/api/auth/register',
     VERIFY_TOKEN: '/api/auth/verify',
     LOGOUT: '/api/auth/logout',
-    REFRESH_TOKEN: '/auth/refresh-token',
+    REFRESH_TOKEN: '/api/auth/refresh-token',
     FORGOT_PASSWORD: '/api/auth/forgot-password',
     RESET_PASSWORD: '/api/auth/reset-password'
   },
@@ -200,9 +154,7 @@ export const API_ENDPOINTS = {
 function normalizeResponse<T>(responseData: any): T {
   // Handle auth responses with token
   if (responseData && typeof responseData === 'object' && 'token' in responseData) {
-    // Save the token when received in the response
-    saveAuthToken(responseData.token);
-    // Remove token from response data to avoid exposing it
+    // Do NOT persist here (normalizeResponse is sync). Token is persisted in processResponse.
     const { token, ...rest } = responseData;
     return rest as T;
   }
@@ -252,7 +204,8 @@ async function processResponse<T>(response: Response): Promise<ApiResponse<T>> {
       data = bodyText ? JSON.parse(bodyText) : undefined;
       // If we get a new token in the response, save it
       if (data && data.token) {
-        saveAuthToken(data.token);
+        // Persist token using unified helper (persist in localStorage)
+        await storeAuthToken(data.token, true);
       }
     } catch (e) {
       // Non-JSON body; treat as text error payload when not ok
@@ -420,17 +373,13 @@ export const ChatApi = {
       
       const query = params.toString();
       const url = query ? `${API_ENDPOINTS.CHAT.SESSIONS}?${query}` : API_ENDPOINTS.CHAT.SESSIONS;
-      
-      const response = await api.get<{
-        data: ChatSession[];
-        total: number;
-        has_more: boolean;
-      }>(url);
-      
+      // Backend returns a flat array of sessions (no envelope)
+      const response = await api.get<ChatSession[] | any[]>(url);
+      const sessionsArray = Array.isArray(response.data) ? (response.data as ChatSession[]) : [];
       return {
-        sessions: response.data?.data || [],
-        total: response.data?.total || 0,
-        has_more: response.data?.has_more || false,
+        sessions: sessionsArray,
+        total: sessionsArray.length,
+        has_more: false,
       };
     } catch (error: any) {
       const errorMessage = error.response?.data?.error || 'Failed to fetch chat sessions';
@@ -493,17 +442,13 @@ export const ChatApi = {
       const url = query 
         ? `${API_ENDPOINTS.CHAT.HISTORY(sessionId)}?${query}`
         : API_ENDPOINTS.CHAT.HISTORY(sessionId);
-      
-      const response = await api.get<{
-        data: ChatMessage[];
-        total: number;
-        has_more: boolean;
-      }>(url);
-      
+      // Backend returns a flat array of messages (no envelope)
+      const response = await api.get<ChatMessage[] | any[]>(url);
+      const messagesArray = Array.isArray(response.data) ? (response.data as ChatMessage[]) : [];
       return {
-        messages: response.data?.data || [],
-        total: response.data?.total || 0,
-        has_more: response.data?.has_more || false,
+        messages: messagesArray,
+        total: messagesArray.length,
+        has_more: false,
       };
     } catch (error: any) {
       const errorMessage = error.response?.data?.error || 'Failed to fetch chat history';
@@ -538,7 +483,7 @@ export const ChatApi = {
     timestamp: string;
   }> {
     try {
-      const response = await api.post<{ data: any }>(
+      const response = await api.post<any>(
         API_ENDPOINTS.CHAT.MESSAGE,
         {
           session_id: sessionId,
@@ -547,17 +492,14 @@ export const ChatApi = {
           ...(metadata && { metadata }),
         }
       );
-      
-      if (!response.data || !response.data.data) {
-        throw new Error('Invalid response format from server');
-      }
-      
+      // Backend returns a flat object with top-level fields like { response, success, session_id, ... }
+      const payload = response.data || {};
       return {
-        response: response.data.data.response || '',
-        metadata: response.data.data.metadata,
-        session_id: response.data.data.session_id || sessionId,
-        message_id: response.data.data.message_id || `msg_${Date.now()}`,
-        timestamp: response.data.data.timestamp || new Date().toISOString(),
+        response: payload.response || payload.message || payload.content || '',
+        metadata: payload.metadata,
+        session_id: payload.session_id || sessionId,
+        message_id: payload.message_id || `msg_${Date.now()}`,
+        timestamp: payload.timestamp || new Date().toISOString(),
       };
     } catch (error: any) {
       const errorMessage = error.response?.data?.error || 'Failed to send chat message';

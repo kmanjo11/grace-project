@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
+import { api, API_ENDPOINTS } from '../api/apiClient';
 
 export default function Reset() {
   const [password, setPassword] = useState('');
@@ -21,21 +22,17 @@ export default function Reset() {
 
   const handleReset = async () => {
     try {
-      const res = await fetch('/api/auth/reset-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data?.message || 'Reset failed');
+      const res = await api.post(API_ENDPOINTS.AUTH.RESET_PASSWORD, { token, password });
+      if (!res.success) {
+        setError(res.error || (res.data as any)?.message || 'Reset failed');
         return;
       }
+      setError('');
       setMessage('Password successfully reset. You may now log in.');
       setTimeout(() => router.push('/login'), 3000);
     } catch (err) {
       console.error('Reset error:', err);
-      setError('Connection error');
+      setError(err instanceof Error ? err.message : 'Connection error');
     }
   };
 

@@ -1,11 +1,11 @@
 // src/pages/Chat.tsx
 
-import React, { useEffect, useState, FormEvent, useRef, useCallback, useMemo } from 'react';
-import { api, API_ENDPOINTS } from '../api/apiClient';
+import React, { useEffect, useState, useRef, useCallback, useLayoutEffect } from 'react';
 import { useAuth } from '../components/AuthContext';
-import { getAuthToken } from '../utils/authUtils';
 import { useChatStatePersistence } from '../components/ChatStatePersistence';
 import XFeed from '../components/XFeed';
+import { useConversations } from '../hooks/useConversations';
+import { useMessages } from '../hooks/useMessages';
 
 interface ChatMessage {
   sender?: 'user' | 'grace';
@@ -26,21 +26,31 @@ interface ChatSession {
 
 export default function Chat() {
   // Use the Auth context for authentication state
-  const { user, isAuthenticated } = useAuth();
-  // Use standardized token function from authUtils
-  const token = getAuthToken();
-  
+  const { isAuthenticated, user } = useAuth();
+  const PERSIST_DISABLED = (process.env.NEXT_PUBLIC_DISABLE_STATE_PERSIST || '').toString() === '1' || (process.env.NEXT_PUBLIC_DISABLE_STATE_PERSIST || '').toString().toLowerCase() === 'true';
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState<string>('');
-  const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>('');
+  
+  // React Query hooks
+  const { sessions: qSessions, create, rename, isLoading: sessionsLoading } = useConversations();
+  const { messages: qMessages, isSending, send, isFetching } = useMessages(sessionId);
   
   // Track if sessions have been loaded
   const [sessionsLoaded, setSessionsLoaded] = useState<boolean>(false);
   // Use ref to avoid duplicate session creation
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Scroll management refs
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const lastKnownScrollTopRef = useRef<number>(0);
+  const isUserScrollingRef = useRef<boolean>(false);
+  const scrollSaveTimerRef = useRef<number | null>(null);
+  const restoredScrollForSessionRef = useRef<Record<string, boolean>>({});
+  const suppressAutoScrollUntilRef = useRef<number>(0);
+  const justMountedRef = useRef<boolean>(true);
+  const [isAtBottom, setIsAtBottom] = useState<boolean>(false);
 
   // Initialize chat state persistence hook
   const {
@@ -74,13 +84,19 @@ export default function Chat() {
     try {
       // Only store a limited number of messages to prevent localStorage overflows
       const messagesToStore = msgs.slice(-50); // Store just the last 50 messages
-      localStorage.setItem(`messages_${sid}`, JSON.stringify(messagesToStore));
+      if (!PERSIST_DISABLED) {
+        localStorage.setItem(`messages_${sid}`, JSON.stringify(messagesToStore));
+      }
       
       // Store a timestamp with the messages to track freshness
-      localStorage.setItem(`lastSynced_${sid}`, new Date().toISOString());
+      if (!PERSIST_DISABLED) {
+        localStorage.setItem(`lastSynced_${sid}`, new Date().toISOString());
+      }
       
       // Always store the active session ID to ensure it's available when returning to the page
-      localStorage.setItem('activeSessionId', sid);
+      if (!PERSIST_DISABLED) {
+        localStorage.setItem('activeSessionId', sid);
+      }
     } catch (e) {
       console.error('Failed to store messages in localStorage:', e);
     }
@@ -90,7 +106,7 @@ export default function Chat() {
   const loadMessagesFromCache = (sid: string): ChatMessage[] => {
     if (!sid) return [];
     try {
-      const savedMessages = localStorage.getItem(`messages_${sid}`);
+      const savedMessages = PERSIST_DISABLED ? null : (typeof window !== 'undefined' ? localStorage.getItem(`messages_${sid}`) : null);
       if (savedMessages) {
         const parsedMessages = JSON.parse(savedMessages);
         if (Array.isArray(parsedMessages) && parsedMessages.length > 0) {
@@ -139,32 +155,52 @@ export default function Chat() {
     }
   }, [sessionId, input, updateDraftMessage]);
   
-  // Auto-scroll to bottom when messages change or restore saved scroll position
-  useEffect(() => {
-    if (messagesEndRef.current) {
-      // Check if we have a saved scroll position
-      const savedPosition = getSavedScrollPosition();
-      
-      if (savedPosition !== null) {
-        // Use setTimeout to ensure the DOM is fully rendered
-        setTimeout(() => {
-          const chatContainer = messagesEndRef.current?.parentElement;
-          if (chatContainer && typeof savedPosition === 'number' && !isNaN(savedPosition)) {
-            chatContainer.scrollTop = savedPosition;
-          }
-        }, 100);
-      } else {
-        // Default to scrolling to bottom
-        messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-      }
+  // Helper: check if container is near bottom (so it's safe to auto-scroll)
+  const isNearBottom = useCallback((container: HTMLElement | null, threshold = 80) => {
+    if (!container) return false;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return distanceFromBottom <= threshold;
+  }, []);
+
+  // Restore saved scroll position only once per session change (layout-safe)
+  useLayoutEffect(() => {
+    if (!sessionId) return;
+    if (restoredScrollForSessionRef.current[sessionId]) return;
+
+    const savedPosition = getSavedScrollPosition();
+    if (savedPosition !== null) {
+      setTimeout(() => {
+        const container = scrollContainerRef.current;
+        if (container && typeof savedPosition === 'number' && !isNaN(savedPosition)) {
+          // Immediate jump (no smooth) for initial restore
+          container.scrollTop = savedPosition;
+          lastKnownScrollTopRef.current = savedPosition;
+        }
+      }, 100);
     }
-  }, [messages, sessionId, getSavedScrollPosition]);
+
+    restoredScrollForSessionRef.current[sessionId] = true;
+    // After first paint, initial mount no longer special
+    setTimeout(() => { justMountedRef.current = false; }, 200);
+  }, [sessionId, getSavedScrollPosition]);
   
   // Save scroll position when user scrolls
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    if (sessionId) {
-      syncScrollPosition(e.currentTarget.scrollTop);
+    const top = e.currentTarget.scrollTop;
+    lastKnownScrollTopRef.current = top;
+    isUserScrollingRef.current = true;
+    // Suppress programmatic auto-scroll for a cooldown window after user scroll
+    suppressAutoScrollUntilRef.current = Date.now() + 900;
+    if (!sessionId) return;
+    // Debounce syncing scroll position to reduce rerenders
+    if (scrollSaveTimerRef.current) {
+      window.clearTimeout(scrollSaveTimerRef.current);
+      scrollSaveTimerRef.current = null;
     }
+    scrollSaveTimerRef.current = window.setTimeout(() => {
+      syncScrollPosition(top);
+      isUserScrollingRef.current = false;
+    }, 150);
   }, [sessionId, syncScrollPosition]);
   
   // Cleanup on unmount
@@ -173,182 +209,53 @@ export default function Chat() {
       isMountedRef.current = false;
     };
   }, []);
-  
-  // FIXED: Stabilized main session loading effect
+
+  // Sync React Query sessions into local state once, then use local selection logic
   useEffect(() => {
-    const loadSessions = async () => {
-      if (!isAuthenticated || !token) {
-        // Clear sessions when not authenticated
-        setSessions([]);
-        setSessionId(null);
-        setMessages([]);
-        setSessionsLoaded(false); // Reset sessions loaded flag
-        
-        // Clean up localStorage when logging out
-        try {
-          const activeSessionIds = JSON.parse(localStorage.getItem('activeSessionIds') || '[]');
-          // Clean up each session data
-          activeSessionIds.forEach((sid: string) => {
-            localStorage.removeItem(`messages_${sid}`);
-          });
-          // Remove tracking keys
-          localStorage.removeItem('activeSessionIds');
-          localStorage.removeItem('activeSessionId');
-        } catch (e) {
-          console.error('Error cleaning up localStorage on logout:', e);
-        }
-        
-        return;
-      }
-      
-      // Skip if sessions already loaded to prevent repeated calls
-      if (sessionsLoaded) return;
-      
-      try {
-        console.log('Loading sessions from backend...');
-        const { data, success } = await api.get(API_ENDPOINTS.CHAT.SESSIONS);
-        
-        if (success && data && Array.isArray(data)) {
-          console.log('Loaded sessions:', data);
-          // Map incoming sessions to our structure
-          const formattedSessions = data.map((s: any) => {
-            // Find a meaningful name for the session
-            let sessionName = s.topic || s.name;
-            if (!sessionName || sessionName === 'New Chat' || sessionName === 'New Conversation') {
-              // If no meaningful name, try to extract from first message if available
-              if (s.preview_message) {
-                sessionName = generateSimpleTopicFromMessage(s.preview_message);
-              } else if (s.messages && Array.isArray(s.messages) && s.messages.length > 0) {
-                // Try to use first message in the array if available
-                const firstMsg = s.messages[0];
-                const msgText = firstMsg.text || firstMsg.user || firstMsg.message;
-                sessionName = generateSimpleTopicFromMessage(msgText);
-              } else {
-                // Fallback to date-based name
-                sessionName = `Conversation ${new Date(s.lastActivity || s.created || new Date()).toLocaleDateString()}`;
-              }
-            }
-            
-            return {
-              id: s.session_id || s.id,
-              name: sessionName,
-              lastActivity: s.lastActivity || s.last_activity || new Date().toISOString(),
-              messages: [],
-              session_id: s.session_id || s.id,
-              topic: sessionName
-            };
-          });
-          
-          // Sort by last activity, most recent first
-          const sortedSessions = formattedSessions.sort((a, b) => 
-            new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime()
-          );
-          
-          setSessions(sortedSessions);
-          setSessionsLoaded(true); // Mark sessions as loaded
-          
-          // Session restoration will be handled by the separate restoration effect
-        } else {
-          console.log('No sessions found, sessions loaded flag set to true');
-          setSessionsLoaded(true); // Mark as loaded even if empty
-        }
-      } catch (err) {
-        console.error('Failed to load sessions:', err);
-        setError('Failed to load chat sessions');
-        setSessionsLoaded(true); // Mark as loaded to prevent retry loops
-      }
-    };
-    
-    loadSessions();
-  }, [isAuthenticated, token, sessionsLoaded]); // Only depend on auth state and loaded flag
+    if (!isAuthenticated) {
+      setSessions([]);
+      setSessionId(null);
+      return;
+    }
+    if (!qSessions) return;
+    // Normalize to ChatSession shape expected by current UI
+    const normalized = qSessions.map((s: any) => ({
+      id: s.session_id || s.id,
+      session_id: s.session_id || s.id,
+      name: s.name || s.topic || 'New Conversation',
+      topic: s.topic || s.name || 'New Conversation',
+      lastActivity: s.lastActivity || new Date().toISOString(),
+      messages: [],
+    })) as ChatSession[];
+    setSessions(normalized);
+    if (!sessionId && normalized.length > 0) {
+      const saved = PERSIST_DISABLED ? null : (typeof window !== 'undefined' ? localStorage.getItem('activeSessionId') : null);
+      const found = normalized.find(s => (s.session_id || s.id) === saved);
+      setSessionId(found ? (found.session_id || found.id) : (normalized[0].session_id || normalized[0].id));
+    }
+    setSessionsLoaded(true);
+  }, [qSessions, isAuthenticated]);
 
   // Track if messages were loaded from cache to handle merging with backend data
   const [messagesFromCache, setMessagesFromCache] = useState<boolean>(false);
 
-  // FIXED: Properly memoized loadSessionMessages with improved deduplication
-  const loadSessionMessages = useCallback(async (sid: string) => {
-    if (!sid || !isAuthenticated) return;
-    
-    const now = Date.now();
-    const last = lastHistoryLoadRef.current[sid] || 0;
-    // FIXED: Increased deduplication window to 2 seconds to prevent rapid calls
-    if (now - last < 2000) {
-      console.log(`Skipping duplicate API call for session ${sid} (within 2s window)`);
-      return;
-    }
-    lastHistoryLoadRef.current[sid] = now;
-    
-    // Check if we have cached messages first
-    const cachedMessages = loadMessagesFromCache(sid);
-    const hasExistingMessages = cachedMessages.length > 0;
-    
-    // If we have cached messages, use them immediately
-    if (hasExistingMessages && sessionId === sid) {
-      console.log('Using cached messages while backend loads for session:', sid);
-      // Only set messages if they're for the current session and different from current messages
-      const currentMessagesStr = JSON.stringify(messages);
-      const cachedMessagesStr = JSON.stringify(cachedMessages);
-      if (currentMessagesStr !== cachedMessagesStr) {
-        setMessages(cachedMessages);
-        localStorage.setItem('activeSessionId', sid);
-      }
-    }
-    
-    try {
-      setError('');
-      // Get the auth token to ensure we're using the current one
-      const currentToken = getAuthToken();
-      if (!currentToken) {
-        console.error('No auth token available');
-        return;
-      }
-      
-      console.log(`Loading messages from backend for session: ${sid}`);
-      const { data, success } = await api.get(API_ENDPOINTS.CHAT.HISTORY(sid));
-      
-      if (success && data && Array.isArray(data)) {
-        // Convert messages to our expected format
-        const formattedMessages = data.map((msg: any) => {
-          // Handle different possible message formats
-          if (msg.user) {
-            return { sender: 'user' as const, text: msg.user, timestamp: msg.timestamp };
-          } else if (msg.bot) {
-            return { sender: 'grace' as const, text: msg.bot, timestamp: msg.timestamp };
-          } else {
-            return msg; // Already in our format
-          }
-        });
-        
-        // FIXED: Simplified message merging logic
-        if (formattedMessages.length > 0 && sessionId === sid) {
-          console.log(`Setting ${formattedMessages.length} messages from backend for session ${sid}`);
-          setMessages(formattedMessages);
-          persistMessages(sid, formattedMessages);
-        } else if (!hasExistingMessages && sessionId === sid) {
-          // Backend returned empty and we have no cache
-          setMessages([]);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load session messages:', err);
-      setError('Failed to load messages');
-      // Keep cached messages if backend fails
-    }
-  }, [isAuthenticated, sessionId, messages, loadMessagesFromCache, persistMessages]); // Stable dependencies
-
-  // FIXED: Stabilized session loading effect
+  // Sync React Query messages into local UI when they change
   useEffect(() => {
-    // If any required condition is missing, return early
-    if (!sessionId || !isAuthenticated || !sessionsLoaded) return;
-    
-    console.log('Session ID changed, loading messages for:', sessionId);
-    
-    // Store current session ID in localStorage to persist across page navigations
-    localStorage.setItem('activeSessionId', sessionId);
-    
-    // Load from backend (our updated function now handles cache properly)
-    loadSessionMessages(sessionId);
-  }, [sessionId, isAuthenticated, sessionsLoaded, loadSessionMessages]); // Stable dependencies
+    if (!sessionId) return;
+    if (Array.isArray(qMessages)) {
+      setMessages(qMessages as unknown as ChatMessage[]);
+    }
+  }, [qMessages, sessionId]);
+
+  // When session changes, persist active id and show cached messages immediately (fast UX)
+  useEffect(() => {
+    if (!sessionId) return;
+    if (!PERSIST_DISABLED) {
+      localStorage.setItem('activeSessionId', sessionId);
+    }
+    const cached = loadMessagesFromCache(sessionId);
+    if (cached.length) setMessages(cached);
+  }, [sessionId]);
 
   // FIXED: Stabilized session restoration effect
   useEffect(() => {
@@ -358,7 +265,7 @@ export default function Chat() {
     console.log('Attempting to restore previous session');
 
     // Try to restore previous session if available
-    const savedSessionId = localStorage.getItem('activeSessionId');
+    const savedSessionId = PERSIST_DISABLED ? null : (typeof window !== 'undefined' ? localStorage.getItem('activeSessionId') : null);
     const sessionExists = sessions.some(s => (s.session_id || s.id) === savedSessionId);
 
     if (savedSessionId && sessionExists) {
@@ -377,145 +284,80 @@ export default function Chat() {
     restoredOnceRef.current = true;
   }, [isAuthenticated, sessionsLoaded, sessions.length]); // Only depend on length, not full sessions array
 
-  // FIXED: Stabilized scroll effect
+  // Observe if the bottom sentinel is visible within the scroll container (isAtBottom)
   useEffect(() => {
-    // Scroll to bottom of messages
-    if (messagesEndRef.current) {
-      // Use a small timeout to ensure the DOM has updated
+    const container = scrollContainerRef.current;
+    const target = messagesEndRef.current;
+    if (!container || !target) return;
+    const io = new IntersectionObserver(
+      ([entry]) => setIsAtBottom(entry.isIntersecting),
+      { root: container, threshold: 0.99, rootMargin: '0px 0px -1px 0px' }
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, []);
+
+  // FIXED: Stabilized scroll effect using isAtBottom and fetch-settled gating
+  useEffect(() => {
+    const now = Date.now();
+    if (now < suppressAutoScrollUntilRef.current) return;
+    if (isFetching) return; // wait until data settles
+    if (!isAtBottom) return; // only follow to bottom if already at bottom
+    const container = scrollContainerRef.current;
+    if (container) {
       setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        // Use smooth only after initial mount
+        const behavior: ScrollBehavior = justMountedRef.current ? 'auto' : 'smooth';
+        messagesEndRef.current?.scrollIntoView({ behavior });
       }, 100);
     }
-    
+
     // Store messages in localStorage using our helper function (only if we have messages)
     if (sessionId && messages.length > 0) {
       persistMessages(sessionId, messages);
     }
-  }, [messages.length, sessionId, persistMessages]); // Only depend on length, not full messages array
+  }, [messages.length, sessionId, persistMessages, isFetching, isAtBottom]);
 
-  // Refresh sessions list from backend (memoized with useCallback)
-  const refreshSessions = useCallback(async () => {
-    if (!isAuthenticated) return;
-    
-    try {
-      const { data, success } = await api.get(API_ENDPOINTS.CHAT.SESSIONS);
-      
-      if (success && Array.isArray(data)) {
-        // Sort sessions by lastActivity, newest first
-        const sortedSessions = [...data].sort((a, b) => {
-          return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
-        });
-        
-        setSessions(sortedSessions);
-      }
-    } catch (err) {
-      console.error('Failed to refresh sessions:', err);
-    }
-  }, [isAuthenticated]);
+  // React Query manages refresh; remove manual refreshSessions
 
-  // Create a new session with backend (memoized with useCallback)
+  // Create a new session using hook
   const createNewSession = useCallback(async () => {
     if (!isAuthenticated) return;
-    
     try {
       setError('');
-      const { data, success } = await api.post(API_ENDPOINTS.CHAT.NEW_SESSION, {});
-      
-      if (success && data) {
-        const newSession = {
-          id: data.session_id,
-          name: data.name || 'New Conversation',  // Better default name
-          lastActivity: data.lastActivity || new Date().toISOString(),
-          messages: [],
-          session_id: data.session_id,
-          topic: data.topic || 'New Conversation'  // Better default topic
-        };
-        
-        // Add to existing sessions
-        setSessions(prev => [newSession, ...prev]);
-        
-        // Clear messages first
+      const result = await create('New Conversation');
+      const newId = typeof result === 'string' 
+        ? result 
+        : (result?.session_id || result?.id);
+      if (newId) {
+        setSessionId(newId);
+        if (!PERSIST_DISABLED) {
+          localStorage.setItem('activeSessionId', newId);
+        }
         setMessages([]);
-        
-        // Set the session ID
-        setSessionId(newSession.session_id);
-        
-        // Do not persist empty cache to avoid loops
-        
-        // Store the session ID in localStorage to maintain across page navigations
-        localStorage.setItem('activeSessionId', newSession.session_id);
-        
-        // Mark this session as loaded from cache to prevent overwriting
-        setMessagesFromCache(true);
-        
-        return newSession.session_id;
-      } else {
-        throw new Error('Failed to create session');
+        return newId;
       }
     } catch (err) {
       console.error('Failed to create new session:', err);
       setError('Failed to create new chat session');
-      
-      // Create locally if backend fails
-      // Use random component for more uniqueness
-      const fallbackId = `session-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-      const fallbackSession = {
-        id: fallbackId,
-        name: 'New Conversation',  // Better default name
-        lastActivity: new Date().toISOString(),
-        messages: [],
-        session_id: fallbackId,
-        topic: 'New Conversation'  // Better default topic
-      };
-      
-      setSessions(prev => [fallbackSession, ...prev]);
-      
-      // Clear messages first
-      setMessages([]);
-      
-      // Set the session ID
-      setSessionId(fallbackId);
-      
-      // Initialize empty cache for this session
-      // Do not persist empty cache to avoid loops
-      
-      // Store even fallback session ID
-      localStorage.setItem('activeSessionId', fallbackId);
-      
-      // Mark this session as loaded from cache to prevent overwriting
-      setMessagesFromCache(true);
-      
-      return fallbackId;
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, create]);
 
 
   
   // Send chat message with session ID
   const sendMessage = async () => {
     if (!input.trim() || !isAuthenticated || !sessionId) return;
-    
-    // Create a temp message object to show immediately
-    const tempUserMessage: ChatMessage = {
-      sender: 'user',
-      text: input,
-      timestamp: new Date().toISOString()
-    };
-    
-    // Create updated messages array with the new message
-    const updatedMessages = [...messages, tempUserMessage];
-    
-    // Persist messages to localStorage immediately - do this BEFORE state update
-    // to avoid potential race conditions
-    persistMessages(sessionId, updatedMessages);
-    
     // Ensure the active session ID is saved in localStorage
-    localStorage.setItem('activeSessionId', sessionId);
+    if (!PERSIST_DISABLED) {
+      localStorage.setItem('activeSessionId', sessionId);
+    }
     
-    // Add to UI immediately
-    setMessages(updatedMessages);
+    // Snapshot message then clear input for responsive UX
+    const messageToSend = input;
+    setInput('');
     
-    // Generate preliminary topic from first message if needed
+    // Preliminary topic from first message if needed
     const currentSession = sessions.find(s => s.session_id === sessionId || s.id === sessionId);
     const isGenericTopic = currentSession && (
       !currentSession.topic || 
@@ -523,101 +365,38 @@ export default function Chat() {
       currentSession.topic.startsWith('Chat ') ||
       currentSession.topic.startsWith('Conversation ')
     );
-    
-    if (messages.length === 0 && isGenericTopic && input) {
-      try {
-        // This is the first message, use it to create a preliminary topic
-        const prelimTopic = generateSimpleTopicFromMessage(input);
-        // Update session with a meaningful name based on first message
-        const updatedSessions = sessions.map(s => 
-          (s.session_id === sessionId || s.id === sessionId) 
-            ? { ...s, topic: prelimTopic, name: prelimTopic } 
-            : s
-        );
-        setSessions(updatedSessions);
-      } catch (e) {
-        console.error('Error updating session topic:', e);
-      }
+    if (messages.length === 0 && isGenericTopic && messageToSend) {
+      const prelimTopic = generateSimpleTopicFromMessage(messageToSend);
+      try { await rename(sessionId, prelimTopic); } catch (e) { console.warn('Prelim rename failed:', e); }
     }
-    
-    // Clear input field
-    setInput('');
-    
-    // Set loading state
-    setLoading(true);
-    
+
     try {
-      // Send message to API
-      const { data, success } = await api.post(API_ENDPOINTS.CHAT.MESSAGE, {
-        session_id: sessionId,
-        message: input
-      });
-      
-      if (success && data) {
-        // Format the response to match our message structure
-        const botResponse: ChatMessage = {
-          sender: 'grace',
-          text: data.response || '',
-          timestamp: new Date().toISOString()
-        };
-        
-        // Create final messages array with both user message and bot response
-        const finalMessages = [...updatedMessages, botResponse];
-        
-        // Persist the complete conversation including bot response - do this BEFORE state update
-        // to avoid potential race conditions
-        persistMessages(sessionId, finalMessages);
-        
-        // Ensure the active session ID is saved in localStorage
-        localStorage.setItem('activeSessionId', sessionId);
-        
-        // Add to messages
-        setMessages(finalMessages);
-        
-        // Re-sync with server to ensure we have the latest data
-        loadSessionMessages(sessionId);
-        
-        // Update session if the server provides a topic
-        if (data.topic) {
-          try {
-            // Replace our preliminary topic with server-generated one
-            const updatedSessions = sessions.map(s => 
-              (s.session_id === sessionId || s.id === sessionId) 
-                ? { ...s, topic: data.topic, name: data.topic } 
-                : s
-            );
-            setSessions(updatedSessions);
-          } catch (e) {
-            console.error('Error updating session with server topic:', e);
-          }
-        }
-      } else {
-        setError('Failed to get response');
-      }
-    } catch (err) {
-      console.error('Failed to send message:', err);
+      console.log('[Chat] sendMessage()', { sessionId, length: messageToSend.length });
+      await send(messageToSend);
+    } catch (e) {
+      console.error('Failed to send message:', e);
       setError('Failed to send message');
-      
-      // Even if there's an error, we should still show the user's message
-      // This ensures the user can see their message even if Grace doesn't respond
-      // Persist messages to localStorage first to avoid race conditions
-      persistMessages(sessionId, updatedMessages);
-      localStorage.setItem('activeSessionId', sessionId);
-      setMessages(updatedMessages);
-    } finally {
-      setLoading(false);
-      
-      // Ensure we scroll to the latest message with a small delay to ensure DOM update
-      setTimeout(() => {
-        if (messagesEndRef.current) {
-          messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-        }
-      }, 100);
+      // Restore draft on error
+      setInput(messageToSend);
     }
   };
 
   // State for mobile sidebar visibility
   const [sidebarVisible, setSidebarVisible] = useState(false);
+  const [showXFeed, setShowXFeed] = useState(false);
+
+  // Defer XFeed mount slightly to avoid contributing to initial layout shift
+  useEffect(() => {
+    const t = setTimeout(() => setShowXFeed(true), 800);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Ensure browser doesn't fight our scroll restore on refresh/navigation
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'scrollRestoration' in window.history) {
+      try { (window.history as any).scrollRestoration = 'manual'; } catch {}
+    }
+  }, []);
 
   // ... (rest of the code remains the same)
   // Toggle sidebar on mobile
@@ -626,7 +405,7 @@ export default function Chat() {
   };
   
   // Simple function to rename a chat session
-  const handleSessionRename = (sessionId: string) => {
+  const handleSessionRename = async (sessionId: string) => {
     try {
       // Find the session to rename
       const session = sessions.find(s => s.session_id === sessionId || s.id === sessionId);
@@ -647,9 +426,8 @@ export default function Chat() {
             : s
         );
         setSessions(updatedSessions);
-        
-        // Note: In a full implementation, you would also update the server
-        // But for this minimal improvement, we're just updating the UI
+        // Update server via hook
+        try { await rename(sessionId, newName.trim()); } catch (e) { console.warn('Rename failed:', e); }
       }
     } catch (e) {
       console.error('Error renaming session:', e);
@@ -684,7 +462,7 @@ export default function Chat() {
               setSidebarVisible(false);
             }}
             className="w-full mb-4 rounded bg-red-700 px-4 py-2 hover:bg-red-900"
-            disabled={!isAuthenticated || loading}
+            disabled={!isAuthenticated || sessionsLoading}
           >
             + New Chat
           </button>
@@ -713,8 +491,10 @@ export default function Chat() {
                       if (cachedMessages.length > 0) {
                         setMessages(cachedMessages);
                       }
-                      // Store the active session ID
-                      localStorage.setItem('activeSessionId', currentSessionId);
+                      // Store the active session ID (only if persistence enabled)
+                      if (!PERSIST_DISABLED) {
+                        localStorage.setItem('activeSessionId', currentSessionId);
+                      }
                       // Close sidebar on mobile after selection
                       setSidebarVisible(false);
                     }}
@@ -739,34 +519,51 @@ export default function Chat() {
         )}
         
         <main className="flex-1 bg-black flex flex-col">
+          {/* Active session indicator for debugging */}
+          <div className="flex items-center justify-between border-b border-red-800/60 px-4 py-2 text-xs text-red-300/80">
+            <div>
+              <span className="mr-2">Active session:</span>
+              <code className="bg-red-900/30 px-2 py-0.5 rounded">{(user && user.username) ? user.username : (sessionId || 'none')}</code>
+            </div>
+            {PERSIST_DISABLED ? (
+              <span className="text-yellow-400">persistence: off</span>
+            ) : (
+              <span className="text-green-400">persistence: on</span>
+            )}
+          </div>
           <div 
             className="flex-1 overflow-y-auto p-6 space-y-4" 
             onScroll={handleScroll}
+            ref={scrollContainerRef}
+            style={{ overscrollBehavior: 'contain', overflowAnchor: 'none' as any, scrollbarGutter: 'stable both-edges' as any }}
           >
-            {messages.length === 0 && !loading && (
+            {messages.length === 0 && !isSending && (
               <div className="text-center text-gray-500 my-8">
                 {isAuthenticated ? 'No messages yet. Start a conversation!' : 'Please log in to start chatting'}
               </div>
             )}
             
-            {/* Show loading indicator when waiting for Grace's response */}
-            {loading && (
-              <div className="text-center text-yellow-500 my-4 animate-pulse">
+            {/* Typing/loading indicator with reserved space to prevent layout shift */}
+            <div className="my-4 text-center" style={{ minHeight: '1.5rem' }}>
+              <span
+                className={`text-yellow-500 ${isSending ? 'inline-block animate-pulse' : 'hidden'}`}
+                aria-live="polite"
+              >
                 Grace is thinking...
-              </div>
-            )}
+              </span>
+            </div>
             
             {messages.map((msg, idx) => (
               <div key={idx} className="mb-4">
-                {msg.sender === 'user' || msg.user ? (
+                {msg.sender === 'user' ? (
                   <div className="text-right p-2 rounded-lg bg-red-900/30 text-red-300">
-                    <span className="font-bold">You:</span> {msg.text || msg.user}
+                    <span className="font-bold">You:</span> {msg.text}
                   </div>
                 ) : null}
                 
-                {msg.sender === 'grace' || msg.bot ? (
+                {msg.sender === 'grace' ? (
                   <div className="text-left p-2 rounded-lg bg-green-900/30 text-green-300">
-                    <span className="font-bold">Grace:</span> {msg.text || msg.bot}
+                    <span className="font-bold">Grace:</span> {msg.text}
                   </div>
                 ) : null}
               </div>
@@ -778,6 +575,11 @@ export default function Chat() {
 
           <footer className="flex border-t border-red-800 bg-black p-4">
             <textarea
+              id="chat-input"
+              name="chatMessage"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
               className="flex-1 mr-2 rounded bg-white/10 p-2 text-white min-h-[60px] resize-none"
               placeholder={isAuthenticated ? "Type your message... (Shift+Enter for new line)" : "Please log in to chat"}
               value={input}
@@ -785,56 +587,63 @@ export default function Chat() {
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault(); // Prevent default to avoid new line
-                  if (!loading && isAuthenticated && input.trim()) {
+                  if (!isSending && isAuthenticated && input.trim()) {
                     sendMessage();
                   }
                 }
               }}
-              disabled={!isAuthenticated || loading}
-              autoFocus
+              disabled={!isAuthenticated || isSending}
               aria-label="Chat message input"
               ref={(el) => {
-                // Focus when session changes
-                if (el && isAuthenticated && !loading) {
-                  setTimeout(() => el.focus(), 100); // Small delay to ensure it works across browsers
+                // Conditionally focus when safe: user at bottom, not during recent user scroll, and not already focused
+                if (!el) return;
+                if (!isAuthenticated || isSending) return;
+                const now = Date.now();
+                const safeToFocus = isAtBottom && now > suppressAutoScrollUntilRef.current && document.activeElement !== el;
+                if (safeToFocus) {
+                  setTimeout(() => {
+                    try { el.focus(); } catch {}
+                  }, 100);
                 }
               }}
             />
             <button
               onClick={sendMessage}
-              disabled={loading || !isAuthenticated || !input.trim()}
+              disabled={isSending || !isAuthenticated || !input.trim()}
               className="rounded bg-red-700 px-4 py-2 hover:bg-red-900 disabled:bg-gray-700 disabled:cursor-not-allowed"
             >
-              {loading ? '...' : 'Send'}
+              {isSending ? '...' : 'Send'}
             </button>
           </footer>
           
-          {/* XFeed Section */}
-          <div className="border-t border-red-800/50 p-4 bg-black/70">
-            <div className="bg-transparent text-white p-4">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="flex items-center text-red-500 font-bold relative pl-4 before:content-[''] before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-red-500">
-                  XFeed Channel
-                </h3>
-                {/* Direct Add Account Button */}
-                <button 
-                  onClick={() => {
-                    // Find and click the settings button in XFeed
-                    const settingsBtn = document.querySelector('[data-xfeed-settings]');
-                    if (settingsBtn && settingsBtn instanceof HTMLElement) {
-                      settingsBtn.click();
-                    }
-                  }}
-                  className="text-xs px-2 py-1 rounded bg-red-900/50 text-red-200 hover:bg-red-800 flex items-center space-x-1"
-                >
-                  <span className="text-lg leading-none">+</span>
-                  <span>Add Account</span>
-                </button>
+          {/* XFeed Section (deferred mount to reduce CLS) */}
+          {showXFeed && (
+            <div className="border-t border-red-800/50 p-4 bg-black/70">
+              <div className="bg-transparent text-white p-4">
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="flex items-center text-red-500 font-bold relative pl-4 before:content-[''] before:absolute before:left-0 before:top-0 before:h-full before:w-1 before:bg-red-500">
+                    XFeed Channel
+                  </h3>
+                  {/* Direct Add Account Button */}
+                  <button 
+                    onClick={() => {
+                      // Find and click the settings button in XFeed
+                      const settingsBtn = document.querySelector('[data-xfeed-settings]');
+                      if (settingsBtn && settingsBtn instanceof HTMLElement) {
+                        settingsBtn.click();
+                      }
+                    }}
+                    className="text-xs px-2 py-1 rounded bg-red-900/50 text-red-200 hover:bg-red-800 flex items-center space-x-1"
+                  >
+                    <span className="text-lg leading-none">+</span>
+                    <span>Add Account</span>
+                  </button>
+                </div>
+                <hr className="border-gray-800 mb-4" />
+                <XFeed maxItems={3} /> {/* Limit to 3 items to keep it compact */}
               </div>
-              <hr className="border-gray-800 mb-4" />
-              <XFeed maxItems={3} /> {/* Limit to 3 items to keep it compact */}
             </div>
-          </div>
+          )}
         </main>
       </div>
   );

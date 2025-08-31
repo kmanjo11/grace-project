@@ -58,18 +58,7 @@ export const bypassLogin = (loginFunction: (data: any) => void): void => {
     if (adminAuthData) {
       console.info('🔑 Using admin master access');
       
-      // Ensure the token is stored in BOTH localStorage and sessionStorage
-      // This guarantees it will be found regardless of which storage is checked
-      localStorage.setItem('grace_token', adminAuthData.token);
-      sessionStorage.setItem('grace_token', adminAuthData.token);
-      
-      // Set a very far future expiry to prevent token timeout
-      const farFuture = new Date();
-      farFuture.setFullYear(farFuture.getFullYear() + 10); // 10 years in the future
-      localStorage.setItem('grace_token_expiry', farFuture.toISOString());
-      sessionStorage.setItem('grace_token_expiry', farFuture.toISOString());
-      
-      // Use the standard auth function to store properly
+      // Persist using unified helper (single canonical key in localStorage)
       storeAuthToken(adminAuthData.token, true);
       
       // Call the real login function with our admin data
@@ -80,9 +69,7 @@ export const bypassLogin = (loginFunction: (data: any) => void): void => {
     }
   } catch (error) {
     console.error('Admin access failed:', error);
-    // Fallback direct storage in case of error
-    const adminAuthData = getAdminAuthData();
-    localStorage.setItem('grace_token', adminAuthData.token);
+    // Fallback: still try to proceed with admin flag only
     localStorage.setItem('grace_admin_mode', 'true');
     window.location.reload(); // Force reload to retry auth
   }

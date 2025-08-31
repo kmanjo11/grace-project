@@ -10,6 +10,7 @@ interface LockInfo {
   operation: string;
   acquiredAt: number;
   expiresAt: number;
+  timeoutId?: number;
 }
 
 class StateOperationLock {
@@ -40,7 +41,8 @@ class StateOperationLock {
     
     // Check if the resource is already locked
     if (this.activeLocks.has(resourceId)) {
-      console.warn(`Resource ${resourceId} is already locked for operation: ${this.activeLocks.get(resourceId)?.operation}`);
+      // Downgrade to debug-level noise to avoid console spam
+      console.debug(`StateOperationLock: Resource ${resourceId} already locked for operation: ${this.activeLocks.get(resourceId)?.operation}`);
       return null;
     }
     
@@ -57,12 +59,17 @@ class StateOperationLock {
     
     // Set the lock
     this.activeLocks.set(resourceId, lockInfo);
-    console.log(`Lock acquired for ${resourceId}: ${operation}`);
+    console.debug(`StateOperationLock: Lock acquired for ${resourceId}: ${operation}`);
     
     // Set automatic release after timeout
-    setTimeout(() => {
-      this.releaseLock(resourceId, lockId);
-    }, timeoutMs);
+    const tid = setTimeout(() => {
+      const current = this.activeLocks.get(resourceId);
+      if (current && current.id === lockId) {
+        this.activeLocks.delete(resourceId);
+        console.debug(`StateOperationLock: Lock auto-released for ${resourceId}`);
+      }
+    }, timeoutMs) as unknown as number;
+    lockInfo.timeoutId = tid;
     
     return lockId;
   }
@@ -77,18 +84,24 @@ class StateOperationLock {
     const lock = this.activeLocks.get(resourceId);
     
     if (!lock) {
-      console.warn(`No lock found for resource ${resourceId}`);
+      // If the lock was already auto-released, don't warn
+      console.debug(`StateOperationLock: No active lock for ${resourceId} (already released?)`);
       return false;
     }
     
     if (lock.id !== lockId) {
-      console.warn(`Lock ID mismatch for ${resourceId}: expected ${lock.id}, got ${lockId}`);
+      // Benign mismatch can occur if a stale releaser runs late
+      console.debug(`StateOperationLock: Lock ID mismatch for ${resourceId}: expected ${lock.id}, got ${lockId}`);
       return false;
     }
     
     // Release the lock
     this.activeLocks.delete(resourceId);
-    console.log(`Lock released for ${resourceId}`);
+    // Clear pending auto-release timer if set
+    if (lock.timeoutId) {
+      clearTimeout(lock.timeoutId);
+    }
+    console.debug(`StateOperationLock: Lock released for ${resourceId}`);
     
     return true;
   }
@@ -111,7 +124,7 @@ class StateOperationLock {
     
     for (const [resourceId, lock] of this.activeLocks.entries()) {
       if (lock.expiresAt < now) {
-        console.log(`Lock for ${resourceId} expired and was auto-released`);
+        console.debug(`StateOperationLock: Lock for ${resourceId} expired and was auto-released`);
         this.activeLocks.delete(resourceId);
       }
     }

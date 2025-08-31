@@ -3,7 +3,7 @@ from src.gmgn_service import GMGNService
 from src.mango_v3_extension import MangoV3Extension  # Importing Mango V3 if needed
 
 # Initialize the service with configuration
-default_config = {"mango_v3": {"enabled": True, "url": "http://localhost:8000"}}
+default_config = {"mango_v3": {"enabled": True, "url": "http://localhost:9000"}}
 service = GMGNService(config=default_config)
 
 # Define trade parameters for spot trade

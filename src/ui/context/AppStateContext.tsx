@@ -245,17 +245,18 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
   const [isStateRecovered, setIsStateRecovered] = useState(false);
   const [isStateSyncing, setIsStateSyncing] = useState(false);
   const isUpdatingFromStorage = useRef(false);
+  const PERSIST_DISABLED = (process.env.NEXT_PUBLIC_DISABLE_STATE_PERSIST || '').toString() === '1' || (process.env.NEXT_PUBLIC_DISABLE_STATE_PERSIST || '').toString().toLowerCase() === 'true';
   
   // Get auth state from AuthContext
   const { user, isAuthenticated } = useAuth();
 
-  // Sync auth state with AppState
+  // Sync auth state with AppState (do not persist or read JWT into app state)
   useEffect(() => {
     dispatch({
       type: 'UPDATE_AUTH',
       payload: {
         user: isAuthenticated ? user : null,
-        token: isAuthenticated ? localStorage.getItem('authToken') : null
+        token: '' // never store JWT in AppState; rely on authUtils localStorage only
       }
     });
   }, [user, isAuthenticated]);
@@ -263,6 +264,12 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
   // Hydrate state from storage on initial load
   const hydrateFromStorage = useCallback(async (navigate?: NavigateFunction) => {
     try {
+      if (PERSIST_DISABLED) {
+        // Skip any storage hydration
+        setIsStateHydrated(true);
+        setIsStateLoading(false);
+        return;
+      }
       setIsStateLoading(true);
       
       // Get the stored state using the synchronous retrieveSnapshot method
@@ -285,7 +292,7 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
         
         // Map user session
         userSession: {
-          token: storedState.userSession?.token || '',
+          token: '', // ignore any persisted token; source of truth is authUtils/localStorage
           username: storedState.userSession?.username || ''
         },
         
@@ -411,6 +418,9 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
   
   // Listen for changes from other tabs
   useEffect(() => {
+    if (PERSIST_DISABLED) {
+      return; // Do not attach storage listeners when persistence is disabled
+    }
     const handleStorageChange = (event: StorageEvent) => {
       // Only process events for our storage key
       const STORAGE_KEY = 'GRACE_DYNAMIC_SNAPSHOT'; // Must match the key in StatePersistenceManager
@@ -467,6 +477,9 @@ export function AppStateProvider({ children }: AppStateProviderProps) {
   const lastSavedTimestamp = useRef<number>(0);
   
   useEffect(() => {
+    if (PERSIST_DISABLED) {
+      return; // Skip saving to storage entirely
+    }
     // Skip initial render to avoid overwriting with empty state
     // Only proceed if we have some meaningful state to save
     const hasContent = 

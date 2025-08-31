@@ -56,6 +56,7 @@ export const useChatStatePersistence = (
   draftMessage: string = ''
 ) => {
   const { state, dispatch } = useAppState();
+  const PERSIST_DISABLED = (process.env.NEXT_PUBLIC_DISABLE_STATE_PERSIST || '').toString() === '1' || (process.env.NEXT_PUBLIC_DISABLE_STATE_PERSIST || '').toString().toLowerCase() === 'true';
   
   // Refs to prevent unnecessary effect triggers
   const lastSessionsRef = useRef<string>('');
@@ -89,7 +90,10 @@ export const useChatStatePersistence = (
     }
     
     // If no sessions in state, check localStorage cache
-    const activeSessionId = localStorage.getItem('activeSessionId');
+    if (PERSIST_DISABLED) {
+      return [];
+    }
+    const activeSessionId = typeof window !== 'undefined' ? localStorage.getItem('activeSessionId') : null;
     if (activeSessionId) {
       try {
         // Try to load cached messages for this session
@@ -110,7 +114,7 @@ export const useChatStatePersistence = (
     }
     
     return [];
-  }, [state.chatState?.sessions]); // Only depend on sessions object
+  }, [state.chatState?.sessions, PERSIST_DISABLED]); // Only depend on sessions object
   
   // FIXED: Memoized loadMessagesFromCache to prevent unnecessary recalculations
   const loadMessagesFromCache = useCallback((sid: string): ChatMessage[] => {
@@ -132,7 +136,8 @@ export const useChatStatePersistence = (
       }
       
       // 2. Then check localStorage
-      const savedMessages = localStorage.getItem(`messages_${sid}`);
+      if (PERSIST_DISABLED) return [];
+      const savedMessages = typeof window !== 'undefined' ? localStorage.getItem(`messages_${sid}`) : null;
       if (savedMessages) {
         const parsedMessages = JSON.parse(savedMessages);
         if (Array.isArray(parsedMessages) && parsedMessages.length > 0) {
@@ -145,7 +150,7 @@ export const useChatStatePersistence = (
     }
     
     return [];
-  }, [state.chatState?.sessions]); // Only depend on sessions object
+  }, [state.chatState?.sessions, PERSIST_DISABLED]); // Only depend on sessions object
   
   // FIXED: Stabilized effect with refs to prevent loops
   useEffect(() => {
@@ -214,7 +219,7 @@ export const useChatStatePersistence = (
     
     // Persist to localStorage (separate from dispatch to prevent loops)
     const currentSession = sessions.find(s => s.id === sessionId || s.session_id === sessionId);
-    if (currentSession && Array.isArray(currentSession.messages) && currentSession.messages.length > 0) {
+    if (!PERSIST_DISABLED && currentSession && Array.isArray(currentSession.messages) && currentSession.messages.length > 0) {
       persistMessages(sessionId, currentSession.messages);
     }
   }, [sessionId, sessions, draftMessage, state.chatState?.sessions, state.chatState?.currentSessionId, dispatch]);
@@ -263,15 +268,17 @@ export const useChatStatePersistence = (
       const messagesToStore = msgs.slice(-100); // Store more messages (up to 100)
       
       // Store in localStorage as a backup
-      localStorage.setItem(`messages_${sid}`, JSON.stringify(messagesToStore));
-      localStorage.setItem(`lastSynced_${sid}`, new Date().toISOString());
-      localStorage.setItem('activeSessionId', sid);
+      if (!PERSIST_DISABLED) {
+        localStorage.setItem(`messages_${sid}`, JSON.stringify(messagesToStore));
+        localStorage.setItem(`lastSynced_${sid}`, new Date().toISOString());
+        localStorage.setItem('activeSessionId', sid);
+      }
 
       // Note: Do NOT dispatch global state updates here to avoid recursive update loops.
     } catch (e) {
       console.error('Failed to store messages:', e);
     }
-  }, []); // No dependencies needed - pure function
+  }, [PERSIST_DISABLED]); // No dependencies needed - pure function
   
   // FIXED: Properly memoized initializeFromPersistedState function
   const initializeFromPersistedState = useCallback((setSessionsFunc: (sessions: ChatSession[]) => void, setSessionIdFunc: (id: string | null) => void) => {
@@ -282,7 +289,7 @@ export const useChatStatePersistence = (
       setSessionsFunc(storedSessions);
       
       // Set the active session ID if available - use same approach as Chat.tsx
-      const activeSessionId = localStorage.getItem('activeSessionId');
+      const activeSessionId = PERSIST_DISABLED ? null : (typeof window !== 'undefined' ? localStorage.getItem('activeSessionId') : null);
       if (activeSessionId) {
         // Check if this session exists in our stored sessions
         const sessionExists = storedSessions.some(s => 
@@ -308,7 +315,7 @@ export const useChatStatePersistence = (
     }
     
     return false; // Indicate that we did not restore (no stored sessions or sessions already loaded)
-  }, [getStoredSessions, sessions.length, state.chatState?.currentSessionId]);
+  }, [getStoredSessions, sessions.length, state.chatState?.currentSessionId, PERSIST_DISABLED]);
   
   return {
     // Main functions for state initialization and persistence
@@ -322,7 +329,9 @@ export const useChatStatePersistence = (
       if (!sessionId) return;
       
       // Save scroll position in both localStorage and global state
-      localStorage.setItem(`scrollPosition_${sessionId}`, position.toString());
+      if (!PERSIST_DISABLED) {
+        localStorage.setItem(`scrollPosition_${sessionId}`, position.toString());
+      }
       
       dispatch({
         type: 'SET_CHAT_STATE',
@@ -336,14 +345,14 @@ export const useChatStatePersistence = (
           }
         }
       });
-    }, [sessionId, state.chatState?.sessions, dispatch]),
+    }, [sessionId, state.chatState?.sessions, dispatch, PERSIST_DISABLED]),
     
     // FIXED: Memoized getSavedScrollPosition
     getSavedScrollPosition: useCallback(() => {
       if (!sessionId) return null;
       
       // First check localStorage (Chat.tsx approach)
-      const localPosition = localStorage.getItem(`scrollPosition_${sessionId}`);
+      const localPosition = PERSIST_DISABLED ? null : (typeof window !== 'undefined' ? localStorage.getItem(`scrollPosition_${sessionId}`) : null);
       if (localPosition) {
         return parseInt(localPosition, 10);
       }
@@ -354,14 +363,14 @@ export const useChatStatePersistence = (
       }
       
       return null;
-    }, [sessionId, state.chatState?.sessions]),
+    }, [sessionId, state.chatState?.sessions, PERSIST_DISABLED]),
     
     // FIXED: Memoized getSavedDraftMessage
     getSavedDraftMessage: useCallback(() => {
       if (!sessionId) return '';
       
       // First check localStorage (Chat.tsx approach)
-      const localDraft = localStorage.getItem(`draft_${sessionId}`);
+      const localDraft = PERSIST_DISABLED ? null : (typeof window !== 'undefined' ? localStorage.getItem(`draft_${sessionId}`) : null);
       if (localDraft) {
         return localDraft;
       }
@@ -372,7 +381,7 @@ export const useChatStatePersistence = (
       }
       
       return '';
-    }, [sessionId, state.chatState?.draftMessages]),
+    }, [sessionId, state.chatState?.draftMessages, PERSIST_DISABLED]),
     
     // FIXED: Memoized updateDraftMessage with change detection
     updateDraftMessage: useCallback((message: string) => {
@@ -385,7 +394,9 @@ export const useChatStatePersistence = (
       }
       
       // Save in both localStorage and global state for consistent behavior with Chat.tsx
-      localStorage.setItem(`draft_${sessionId}`, message);
+      if (!PERSIST_DISABLED) {
+        localStorage.setItem(`draft_${sessionId}`, message);
+      }
       
       dispatch({
         type: 'SET_CHAT_STATE',
@@ -396,7 +407,7 @@ export const useChatStatePersistence = (
           }
         }
       });
-    }, [sessionId, state.chatState?.draftMessages, dispatch])
+    }, [sessionId, state.chatState?.draftMessages, dispatch, PERSIST_DISABLED])
   };
 };
 

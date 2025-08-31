@@ -118,7 +118,7 @@ Confirm VITE_API_BASE_URL is correct
 Verify backend:
 bash
 CopyInsert in Terminal
-curl http://localhost:8000/health
+curl http://localhost:9000/api/health
 Should return {"status":"healthy"}
 7. Emergency Reset
 If everything breaks:

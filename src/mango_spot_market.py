@@ -198,7 +198,7 @@ class MangoSpotMarket:
         # Ensure base_url is always defined, falling back to default if not in config
         mango_url = self.config.get("mango_url")
         if mango_url is None:
-            mango_url = "http://localhost:8000"
+            mango_url = "http://localhost:9000"
         
         self.logger = logging.getLogger("MangoSpotMarket")
         self.logger.info(f"Initializing MangoV3Extension with base_url={mango_url}")
