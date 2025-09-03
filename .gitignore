@@ -83,3 +83,8 @@ X.pub
 *.bak
 *.swp
 *~
+
+# Build outputs
+src/ui/.next/
+# Local data
+data/
