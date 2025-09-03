@@ -13,6 +13,12 @@ import '../styles/animations.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { initClientLogger } from '../utils/clientLogger';
+import '@solana/wallet-adapter-react-ui/styles.css';
+import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react';
+import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
+import { PhantomWalletAdapter } from '@solana/wallet-adapter-phantom';
+import { clusterApiUrl } from '@solana/web3.js';
+
 // Auth token is managed inside AuthContext; AuthGuard should rely on verified state only
 
 // Pages that should have the layout (header/navigation)
@@ -125,6 +131,13 @@ export default function App({ Component, pageProps, router }: AppProps) {
     },
   }), []);
 
+  // Solana Wallet Adapter setup
+  const endpoint = useMemo(() => {
+    return process.env.NEXT_PUBLIC_SOLANA_RPC_URL || clusterApiUrl('mainnet-beta');
+  }, []);
+  // Note: casting to any avoids type conflicts if multiple @solana/web3.js versions exist in the workspace
+  const wallets = useMemo(() => [new PhantomWalletAdapter() as any], []);
+
   // Initialize client logger once if enabled via env
   useEffect(() => {
     try {
@@ -141,13 +154,19 @@ export default function App({ Component, pageProps, router }: AppProps) {
         <AppStateProvider>
           <QueryClientProvider client={queryClient}>
             <AuthGuard router={router}>
-              {shouldHaveLayout ? (
-                <Layout>
-                  <Component {...pageProps} />
-                </Layout>
-              ) : (
-                <Component {...pageProps} />
-              )}
+              <ConnectionProvider endpoint={endpoint}>
+                <WalletProvider wallets={wallets} autoConnect>
+                  <WalletModalProvider>
+                    {shouldHaveLayout ? (
+                      <Layout>
+                        <Component {...pageProps} />
+                      </Layout>
+                    ) : (
+                      <Component {...pageProps} />
+                    )}
+                  </WalletModalProvider>
+                </WalletProvider>
+              </ConnectionProvider>
               <ToastContainer position="bottom-right" theme="dark" />
             </AuthGuard>
             <ReactQueryDevtools initialIsOpen={false} />

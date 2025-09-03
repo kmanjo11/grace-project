@@ -1751,8 +1751,49 @@ class WalletConnectionSystem:
     """
     Manages wallet connections for Grace users.
     """
+    
+    def __init__(
+        self,
+        user_profile_system,
+        secure_data_manager=None,
+        phantom_app_url: str = None,
+        phantom_callback_path: str = None,
+    ):
+        """
+        Initialize the WalletConnectionSystem.
 
-# Removed duplicate __init__ method - using the more comprehensive one above
+        Args:
+            user_profile_system: User profile system used to persist wallet/session data
+            secure_data_manager: Optional secure data manager for encryption
+            phantom_app_url: Optional Phantom app base URL
+            phantom_callback_path: Optional callback path used by Phantom deep links
+        """
+        # Core dependencies
+        self.user_profile_system = user_profile_system
+        self.secure_data_manager = secure_data_manager
+
+        # Logger
+        self.logger = logging.getLogger("GraceWalletConnectionSystem")
+
+        # Internal wallet manager
+        self.internal_wallet_manager = InternalWalletManager(
+            secure_data_manager=secure_data_manager
+        )
+
+        # Prepare app metadata with backend defaults (port 9000 per project standard)
+        backend_base_url = os.getenv("BACKEND_BASE_URL", "http://localhost:9000")
+        app_metadata = {
+            "name": "Grace Trading Platform",
+            "url": backend_base_url,
+            "icon": f"{backend_base_url.rstrip('/')}/icon.png",
+        }
+
+        # Phantom connector
+        self.phantom_connector = PhantomWalletConnector(
+            phantom_app_url=phantom_app_url,
+            secure_data_manager=secure_data_manager,
+            app_metadata=app_metadata,
+        )
 
     def create_internal_wallet(self, user_id: str) -> Dict[str, Any]:
         """
@@ -1861,7 +1902,10 @@ class WalletConnectionSystem:
         """
         try:
             # Create connection session
-            session = self.phantom_connector.create_connection_session()
+            session = self.phantom_connector.create_connection_session(
+                user_id=user_id,
+                redirect_url=redirect_url,
+            )
 
             # Generate connection URL
             connection_url = self.phantom_connector.generate_connection_url(

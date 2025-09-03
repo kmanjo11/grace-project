@@ -131,7 +131,16 @@ export const API_ENDPOINTS = {
     SELL_POSITION: '/api/trading/sell-position',
     USER_POSITIONS: '/api/user/positions',
     LEVERAGE_POSITIONS: '/api/user/leverage_positions',
-    SPOT_POSITIONS: '/api/user/spot_positions'
+    SPOT_POSITIONS: '/api/user/spot_positions',
+    UNIFIED_POSITIONS: '/api/trading/positions',
+    UNIFIED_TRANSACTIONS: '/api/trading/transactions',
+    TRADE_INITIATE: '/api/trade/initiate',
+    TRADE_SUBMIT: '/api/trade/submit'
+  },
+  GMGN: {
+    QUOTE: '/api/gmgn/quote',
+    SUBMIT: '/api/gmgn/submit',
+    TX_STATUS: '/api/gmgn/tx-status',
   },
   SETTINGS: {
     // Updated to match backend implementation
@@ -140,6 +149,28 @@ export const API_ENDPOINTS = {
     // Additional backend settings endpoint
     TRADING_SETTINGS: '/api/trading/smart-settings', // Matches trading_smart_settings in backend
   },
+};
+
+// Smart settings helpers
+export const SmartSettingsApi = {
+  async get(): Promise<{ success: boolean; settings?: any }> {
+    try {
+      const res = await api.get(API_ENDPOINTS.SETTINGS.TRADING_SETTINGS);
+      return res.data as any;
+    } catch (e) {
+      console.warn('Failed to fetch smart settings', e);
+      return { success: false } as any;
+    }
+  },
+  async update(settings: Record<string, any>): Promise<{ success: boolean }> {
+    try {
+      const res = await api.post(API_ENDPOINTS.SETTINGS.TRADING_SETTINGS, { smart_settings: settings });
+      return res.data as any;
+    } catch (e) {
+      console.warn('Failed to update smart settings', e);
+      return { success: false } as any;
+    }
+  }
 };
 
 /**
@@ -323,6 +354,43 @@ export const api = {
   async delete<T = any>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     return apiRequest<T>(endpoint, { ...options, method: 'DELETE' });
   }
+};
+
+// GMGN Solana spot trading API helpers
+export const GmgnApi = {
+  // Request a GMGN swap route / unsigned transaction
+  async quote(params: {
+    tokenIn: string;
+    tokenOut: string;
+    amount: string | number;
+    slippageBps?: number;
+    from_address?: string;
+    [k: string]: any;
+  }): Promise<any> {
+    const body = { ...params, amount: params.amount.toString() };
+    const res = await api.post<any>(API_ENDPOINTS.GMGN.QUOTE, body);
+    return res.data;
+  },
+
+  // Submit a signed Solana transaction via GMGN txproxy
+  async submitSigned(params: { signedTransaction: string; anti_mev?: boolean }): Promise<any> {
+    const body: any = { signedTransaction: params.signedTransaction };
+    if (params.anti_mev !== undefined) body.anti_mev = params.anti_mev;
+    const res = await api.post<any>(API_ENDPOINTS.GMGN.SUBMIT, body);
+    return res.data;
+  },
+
+  // Poll transaction status through GMGN txproxy
+  async txStatus(params: { txHash: string; lastValidBlockHeight?: number | string }): Promise<any> {
+    const qp = new URLSearchParams();
+    qp.append('txHash', params.txHash);
+    if (params.lastValidBlockHeight !== undefined) {
+      qp.append('lastValidBlockHeight', String(params.lastValidBlockHeight));
+    }
+    const endpoint = `${API_ENDPOINTS.GMGN.TX_STATUS}?${qp.toString()}`;
+    const res = await api.get<any>(endpoint);
+    return res.data;
+  },
 };
 
 // Chat API Types
@@ -556,6 +624,69 @@ export const TradingApi = {
       throw new Error(
         error.response?.data?.error || 'Trade confirmation failed'
       );
+    }
+  },
+
+  /**
+   * Unified positions across spot + leverage
+   */
+  async getUnifiedPositions(): Promise<{ success: boolean; positions: BasePosition[]; timestamp?: number }>
+  {
+    try {
+      const response = await api.get<{ success: boolean; positions: BasePosition[]; timestamp?: number }>(
+        API_ENDPOINTS.TRADING.UNIFIED_POSITIONS
+      );
+      // response.data is already normalized by api.get
+      return response.data as any;
+    } catch (error) {
+      console.error('Error fetching unified positions:', error);
+      return { success: false, positions: [] } as any;
+    }
+  },
+
+  /**
+   * Unified transactions across sources
+   */
+  async getUnifiedTransactions(): Promise<{ success: boolean; transactions: any[]; count?: number }>
+  {
+    try {
+      const response = await api.get<{ success: boolean; transactions: any[]; count?: number }>(
+        API_ENDPOINTS.TRADING.UNIFIED_TRANSACTIONS
+      );
+      return response.data as any;
+    } catch (error) {
+      console.error('Error fetching unified transactions:', error);
+      return { success: false, transactions: [], count: 0 } as any;
+    }
+  },
+
+  /**
+   * Initiate trade to get Phantom-signable unsigned tx
+   * Accepts additional optional params (e.g., wallet_type: 'internal'|'phantom')
+   */
+  async initiateTrade(params: { action: 'buy'|'sell'; token: string; amount: string|number; [k: string]: any }): Promise<any> {
+    try {
+      const response = await api.post(API_ENDPOINTS.TRADING.TRADE_INITIATE, {
+        ...params,
+        amount: params.amount.toString()
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Trade initiate failed:', error);
+      throw new Error((error as any)?.response?.data?.error || 'Failed to initiate trade');
+    }
+  },
+
+  /**
+   * Submit signed transaction via JSON-RPC relay
+   */
+  async submitSignedTransaction(params: { signedTransaction: string; options?: Record<string, any> }): Promise<any> {
+    try {
+      const response = await api.post(API_ENDPOINTS.TRADING.TRADE_SUBMIT, params);
+      return response.data;
+    } catch (error) {
+      console.error('Trade submit failed:', error);
+      throw new Error((error as any)?.response?.data?.error || 'Failed to submit signed transaction');
     }
   },
   

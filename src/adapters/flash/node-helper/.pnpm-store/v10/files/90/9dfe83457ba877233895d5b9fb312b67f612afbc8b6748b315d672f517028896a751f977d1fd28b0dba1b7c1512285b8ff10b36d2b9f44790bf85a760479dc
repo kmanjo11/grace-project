@@ -1,0 +1,18 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.METAPLEX_PROGRAM_ID = exports.DAY_SECONDS = exports.BN_ONE = exports.BN_ZERO = exports.ORACLE_EXPONENT = exports.RATE_POWER = exports.RATE_DECIMALS = exports.FAF_DECIMALS = exports.LP_DECIMALS = exports.BPS_POWER = exports.BPS_DECIMALS = exports.USD_DECIMALS = exports.PERCENTAGE_DECIMALS = void 0;
+var web3_js_1 = require("@solana/web3.js");
+var bn_js_1 = require("bn.js");
+exports.PERCENTAGE_DECIMALS = 4;
+exports.USD_DECIMALS = 6;
+exports.BPS_DECIMALS = 4;
+exports.BPS_POWER = Math.pow(10, (exports.BPS_DECIMALS));
+exports.LP_DECIMALS = exports.USD_DECIMALS;
+exports.FAF_DECIMALS = 6;
+exports.RATE_DECIMALS = 9;
+exports.RATE_POWER = Math.pow(10, (exports.RATE_DECIMALS));
+exports.ORACLE_EXPONENT = 9;
+exports.BN_ZERO = new bn_js_1.BN(0);
+exports.BN_ONE = new bn_js_1.BN(1);
+exports.DAY_SECONDS = new bn_js_1.BN(3600);
+exports.METAPLEX_PROGRAM_ID = new web3_js_1.PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");

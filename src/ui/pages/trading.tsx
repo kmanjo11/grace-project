@@ -2,14 +2,20 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../components/AuthContext';
 import { useAppState } from '../context/AppStateContext';
-import { mangoV3Service } from '../services/mangoV3Service';
-import { Trade, TradeExecutionResult } from '../api/apiTypes';
-import { api, API_ENDPOINTS, ApiError, TradingApi } from '../api/apiClient';
-import PriceChart from '../components/PriceChart';
+import { Trade } from '../api/apiTypes';
+import UnifiedPriceChart from '../components/UnifiedPriceChart';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { toast } from 'react-toastify';
+import api, { API_ENDPOINTS } from '../api/apiClient';
+import { GmgnApi, SmartSettingsApi } from '../api/apiClient';
+import { VersionedTransaction, Transaction } from '@solana/web3.js';
+import { Buffer } from 'buffer';
+import { UiMarket } from '../types/market';
 import { tradingEventBus } from '../components/LightweightPositionsWidget';
-import { debounce } from 'lodash';
+import gmgnTokenService from '../services/gmgnTokenService';
+import flashTradeService from '../services/flashTradeService';
+import state from '@project-serum/anchor/dist/cjs/program/namespace/state';
+import { useSolanaWalletBridge } from '../hooks/useSolanaWalletBridge';
 
 // Constants
 const DEFAULT_LEVERAGE = 5;
@@ -18,9 +24,10 @@ const DEFAULT_TAKE_PROFIT = 10;
 
 // Types
 type TradingState = {
-  tokens: MarketData[];
-  selectedToken: MarketData | null;
+  tokens: UiMarket[];
+  selectedToken: UiMarket | null;
   transactions: Trade[];  // Changed from UITrade to Trade
+  spotChain: 'sol' | 'eth' | 'bnb' | 'blast';
   isLoading: {
     tokens: boolean;
     transactions: boolean;
@@ -38,6 +45,9 @@ type TradingState = {
     takeProfit: number;
     orderType: 'market' | 'limit'; // Type of order: market or limit
     limitPrice: string; // Price for limit orders
+    collateralTokenSymbol?: string;
+    payoutTokenSymbol?: string;
+    slippageBps?: number;
   };
 };
 // Initial state
@@ -45,6 +55,7 @@ const initialState: TradingState = {
   tokens: [],
   selectedToken: null,
   transactions: [],
+  spotChain: 'sol',
   isLoading: {
     tokens: true,
     transactions: false,
@@ -62,61 +73,20 @@ const initialState: TradingState = {
     takeProfit: DEFAULT_TAKE_PROFIT,
     orderType: 'market', // Default to market orders
     limitPrice: '',
+    collateralTokenSymbol: 'USDC',
+    payoutTokenSymbol: 'USDC',
+    slippageBps: 800,
   },
 };
 
-// Process Mango token data with validation to create proper MarketData objects
-const processMangoToken = (token: any): MarketData | null => {
-  try {
-    if (!token || typeof token !== 'object') {
-      console.warn('Invalid token data:', token);
-      return null;
-    }
-    
-    // Ensure required fields are present
-    const address = String(token.address || token.mintAddress || '').toLowerCase().trim();
-    if (!address) {
-      console.warn('Token missing address:', token);
-      return null;
-    }
-    
-    // Extract basic token data
-    const baseCurrency = String(token.baseCurrency || token.symbol || '').toUpperCase().trim();
-    const quoteCurrency = String(token.quoteCurrency || 'USDC').toUpperCase().trim();
-    
-    // Create a name using the market pattern if available, otherwise use the base currency
-    const name = token.name || `${baseCurrency}-${quoteCurrency}`;
-    
-    // Use provided price or default to 0 if not available or invalid
-    const price = typeof token.price === 'number' && !isNaN(token.price) ? token.price : 0;
-    
-    // Create a MarketData object with only the properties defined in the interface
-    const marketData: MarketData = {
-      name: name,
-      address: address,
-      baseCurrency: baseCurrency,
-      quoteCurrency: quoteCurrency,
-      price: price,
-      marketId: token.marketId || ''
-    };
-    
-    // Add optional properties if available
-    if (token.symbol) marketData.symbol = token.symbol.toUpperCase().trim();
-    if (token.logoURI) marketData.logoURI = token.logoURI;
-    if (token.decimals !== undefined) marketData.decimals = token.decimals;
-    
-    // Store any additional data in the marketData object using its index signature
-    // This ensures compatibility while preserving extra information
-    marketData['source'] = 'mango';
-    marketData['canTrade'] = true;
-    marketData['canChart'] = true;
-    
-    return marketData;
-  } catch (error) {
-    console.error('Error processing token:', error, token);
-    return null;
-  }
-};
+// Simple debounce helper (local)
+function debounce<T extends (...args: any[]) => void>(fn: T, wait = 300) {
+  let t: any;
+  return (...args: Parameters<T>) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), wait);
+  };
+}
 
 const Trading: React.FC = () => {
   const { user } = useAuth();
@@ -138,6 +108,29 @@ const Trading: React.FC = () => {
   });
   
   const abortController = useRef<AbortController | null>(null);
+  // Wallet bridge for Solana signing/sending
+  const { ensureConnected, getPublicKey, signTx, sendSigned, connection } = useSolanaWalletBridge();
+  // Smart settings and wallet info for wallet routing
+  const [smartSettings, setSmartSettings] = useState<any | null>(null);
+  const [walletInfo, setWalletInfo] = useState<any | null>(null);
+  // Flash quote-derived metrics
+  const [liqPrice, setLiqPrice] = useState<number | null>(null);
+  // Local confirm modal state
+  const [confirmModal, setConfirmModal] = useState<{
+    open: boolean;
+    details: {
+      token?: string;
+      action?: string;
+      amount?: string;
+      price?: number;
+      total?: number;
+      stopLoss?: number;
+      takeProfit?: number;
+      leverage?: number;
+      liquidationPrice?: number | null;
+    };
+    resolve?: (v: boolean) => void;
+  }>({ open: false, details: {} });
 
   // Save state to global persistence whenever it changes
   useEffect(() => {
@@ -160,11 +153,11 @@ const Trading: React.FC = () => {
 
   // Action creators with type safety
   const actions = useMemo(() => ({
-    setTokens: (tokens: MarketData[]) => {
+    setTokens: (tokens: UiMarket[]) => {
       console.log('Setting tokens:', tokens);
       setState(prev => ({ ...prev, tokens }));
     },
-    selectToken: (token: MarketData | null) => {
+    selectToken: (token: UiMarket | null) => {
       console.log('Selecting token:', token?.name);
       setState(prev => ({ ...prev, selectedToken: token }));
     },
@@ -235,9 +228,12 @@ const Trading: React.FC = () => {
         },
       }));
     },
+    setSpotChain: (chain: 'sol' | 'eth' | 'bnb' | 'blast') => {
+      setState(prev => ({ ...prev, spotChain: chain }));
+    },
   }), []);
 
-  // Show trade confirmation dialog
+  // Show trade confirmation dialog (modal-based)
   const showTradeConfirmation = async (details: {
     token: string;
     action: string;
@@ -246,26 +242,12 @@ const Trading: React.FC = () => {
     total?: number;
     stopLoss?: number;
     takeProfit?: number;
+    leverage?: number;
+    liquidationPrice?: number | null;
   }): Promise<boolean> => {
-    // Format numbers for display
-    const formatNumber = (num?: number) => {
-      if (num === undefined) return 'N/A';
-      return num.toLocaleString(undefined, { maximumFractionDigits: 6 });
-    };
-    
-    // Build confirmation message
-    const message = `
-      Please confirm your trade:
-      
-      ${details.action.toUpperCase()} ${details.amount} ${details.token}
-      Price: $${formatNumber(details.price)}
-      Total: $${formatNumber(details.total)}
-      ${details.stopLoss ? `Stop Loss: $${formatNumber(details.stopLoss)}` : ''}
-      ${details.takeProfit ? `Take Profit: $${formatNumber(details.takeProfit)}` : ''}
-    `;
-    
-    // Use built-in browser confirmation
-    return window.confirm(message);
+    return new Promise<boolean>((resolve) => {
+      setConfirmModal({ open: true, details, resolve });
+    });
   };
 
   // Execute a trade (buy/sell)
@@ -281,13 +263,30 @@ const Trading: React.FC = () => {
       return;
     }
 
+    // Simple confirmation dialog
+    const amountNum = Number(state.tradeForm.amount);
+    const priceNum = Number(state.selectedToken.price || 0);
+    const total = isFinite(amountNum * priceNum) ? amountNum * priceNum : undefined;
+    const confirmed = await showTradeConfirmation({
+      token: state.selectedToken.symbol || state.selectedToken.name,
+      action: side,
+      amount: state.tradeForm.amount,
+      price: priceNum || undefined,
+      total,
+      stopLoss: state.tradeForm.isSmartTrade ? state.tradeForm.stopLoss : undefined,
+      takeProfit: state.tradeForm.isSmartTrade ? state.tradeForm.takeProfit : undefined,
+      leverage: state.tradeForm.isLeverage ? state.tradeForm.leverage : undefined,
+      liquidationPrice: state.tradeForm.isLeverage ? liqPrice : null,
+    });
+    if (!confirmed) return;
+
     try {
       actions.setLoading({ trading: true });
       
       if (state.tradeForm.orderType === 'limit') {
         // Handle limit order placement
         const limitOrderData = {
-          market: state.selectedToken.symbol,
+          market: state.selectedToken.symbol || state.selectedToken.name,
           side: side,
           price: parseFloat(state.tradeForm.limitPrice),
           size: parseFloat(state.tradeForm.amount),
@@ -303,19 +302,6 @@ const Trading: React.FC = () => {
           
           if (response.success) {
             toast.success(`${side.toUpperCase()} limit order placed successfully at $${state.tradeForm.limitPrice}`);
-            // Emit trade confirmed event for position widgets to update
-            tradingEventBus.emit('trade:confirmed', {
-              type: 'limit_order_placed',
-              data: response,
-              trade: {
-                action: side,
-                token: state.selectedToken.symbol,
-                amount: state.tradeForm.amount,
-                price: state.tradeForm.limitPrice,
-                isLeverage: state.tradeForm.isLeverage,
-                timestamp: Date.now()
-              }
-            });
           } else {
             throw new Error(response.error || 'Failed to place limit order');
           }
@@ -324,72 +310,125 @@ const Trading: React.FC = () => {
           toast.error(`Limit order failed: ${error.message || 'Unknown error'}`);
         }
       } else {
-        // Handle market order (existing functionality)
-        const tradeData = {
-          action: side,
-          token: state.selectedToken.symbol,
-          amount: state.tradeForm.amount,
-          isLeverage: state.tradeForm.isLeverage,
-          leverage: state.tradeForm.isLeverage ? state.tradeForm.leverage : undefined,
-          stopLoss: state.tradeForm.stopLoss,
-          takeProfit: state.tradeForm.takeProfit,
-          isSmartTrade: state.tradeForm.isSmartTrade
-        };
+        // If spot mode on Solana, use GMGN flow
+        if (!state.tradeForm.isLeverage && state.spotChain === 'sol') {
+          try {
+            await handleGmgnSpotSwap(side);
+            return;
+          } catch (e:any) {
+            console.error('GMGN spot swap failed:', e);
+            toast.error(e?.message || 'GMGN spot swap failed');
+            return;
+          }
+        }
 
-        // Step 1: Execute trade (gets confirmation request)
-        const tradeResult = await TradingApi.executeTrade(tradeData);
-        
-        // Step 2: If confirmation is required, handle it
-        if (tradeResult.result?.status === 'confirmation_required' && 
-            tradeResult.result.confirmation_id) {
-          
-          // Show confirmation dialog to user
-          const confirmDetails = {
-            token: state.selectedToken.symbol,
-            action: side,
-            amount: state.tradeForm.amount,
-            price: tradeResult.result.current_price,
-            total: tradeResult.result.estimated_total,
-            stopLoss: tradeResult.result.stop_loss_price,
-            takeProfit: tradeResult.result.take_profit_price
-          };
-          
-          // Ask user to confirm
-          const userConfirmed = await showTradeConfirmation(confirmDetails);
-          
-          if (userConfirmed) {
-            // Execute confirmation
-            const confirmResult = await TradingApi.confirmTrade(
-              tradeResult.result.confirmation_id
-            );
-            
-            if (confirmResult.success) {
-              toast.success(`${side.toUpperCase()} order executed successfully`);
-              // Emit trade confirmed event for position widgets to update
-              tradingEventBus.emit('trade:confirmed', {
-                type: 'trade_confirmed',
-                data: confirmResult,
-                trade: {
+        // Otherwise handle market order via Flash adapter (leverage or non-sol chains)
+        const params = {
+          market: state.selectedToken.symbol || state.selectedToken.name,
+          side,
+          size: parseFloat(state.tradeForm.amount),
+          leverage: state.tradeForm.isLeverage ? state.tradeForm.leverage : 1,
+          reduceOnly: false,
+          takeProfitPrice: state.tradeForm.isSmartTrade ? Number(state.tradeForm.takeProfit) : undefined,
+          stopLossPrice: state.tradeForm.isSmartTrade ? Number(state.tradeForm.stopLoss) : undefined,
+          collateralTokenSymbol: state.tradeForm.collateralTokenSymbol,
+          payoutTokenSymbol: state.tradeForm.payoutTokenSymbol,
+          slippageBps: state.tradeForm.slippageBps ?? 800,
+        } as const;
+
+        // Determine effective wallet type (Phantom precedence)
+        const isPhantomConnected = Boolean(getPublicKey());
+        const configuredAuto = Boolean(smartSettings?.auto_trading_enabled);
+        const pref = String(smartSettings?.wallet_preference || '').toLowerCase();
+        const wantsInternal = pref === 'internal' || pref === 'auto';
+        const internalReady = Boolean(walletInfo?.internal_wallet?.address);
+        const walletType: 'internal' | 'phantom' = (configuredAuto && wantsInternal && internalReady && !isPhantomConnected) ? 'internal' : 'phantom';
+
+        // If Phantom is connected, pass ownerPubkey to have server build txs for same owner
+        const maybeOwner = getPublicKey()?.toBase58();
+        const paramsWithOwner = maybeOwner ? { ...params, ownerPubkey: maybeOwner, walletType } : { ...params, walletType };
+
+        const res = await flashTradeService.placeOrder(paramsWithOwner as any);
+        if (res.success) {
+          // If backend returned an unsigned transaction, sign and submit via wallet adapter
+          const unsignedB64 = (res.data as any)?.unsigned_tx_b64 || (res.data as any)?.transaction;
+          if (unsignedB64) {
+            try {
+              // Ensure wallet is connected and we have a pubkey
+              await ensureConnected();
+              if (!getPublicKey()) {
+                throw new Error('Wallet not connected');
+              }
+
+              const msgBytes = Buffer.from(unsignedB64, 'base64');
+              let signature: string | null = null;
+
+              const flashToastId = toast.loading('Preparing transaction…');
+
+              try {
+                // Try v0 versioned first
+                const vtx = VersionedTransaction.deserialize(Uint8Array.from(msgBytes));
+                toast.update(flashToastId, { render: 'Please confirm in Phantom…', isLoading: true });
+                const signed = await signTx(vtx);
+                toast.update(flashToastId, { render: 'Submitting transaction…', isLoading: true });
+                signature = await sendSigned(signed, connection, { skipPreflight: false, maxRetries: 3 });
+              } catch {
+                // Legacy fallback
+                const legacy = Transaction.from(msgBytes);
+                toast.update(flashToastId, { render: 'Please confirm in Phantom…', isLoading: true });
+                const signedLegacy = await signTx(legacy);
+                toast.update(flashToastId, { render: 'Submitting transaction…', isLoading: true });
+                signature = await sendSigned(signedLegacy, connection, { skipPreflight: false, maxRetries: 3 });
+              }
+
+              if (signature) {
+                toast.update(flashToastId, { render: `Order submitted. Tx: ${signature.slice(0, 8)}...`, type: 'success', isLoading: false, autoClose: 3500 });
+              } else {
+                toast.update(flashToastId, { render: `${side === 'buy' ? 'Buy' : 'Sell'} order placed`, type: 'success', isLoading: false, autoClose: 3000 });
+              }
+              // Emit global event and refresh local data for snappy UI updates
+              try {
+                tradingEventBus.emit('tradeConfirmed', {
+                  source: 'flash',
+                  type: state.tradeForm.isLeverage ? 'leverage' : 'spot',
                   action: side,
-                  token: state.selectedToken.symbol,
-                  amount: state.tradeForm.amount,
-                  isLeverage: state.tradeForm.isLeverage,
-                  timestamp: Date.now()
-                }
-              });
-            } else {
-              throw new Error(confirmResult.error || 'Trade confirmation failed');
+                  market: state.selectedToken?.symbol || state.selectedToken?.name,
+                  amount: Number(state.tradeForm.amount),
+                  signature,
+                });
+                // Refresh wallet and recent transactions quickly
+                fetchWalletBalances();
+                fetchTransactions();
+              } catch {}
+            } catch (e: any) {
+              console.error('Flash signing/sending failed:', e);
+              const raw = String(e?.message || 'Failed to sign and submit Flash transaction');
+              const friendly =
+                /4001|reject/i.test(raw) ? 'Signature rejected in Phantom' :
+                /insufficient|balance/i.test(raw) ? 'Insufficient funds to complete transaction' :
+                /blockhash/i.test(raw) ? 'Transaction expired. Please try again' :
+                /slippage|price/i.test(raw) ? 'Price moved too much (slippage). Try again with higher slippage' :
+                'Failed to sign and submit Flash transaction';
+              toast.error(friendly);
+              throw new Error(friendly);
             }
           } else {
-            toast.info('Trade canceled by user');
-            return; // User canceled
+            // No client-side signing required
+            toast.success(`${side === 'buy' ? 'Buy' : 'Sell'} order placed successfully`);
+            try {
+              tradingEventBus.emit('tradeConfirmed', {
+                source: 'flash',
+                type: state.tradeForm.isLeverage ? 'leverage' : 'spot',
+                action: side,
+                market: state.selectedToken?.symbol || state.selectedToken?.name,
+                amount: Number(state.tradeForm.amount),
+              });
+              fetchWalletBalances();
+              fetchTransactions();
+            } catch {}
           }
-        } else if (tradeResult.success) {
-          // Trade executed immediately
-          toast.success(`${side === 'buy' ? 'Buy' : 'Sell'} order placed successfully`);
         } else {
-          // Trade failed
-          throw new Error(tradeResult.error || 'Failed to execute trade');
+          throw new Error(res.error || 'Failed to execute trade');
         }
       }
     } catch (error: any) {
@@ -398,18 +437,176 @@ const Trading: React.FC = () => {
     } finally {
       actions.setLoading({ trading: false });
     }
-  }, [state.selectedToken, state.tradeForm, actions]);
+  }, [state.selectedToken, state.tradeForm, actions, smartSettings, walletInfo]);
 
-  // Handle token selection with data loading
-  const handleTokenSelect = useCallback(async (token: MarketData) => {
-    if (!token?.address) {
-      const errorMsg = 'Invalid token: Missing address';
-      console.error(errorMsg, token);
-      actions.setError(errorMsg);
+  // --- GMGN Solana spot swap flow ---
+  const handleGmgnSpotSwap = useCallback(async (side: 'buy' | 'sell') => {
+    if (!state.selectedToken) throw new Error('No token selected');
+    const tokenCA = (state.selectedToken as any)?.tokenCA as string | undefined;
+    if (!tokenCA || tokenCA.toLowerCase().startsWith('0x')) {
+      throw new Error('Selected token is not a Solana token');
+    }
+
+    // Determine effective wallet type
+    const isPhantomConnected = Boolean(getPublicKey());
+    const configuredAuto = Boolean(smartSettings?.auto_trading_enabled);
+    const pref = String(smartSettings?.wallet_preference || '').toLowerCase();
+    const wantsInternal = pref === 'internal' || pref === 'auto';
+    const internalReady = Boolean(walletInfo?.internal_wallet?.address);
+    const walletType: 'internal' | 'phantom' = (configuredAuto && wantsInternal && internalReady && !isPhantomConnected) ? 'internal' : 'phantom';
+
+    if (walletType === 'phantom') {
+      // Ensure wallet connected via Solana Wallet Adapter
+      await ensureConnected();
+      if (!getPublicKey()) {
+        throw new Error('Phantom wallet not connected. Connect in Wallet page and retry.');
+      }
+    }
+
+    // Basic params – GMGN router expects token addresses and amount. We assume amount is in token units; backend may normalize.
+    const amountStr = state.tradeForm.amount?.toString();
+    if (!amountStr || Number(amountStr) <= 0) {
+      throw new Error('Enter a valid amount');
+    }
+
+    // Determine direction: buying selected token with SOL (default) or selling selected token to SOL
+    // For now, we default base token as SOL when side === 'buy' and tokenOut is selected token.
+    const params: any = {
+      tokenIn: side === 'buy' ? 'SOL' : tokenCA,
+      tokenOut: side === 'buy' ? tokenCA : 'SOL',
+      amount: amountStr,
+      slippageBps: 100, // 1% default; TODO: expose in UI
+    };
+
+    // If we're signing client-side, ensure the router builds for our Phantom pubkey
+    if (walletType === 'phantom') {
+      try {
+        const pk = getPublicKey()?.toBase58();
+        if (pk) params.from_address = pk;
+      } catch {}
+    } else {
+      // Request server-side signing flow
+      params.wallet_type = 'internal';
+    }
+
+    // 1) Get unsigned transaction from backend -> GMGN router
+    const tId = toast.loading('Preparing transaction…');
+    const quote = await GmgnApi.quote(params);
+    const unsignedTxB64 = quote?.tx || quote?.transaction || quote?.data?.tx;
+    // If internal wallet path taken and no unsigned tx returned, assume server signed/submitted
+    if (!unsignedTxB64 && walletType === 'internal') {
+      toast.update(tId, { render: 'Swap submitted (server-signed)', type: 'success', isLoading: false, autoClose: 3000 });
+      try {
+        tradingEventBus.emit('tradeConfirmed', {
+          source: 'gmgn',
+          type: 'spot',
+          action: side,
+          token: (state.selectedToken as any)?.tokenCA || state.selectedToken?.symbol || state.selectedToken?.name,
+          amount: Number(state.tradeForm.amount),
+        });
+        fetchWalletBalances();
+        fetchTransactions();
+      } catch {}
       return;
     }
-    
-    console.log(`Selected token: ${token.name} (${token.address})`);
+    if (!unsignedTxB64) {
+      console.error('GMGN quote response:', quote);
+      toast.update(tId, { render: 'Failed to prepare transaction', type: 'error', isLoading: false, autoClose: 4000 });
+      throw new Error('Did not receive unsigned transaction from GMGN');
+    }
+
+    // 2) Deserialize and sign with Phantom
+    const msgBytes = Buffer.from(unsignedTxB64, 'base64');
+    let vtx: VersionedTransaction | null = null;
+    try {
+      vtx = VersionedTransaction.deserialize(Uint8Array.from(msgBytes));
+    } catch {
+      // fallback for legacy tx (unlikely)
+      try {
+        const legacy = Transaction.from(msgBytes);
+        toast.update(tId, { render: 'Please confirm in Phantom…', isLoading: true });
+        const signedLegacy = await signTx(legacy);
+        const signedB64 = Buffer.from(signedLegacy.serialize()).toString('base64');
+        toast.update(tId, { render: 'Submitting transaction…', isLoading: true });
+        await submitAndPollGmgn(signedB64);
+        toast.update(tId, { render: 'Swap submitted', type: 'success', isLoading: false, autoClose: 3000 });
+        return;
+      } catch (e) {
+        toast.update(tId, { render: 'Unable to parse GMGN transaction', type: 'error', isLoading: false, autoClose: 4000 });
+        throw new Error('Unable to parse GMGN transaction');
+      }
+    }
+
+    // Sign versioned transaction via adapter
+    toast.update(tId, { render: 'Please confirm in Phantom…', isLoading: true });
+    const signed = await signTx(vtx);
+    const signedB64 = Buffer.from(signed.serialize()).toString('base64');
+
+    // 3) Submit via backend -> GMGN txproxy and poll status
+    toast.update(tId, { render: 'Submitting transaction…', isLoading: true });
+    try {
+      await submitAndPollGmgn(signedB64);
+      toast.update(tId, { render: 'Swap submitted', type: 'success', isLoading: false, autoClose: 3000 });
+      // After confirmed, emit and refresh balances/transactions
+      try {
+        tradingEventBus.emit('tradeConfirmed', {
+          source: 'gmgn',
+          type: 'spot',
+          action: side,
+          token: (state.selectedToken as any)?.tokenCA || state.selectedToken?.symbol || state.selectedToken?.name,
+          amount: Number(state.tradeForm.amount),
+        });
+        fetchWalletBalances();
+        fetchTransactions();
+      } catch {}
+    } catch (e: any) {
+      const raw = String(e?.message || 'Submission failed');
+      const friendly =
+        /insufficient|balance/i.test(raw) ? 'Insufficient funds to complete transaction' :
+        /blockhash/i.test(raw) ? 'Transaction expired. Please try again' :
+        /slippage|price/i.test(raw) ? 'Price moved too much (slippage). Try again with higher slippage' :
+        'Failed to submit transaction';
+      toast.update(tId, { render: friendly, type: 'error', isLoading: false, autoClose: 5000 });
+      throw new Error(friendly);
+    }
+  }, [state.selectedToken, state.tradeForm.amount, state.spotChain, smartSettings, walletInfo]);
+
+  const submitAndPollGmgn = useCallback(async (signedB64: string) => {
+    const submitRes = await GmgnApi.submitSigned({ signedTransaction: signedB64 });
+    const txHash = submitRes?.txHash || submitRes?.signature || submitRes?.tx || submitRes?.data?.txHash;
+    if (!txHash) {
+      console.warn('GMGN submit response:', submitRes);
+      throw new Error('Failed to get transaction signature');
+    }
+
+    // Poll until confirmed or timeout
+    const start = Date.now();
+    const timeoutMs = 60_000;
+    let lastErr: any = null;
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const status = await GmgnApi.txStatus({ txHash });
+        const ok = status?.confirmed || status?.success || status?.data?.confirmed;
+        if (ok) {
+          toast.success('Swap confirmed');
+          return;
+        }
+      } catch (e) {
+        lastErr = e;
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    if (lastErr) console.warn('GMGN poll last error:', lastErr);
+    throw new Error('Swap not confirmed before timeout');
+  }, []);
+
+  // Handle token selection with data loading
+  const handleTokenSelect = useCallback(async (token: UiMarket) => {
+    if (!token) {
+      actions.setError('Invalid token');
+      return;
+    }
+    console.log(`Selected token: ${token.name || token.symbol}`);
     
     // Update UI state
     actions.selectToken(token);
@@ -419,48 +616,13 @@ const Trading: React.FC = () => {
     actions.setLoading({ trading: true });
     
     try {
-      // Calculate time range (last 24 hours in seconds)
-      const endTime = Math.floor(Date.now() / 1000);
-      const startTime = endTime - (24 * 60 * 60);
-      
-      console.log(`Fetching OHLCV data for ${token.symbol} (${token.address})`);
-      console.log(`- Resolution: ${state.resolution || '1h'}`);
-      console.log(`- Time range: ${new Date(startTime * 1000).toISOString()} to ${new Date(endTime * 1000).toISOString()}`);
-      
-      // Load token price data - use market name for OHLCV request, not address
-      // Per Mango V3 API: /api/markets/{market_name}/candles
-      const marketName = token.name || `${token.baseCurrency}-${token.quoteCurrency}` || token.address;
-      console.log(`Using market name for OHLCV request: ${marketName}`);
-      
-      const priceData = await MangoV3Service.getOHLCV(
-        marketName,
-        state.resolution || '1h',
-        startTime,
-        endTime
-      );
-      
-      console.log(`Received ${priceData.length} data points`);
-      
-      if (!priceData || priceData.length === 0) {
-        throw new Error('No price data available for this token');
+      // Opportunistically refresh latest price for display
+      const p = await gmgnTokenService.getPrice(token.symbol || token.name);
+      if (p !== undefined) {
+        actions.selectToken({ ...token, price: p });
       }
-      
-      // Update token with latest price and additional market data
-      const latestData = priceData[priceData.length - 1];
-      const updatedToken = {
-        ...token,
-        price: latestData.close,
-        change_24h: ((latestData.close - priceData[0].open) / priceData[0].open) * 100,
-        volume_24h: priceData.reduce((sum, data) => sum + (data.volume || 0), 0)
-      };
-      
-      console.log(`Updated token data:`, {
-        price: updatedToken.price,
-        change_24h: updatedToken.change_24h,
-        volume_24h: updatedToken.volume_24h
-      });
-      
-      actions.selectToken(updatedToken);
+      // Reset quote-derived metrics
+      setLiqPrice(null);
       
     } catch (error) {
       const errorMsg = error instanceof Error ? 
@@ -474,38 +636,73 @@ const Trading: React.FC = () => {
     }
   }, [state.resolution, actions]);
 
-  // Handle resolution change with validation
+  // Fetch liquidation price from backend; fallback to quote method for preview
+  useEffect(() => {
+    const run = async () => {
+      try {
+        if (!state.tradeForm.isLeverage || !state.selectedToken) {
+          setLiqPrice(null);
+          return;
+        }
+
+        // Prefer server-side liquidation price for current user/market
+        const market = state.selectedToken.symbol || state.selectedToken.name;
+        const ownerPubkey = getPublicKey()?.toBase58();
+        try {
+          // Include walletType for accurate server-side computation when internal
+          const isPhantomConnected = Boolean(getPublicKey());
+          const configuredAuto = Boolean(smartSettings?.auto_trading_enabled);
+          const pref = String(smartSettings?.wallet_preference || '').toLowerCase();
+          const wantsInternal = pref === 'internal' || pref === 'auto';
+          const internalReady = Boolean(walletInfo?.internal_wallet?.address);
+          const walletType: 'internal' | 'phantom' = (configuredAuto && wantsInternal && internalReady && !isPhantomConnected) ? 'internal' : 'phantom';
+          const resp = await flashTradeService.getLiquidationPrice({ market, ...(ownerPubkey ? { ownerPubkey } : {}), walletType });
+          const lp = (resp as any)?.data?.liquidationPrice || (resp as any)?.liquidationPrice;
+          if (lp !== undefined && lp !== null && isFinite(Number(lp))) {
+            setLiqPrice(Number(lp));
+            return;
+          }
+        } catch (e) {
+          // continue to fallback below
+        }
+
+        // Fallback: use quote-based estimation when user has no position yet
+        const size = Number(state.tradeForm.amount || '0');
+        if (!size || size <= 0) {
+          setLiqPrice(null);
+          return;
+        }
+        const q = await flashTradeService.getQuote({
+          market,
+          side: 'buy',
+          size,
+          leverage: state.tradeForm.leverage || 1,
+          // Hint walletType for quote path as well
+          walletType: (Boolean(smartSettings?.auto_trading_enabled) && (String(smartSettings?.wallet_preference||'').toLowerCase() === 'internal' || String(smartSettings?.wallet_preference||'').toLowerCase() === 'auto') && Boolean(walletInfo?.internal_wallet?.address) && !Boolean(getPublicKey())) ? 'internal' : 'phantom',
+        } as any);
+        const qLp = (q as any)?.data?.liquidationPrice || (q as any)?.quote?.liquidationPrice;
+        if (qLp && isFinite(Number(qLp))) setLiqPrice(Number(qLp)); else setLiqPrice(null);
+      } catch (e) {
+        setLiqPrice(null);
+      }
+    };
+    run();
+  }, [state.tradeForm.isLeverage, state.tradeForm.amount, state.tradeForm.leverage, state.selectedToken, smartSettings, walletInfo]);
+
+  // Handle interval/resolution change (UI-only validation now)
   const handleResolutionChange = useCallback((newResolution: string) => {
     try {
-      // Validate the resolution format
-      if (!/^\d+[mhd]$/.test(newResolution)) {
-        throw new Error('Invalid resolution format. Use format like 1m, 5m, 1h, etc.');
+      if (!/^\d+[mhd]$/i.test(newResolution)) {
+        throw new Error('Invalid resolution format. Use 1m, 5m, 15m, 1h, 4h, 1d');
       }
-      
-      // Test the resolution by making a small API call
-      // This will throw if the resolution is invalid
-      MangoV3Service.getOHLCV('SOL-PERP', newResolution)
-        .then(() => {
-          console.log(`Valid resolution: ${newResolution}`);
-          // Update the resolution in state
-          actions.setResolution(newResolution);
-          
-          // Trigger a refetch of the chart data if a token is selected
-          if (state.selectedToken) {
-            actions.setLoading({ trading: true });
-          }
-        })
-        .catch(error => {
-          console.error('Invalid resolution:', error);
-          actions.setError('This resolution is not supported');
-        });
+      actions.setResolution(newResolution);
     } catch (error) {
       console.error('Resolution validation error:', error);
       actions.setError(error instanceof Error ? error.message : 'Invalid resolution');
     }
-  }, [actions, state.selectedToken]);
+  }, [actions]);
   
-  // Get available resolutions from MangoV3Service
+  // Available resolutions for unified charting (GMGN/Flash)
   const availableResolutions = useMemo(() => ({
     '1m': '1 minute',
     '5m': '5 minutes',
@@ -537,124 +734,69 @@ const Trading: React.FC = () => {
     }
   }, [user, actions]);
   
-  // Fetch detailed token information
-  const fetchTokenInfo = useCallback(async (symbol: string) => {
-    if (!symbol) return null;
-    
-    try {
-      const response = await api.get(`${API_ENDPOINTS.TRADING.TOKENS}/${symbol}`);
-      if (response && response.data) {
-        const processedToken = processMangoToken(response.data);
-        if (processedToken) {
-          // Update the selected token with fresh data
-          actions.selectToken(processedToken);
-          return processedToken;
-        }
-      }
-      return null;
-    } catch (error) {
-      console.error(`Error fetching token info for ${symbol}:`, error);
-      return null;
-    }
-  }, [actions]);
 
-  // Hook into trading events
-  useEffect(() => {
-    // Listen for trade confirmation events to refresh data
-    const handleTradeConfirmed = (event: any) => {
-      console.log('Trade confirmed event received:', event);
-      // Refresh transactions
-      fetchTransactions();
-      // Refresh token data if needed
-      if (state.selectedToken && event.trade && event.trade.token === state.selectedToken.symbol) {
-        fetchTokenInfo(state.selectedToken.symbol);
-      }
-    };
-    
-    tradingEventBus.on('trade:confirmed', handleTradeConfirmed);
-    
-    return () => {
-      tradingEventBus.off('trade:confirmed', handleTradeConfirmed);
-    };
-  }, [state.selectedToken, fetchTransactions, fetchTokenInfo]);
 
-  // Fetch tokens with debounce
+  // Remove event bus usage; rely on local refresh triggers as needed
+
+  // Fetch tokens/markets with debounce, filtered by mode
   const fetchTokens = useCallback(
     debounce(async (query: string) => {
-      const searchQuery = query.trim();
-      console.log('Searching for tokens with query:', searchQuery);
-      
-      if (!searchQuery) {
-        console.log('Empty search query, clearing tokens');
-        actions.setTokens([]);
-        return;
-      }
+      const searchQuery = (query || '').trim();
+      const isLeverageMode = !!state.tradeForm.isLeverage;
+      console.log('Searching for instruments with query:', searchQuery, 'mode:', isLeverageMode ? 'leverage' : 'spot');
 
       // Cancel any pending requests
       if (abortController.current) {
         console.log('Cancelling previous search request');
         abortController.current.abort();
       }
-      
       abortController.current = new AbortController();
       actions.setLoading({ tokens: true });
 
       try {
-        console.log('Fetching tokens from Mango V3 API...');
-        // Use empty string to get all markets when search is 3+ characters
-        // This ensures we search through all available tokens
-        const response = await MangoV3Service.searchMarkets(
-          searchQuery.length >= 3 ? searchQuery : ''
-        );
-        console.log(`Received ${response.length} tokens from API`);
-        
-        // Process all tokens
-        const allTokens = response
-          .map(processMangoToken)
-          .filter((token): token is MarketData => token !== null);
-        
-        // If search query is present, filter on client side for more flexible matching
-        const tokens = searchQuery.length >= 3 
-          ? allTokens.filter(token => {
-              const query = searchQuery.toLowerCase();
-              return (
-                token.symbol.toLowerCase().includes(query) ||
-                token.name.toLowerCase().includes(query) ||
-                token.baseCurrency?.toLowerCase().includes(query) ||
-                token.quoteCurrency?.toLowerCase().includes(query) ||
-                token.address?.toLowerCase().includes(query)
-              );
-            })
-          : allTokens;
-        
-        console.log(`Displaying ${tokens.length} tokens after filtering`);
-        actions.setTokens(tokens);
+        // Always hit the service. Empty query should return the full list as requested
+        const all = await gmgnTokenService.searchTokens(searchQuery);
+        // Mode-based filtering: leverage vs spot
+        const filtered = all.filter((m) => {
+          if (isLeverageMode) {
+            const name = (m.name || '').toUpperCase();
+            const quote = (m.quoteCurrency || '').toUpperCase();
+            // Heuristics: include perpetual or USDC quoted perp-like markets
+            return name.includes('-PERP') || name.includes('/PERP') || quote === 'USDC';
+          }
+          // Spot: must have a token contract address for GMGN embed
+          const ca = (m as any).tokenCA as string | undefined;
+          if (!ca) return false;
+          const isEvmChain = state.spotChain !== 'sol';
+          const isEvmCA = typeof ca === 'string' && ca.toLowerCase().startsWith('0x');
+          return isEvmChain ? isEvmCA : !isEvmCA;
+        });
+
+        console.log(`Displaying ${filtered.length} items after mode filtering`);
+        actions.setTokens(filtered);
         actions.setError(null);
       } catch (error) {
-        if (error.name === 'AbortError') {
+        if ((error as any).name === 'AbortError') {
           console.log('Search was cancelled');
           return;
         }
-        
         console.error('Error fetching tokens:', error);
         const errorMessage = error instanceof Error ? error.message : 'Failed to fetch tokens';
         actions.setError(errorMessage);
+        actions.setTokens([]);
       } finally {
         actions.setLoading({ tokens: false });
       }
     }, 300),
-    []
+    [state.tradeForm.isLeverage, state.spotChain]
   );
 
   // Handle search input change
   const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     actions.setSearch(value);
-    
-    // Only fetch tokens if search is empty (to clear) or has at least 3 characters
-    if (value === '' || value.length >= 3) {
-      fetchTokens(value);
-    }
+    // Always fetch; empty string returns full list per requirement
+    fetchTokens(value);
   }, [fetchTokens, actions]);
 
   // Fetch wallet balances
@@ -662,10 +804,12 @@ const Trading: React.FC = () => {
     balances: { [key: string]: number };
     loading: boolean;
     error: string | null;
+    loaded?: boolean;
   }>({
     balances: {},
     loading: false,
-    error: null
+    error: null,
+    loaded: false
   });
 
   // Fetch wallet balances
@@ -694,7 +838,8 @@ const Trading: React.FC = () => {
         setWalletBalances({
           balances: formattedBalances,
           loading: false,
-          error: null
+          error: null,
+          loaded: true
         });
       } else {
         throw new Error(response.error || 'Failed to load wallet balances');
@@ -713,14 +858,48 @@ const Trading: React.FC = () => {
   useEffect(() => {
     // Load initial tokens
     fetchTokens('');
+    // Load initial balances and set periodic refresh
+    fetchWalletBalances();
+    // Load smart settings and wallet data to determine walletType routing
+    const loadPrefs = async () => {
+      try {
+        const ss = await SmartSettingsApi.get();
+        if (ss?.success) setSmartSettings(ss.settings || {});
+      } catch (e) {
+        console.warn('Failed to load smart settings', e);
+      }
+      try {
+        const wd = await api.get(API_ENDPOINTS.WALLET.DATA);
+        if (wd?.success) setWalletInfo(wd.data || null);
+      } catch (e) {
+        console.warn('Failed to load wallet data', e);
+      }
+    };
+    loadPrefs();
+    const balInterval = setInterval(() => {
+      fetchWalletBalances();
+    }, 60_000);
     
     // Cleanup function to abort any pending requests
     return () => {
       if (abortController.current) {
         abortController.current.abort();
       }
+      clearInterval(balInterval);
     };
-  }, [fetchTokens]);
+  }, [fetchTokens, fetchWalletBalances]);
+
+  // Refresh list when mode toggles (spot <-> leverage)
+  useEffect(() => {
+    fetchTokens(state.search);
+  }, [state.tradeForm.isLeverage]);
+
+  // Refresh list and clear selection when spot chain changes
+  useEffect(() => {
+    actions.selectToken(null);
+    actions.setTokens([]);
+    fetchTokens(state.search);
+  }, [state.spotChain]);
 
   // Render token list
   const renderTokenList = () => (
@@ -737,9 +916,9 @@ const Trading: React.FC = () => {
       <div className="space-y-2 max-h-[500px] overflow-y-auto">
         {state.tokens.map((token) => (
           <div
-            key={token.address}
+            key={token.symbol || token.name}
             className={`p-3 rounded-lg cursor-pointer hover:bg-gray-800 ${
-              state.selectedToken?.address === token.address ? 'bg-blue-900' : 'bg-gray-800'
+              state.selectedToken?.symbol === token.symbol ? 'bg-blue-900' : 'bg-gray-800'
             }`}
             onClick={() => handleTokenSelect(token)}
           >
@@ -806,7 +985,16 @@ const Trading: React.FC = () => {
     
     return (
       <div className="mb-4 p-3 bg-gray-800 rounded-lg">
-        <h3 className="text-sm font-medium text-gray-400 mb-2">Wallet Balances</h3>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium text-gray-400">Wallet Balances</h3>
+          <button
+            className="text-xs px-2 py-1 rounded bg-gray-700 hover:bg-gray-600"
+            onClick={fetchWalletBalances}
+            disabled={walletBalances.loading}
+          >
+            {walletBalances.loading ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
         
         {walletBalances.loading ? (
           <div className="text-center py-1">
@@ -876,12 +1064,12 @@ const Trading: React.FC = () => {
               <label className="block text-sm text-gray-400 mb-1">Amount</label>
               <input
                 type="number"
-                className={`w-full p-2 ${state.selectedToken && !checkWalletBalance(state.selectedToken.symbol, state.tradeForm.amount) ? 'bg-red-900/30 border border-red-500' : 'bg-gray-800'} text-white rounded`}
+                className={`w-full p-2 ${state.selectedToken && walletBalances.loaded && !checkWalletBalance(state.selectedToken.symbol, state.tradeForm.amount) ? 'bg-red-900/30 border border-red-500' : 'bg-gray-800'} text-white rounded`}
                 value={state.tradeForm.amount}
                 onChange={(e) => actions.updateTradeForm({ amount: e.target.value })}
                 placeholder="0.0"
               />
-              {state.selectedToken && !checkWalletBalance(state.selectedToken.symbol, state.tradeForm.amount) && (
+              {state.selectedToken && walletBalances.loaded && !checkWalletBalance(state.selectedToken.symbol, state.tradeForm.amount) && (
                 <div className="text-xs text-red-400 mt-1">
                   Insufficient balance for {state.selectedToken.symbol}
                 </div>
@@ -916,7 +1104,7 @@ const Trading: React.FC = () => {
               
               {state.tradeForm.isLeverage && (
                 <div className="flex items-center space-x-2">
-                  <span className="text-sm text-gray-400">Amount:</span>
+                  <span className="text-sm text-gray-400">Leverage:</span>
                   <input
                     type="number"
                     min="1"
@@ -980,21 +1168,80 @@ const Trading: React.FC = () => {
               </div>
             )}
             
+            {/* Advanced params */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Collateral Token</label>
+                <input
+                  type="text"
+                  className="w-full p-2 bg-gray-800 text-white rounded"
+                  value={state.tradeForm.collateralTokenSymbol || ''}
+                  onChange={(e) => actions.updateTradeForm({ collateralTokenSymbol: e.target.value.toUpperCase() })}
+                  placeholder="USDC"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Payout Token</label>
+                <input
+                  type="text"
+                  className="w-full p-2 bg-gray-800 text-white rounded"
+                  value={state.tradeForm.payoutTokenSymbol || ''}
+                  onChange={(e) => actions.updateTradeForm({ payoutTokenSymbol: e.target.value.toUpperCase() })}
+                  placeholder="USDC"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-400 mb-1">Slippage (bps)</label>
+                <input
+                  type="number"
+                  min="1"
+                  className="w-full p-2 bg-gray-800 text-white rounded"
+                  value={Number(state.tradeForm.slippageBps ?? 800)}
+                  onChange={(e) => actions.updateTradeForm({ slippageBps: Math.max(1, Number(e.target.value) || 1) })}
+                  placeholder="800"
+                />
+              </div>
+            </div>
+
+            {/* Leverage-only info */}
+            {state.tradeForm.isLeverage && (
+              <div className="mt-2 text-xs text-gray-300">
+                {liqPrice ? (
+                  <span className="inline-block px-2 py-1 rounded bg-gray-800">
+                    Est. Liq Price: <span className="text-red-300">${liqPrice.toFixed(4)}</span>
+                  </span>
+                ) : (
+                  <span className="inline-block px-2 py-1 rounded bg-gray-800 text-gray-400">
+                    Enter amount/leverage to see est. liquidation price
+                  </span>
+                )}
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
+              {(() => {
+                const amountOk = !!state.tradeForm.amount && Number(state.tradeForm.amount) > 0;
+                const limitOk = state.tradeForm.orderType === 'market' || (!!state.tradeForm.limitPrice && Number(state.tradeForm.limitPrice) > 0);
+                const disabled = state.isLoading.trading || !amountOk || !limitOk;
+                return (
+              <>
               <button
                 className={`bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded ${state.isLoading.trading ? 'opacity-50 cursor-not-allowed' : ''}`}
                 onClick={() => executeTrade('buy')}
-                disabled={state.isLoading.trading}
+                disabled={disabled}
               >
                 {state.isLoading.trading ? 'Processing...' : 'Buy'}
               </button>
               <button
                 className={`bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded ${state.isLoading.trading ? 'opacity-50 cursor-not-allowed' : ''}`}
                 onClick={() => executeTrade('sell')}
-                disabled={state.isLoading.trading}
+                disabled={disabled}
               >
                 {state.isLoading.trading ? 'Processing...' : 'Sell'}
               </button>
+              </>
+                );
+              })()}
             </div>
           </div>
         </>
@@ -1006,14 +1253,91 @@ const Trading: React.FC = () => {
     </div>
   );
 
-  // Render price chart
-  const renderPriceChart = () => (
+  // Map UI resolution to leverage/GMGN intervals
+  const mapInterval = (res: string, isLeverage: boolean): string => {
+    if (!isLeverage) return res; // GMGN accepts 1m,5m,15m,1h,4h,1d
+    const lut: Record<string, string> = {
+      '1m': '1',
+      '5m': '5',
+      '15m': '15',
+      '1h': '60',
+      '4h': '240',
+      '1d': '1D',
+    };
+    return lut[res] || '60';
+  };
+
+  // Inline confirmation modal component
+  const ConfirmModal: React.FC = () => {
+    if (!confirmModal.open) return null;
+    const d = confirmModal.details || {};
+    const fmt = (n?: number | null, digits = 6) =>
+      n === undefined || n === null || !isFinite(Number(n)) ? 'N/A' : Number(n).toLocaleString(undefined, { maximumFractionDigits: digits });
+    const onCancel = () => {
+      confirmModal.resolve?.(false);
+      setConfirmModal({ open: false, details: {} });
+    };
+    const onConfirm = () => {
+      confirmModal.resolve?.(true);
+      setConfirmModal({ open: false, details: {} });
+    };
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
+        <div className="relative z-10 w-full max-w-md bg-gray-900 border border-gray-700 rounded-lg shadow-xl p-5">
+          <h3 className="text-lg font-semibold mb-3">Confirm Trade</h3>
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between"><span className="text-gray-400">Action</span><span className="font-medium capitalize">{d.action}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Token</span><span className="font-medium">{d.token}</span></div>
+            <div className="flex justify-between"><span className="text-gray-400">Amount</span><span className="font-medium">{d.amount}</span></div>
+            {d.price !== undefined && <div className="flex justify-between"><span className="text-gray-400">Price</span><span className="font-medium">${fmt(d.price)}</span></div>}
+            {d.total !== undefined && <div className="flex justify-between"><span className="text-gray-400">Total</span><span className="font-medium">${fmt(d.total)}</span></div>}
+            {d.leverage !== undefined && <div className="flex justify-between"><span className="text-gray-400">Leverage</span><span className="font-medium">{d.leverage}x</span></div>}
+            {d.liquidationPrice !== undefined && d.liquidationPrice !== null && (
+              <div className="flex justify-between"><span className="text-gray-400">Est. Liq Price</span><span className="font-medium text-red-300">${fmt(d.liquidationPrice, 4)}</span></div>
+            )}
+            {d.stopLoss !== undefined && <div className="flex justify-between"><span className="text-gray-400">Stop Loss</span><span className="font-medium">${fmt(d.stopLoss)}</span></div>}
+            {d.takeProfit !== undefined && <div className="flex justify-between"><span className="text-gray-400">Take Profit</span><span className="font-medium">${fmt(d.takeProfit)}</span></div>}
+            <div className="text-xs text-gray-400 pt-1">You will still need to approve in Phantom to finalize this trade.</div>
+          </div>
+          <div className="mt-4 flex justify-end gap-3">
+            <button className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded" onClick={onCancel}>Cancel</button>
+            <button className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded" onClick={onConfirm}>Confirm</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+// Render price chart (Unified)
+const renderPriceChart = () => {
+  const isLeverage = !!state.tradeForm.isLeverage;
+  const interval = mapInterval(state.resolution, isLeverage);
+  const market = state.selectedToken?.name || state.selectedToken?.symbol || '';
+  const theme: 'light' | 'dark' = 'dark';
+  const chain = state.spotChain;
+  const tokenCA = (state.selectedToken as any)?.tokenCA || '';
+
+  return (
     <div className="bg-gray-900 rounded-lg p-4 h-full">
       {state.selectedToken ? (
         <div className="h-full flex flex-col">
           <div className="flex justify-between items-center mb-2">
             <h3 className="text-lg font-medium">Price Chart</h3>
-            <div className="flex space-x-2">
+            <div className="flex items-center space-x-2">
+              {!isLeverage && (
+                <div className="flex bg-gray-800 rounded overflow-hidden">
+                  {(['sol','eth','bnb','blast'] as const).map(ch => (
+                    <button
+                      key={ch}
+                      className={`px-2 py-1 text-sm ${chain === ch ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+                      onClick={() => actions.setSpotChain(ch)}
+                    >
+                      {ch.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              )}
               {Object.entries(availableResolutions).map(([res, label]) => (
                 <button
                   key={res}
@@ -1024,21 +1348,21 @@ const Trading: React.FC = () => {
                   }`}
                   onClick={() => handleResolutionChange(res)}
                 >
-                  {res}
+                  {label}
                 </button>
               ))}
             </div>
           </div>
-          
-          <div className="flex-1 min-h-[300px]">
-            <PriceChart
-              tokenAddress={state.selectedToken.address}
-              selectedToken={state.selectedToken}
-              resolution={state.resolution}
-              onError={actions.setError}
-              onLoading={(loading) => actions.setLoading({ trading: loading })}
-              onResolutionChange={handleResolutionChange}
-              onTokenSelect={handleTokenSelect}
+          <div className="flex-1 min-h-[420px]">
+            <UnifiedPriceChart
+              key={`chart-${isLeverage ? 'lev' : 'spot'}-${isLeverage ? market : tokenCA}-${chain}-${interval}`}
+              mode={isLeverage ? 'leverage' : 'spot'}
+              chain={chain}
+              tokenCA={!isLeverage ? tokenCA : undefined}
+              market={isLeverage ? market : undefined}
+              interval={interval as any}
+              theme={theme}
+              height={460}
             />
           </div>
         </div>
@@ -1049,63 +1373,52 @@ const Trading: React.FC = () => {
       )}
     </div>
   );
+};
 
-  // Render transaction history with proper type safety and fallbacks
-  const renderTransactionHistory = () => {
-    // Ensure we have transactions to display
-    const transactions = Array.isArray(state.transactions) ? state.transactions : [];
-    
-    return (
-      <div className="bg-gray-900 rounded-lg p-4 h-full">
-        <h3 className="text-lg font-medium mb-4">Recent Trades</h3>
-        
-        {state.isLoading.transactions ? (
-          <div className="text-center py-4">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
-          </div>
-        ) : transactions.length > 0 ? (
-          <div className="space-y-2">
-            {transactions.map((tx: any, index: number) => {
-              // Safely extract transaction data with fallbacks
-              const side = tx?.side?.toLowerCase() === 'sell' ? 'sell' : 'buy';
-              const symbol = tx?.symbol || 'TOKEN';
-              const amount = tx?.amount ? Number(tx.amount).toFixed(4) : '0';
-              const price = tx?.price ? `$${Number(tx.price).toFixed(6)}` : '$0';
-              const timestamp = tx?.timestamp ? new Date(tx.timestamp).toLocaleString() : 'Just now';
-              
-              return (
-                <div key={index} className="flex justify-between items-center p-2 bg-gray-800 rounded">
-                  <div className="flex items-center">
-                    <div className={`w-3 h-3 rounded-full mr-2 ${
-                      side === 'buy' ? 'bg-green-500' : 'bg-red-500'
-                    }`}></div>
-                    <span className="font-medium">{symbol}</span>
-                  </div>
-                  <div className="text-right">
-                    <div className={side === 'buy' ? 'text-green-400' : 'text-red-400'}>
-                      {side.toUpperCase()} {amount} @ {price}
-                    </div>
-                    <div className="text-xs text-gray-400">
-                      {timestamp}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="text-center py-8 text-gray-400">
-            No recent trades found
-          </div>
-        )}
+// Render transaction history
+const renderTransactionHistory = () => (
+  <div className="bg-gray-900 rounded-lg p-4 h-full">
+    <h3 className="text-lg font-medium mb-4">Recent Trades</h3>
+    {state.isLoading.transactions ? (
+      <div className="text-center py-4">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
       </div>
-    );
-  };
+    ) : state.transactions.length > 0 ? (
+      <div className="space-y-2">
+        {state.transactions.map((tx: any, index: number) => {
+          const side = tx?.side?.toLowerCase() === 'sell' ? 'sell' : 'buy';
+          const symbol = tx?.symbol || 'TOKEN';
+          const amount = tx?.amount ? Number(tx.amount).toFixed(4) : '0';
+          const price = tx?.price ? `$${Number(tx.price).toFixed(6)}` : '$0';
+          const timestamp = tx?.timestamp ? new Date(tx.timestamp).toLocaleString() : 'Just now';
+
+          return (
+            <div key={index} className="flex justify-between items-center p-2 bg-gray-800 rounded">
+              <div className="flex items-center">
+                <div className={`w-3 h-3 rounded-full mr-2 ${side === 'buy' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                <span className="font-medium">{symbol}</span>
+              </div>
+              <div className="text-right">
+                <div className={side === 'buy' ? 'text-green-400' : 'text-red-400'}>
+                  {side.toUpperCase()} {amount} @ {price}
+                </div>
+                <div className="text-xs text-gray-400">{timestamp}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    ) : (
+      <div className="text-center py-8 text-gray-400">No recent trades found</div>
+    )}
+  </div>
+);
 
   return (
     <ErrorBoundary>
       <div className="container mx-auto px-4 py-8">
         <h1 className="text-2xl font-bold mb-6">Trading</h1>
+        <ConfirmModal />
         
         {state.error && (
           <div className="bg-red-900/50 border border-red-500 text-white px-4 py-3 rounded mb-4">

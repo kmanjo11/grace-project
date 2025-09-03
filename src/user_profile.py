@@ -272,6 +272,13 @@ class UserProfileSystem:
             "last_login": None,
             "is_authorized": email == "kmanjo11@gmail.com",
             "internal_wallet": internal_wallet,
+            # Placeholder for HL wallet link (set by link_hl_wallet)
+            "hl_wallet": {
+                "env": None,
+                "address": None,
+                "linked_at": None,
+                "status": "unlinked",
+            },
             "mango_markets_link": {
                 "status": mango_link_result.get("success", False),
                 "message": mango_link_result.get("message", "Not attempted"),
@@ -291,6 +298,40 @@ class UserProfileSystem:
             "user_id": user_id,
             "wallet_link_status": mango_link_result.get("success", False),
         }
+
+    def link_hl_wallet(self, user_id: str, env: str = "mainnet") -> Dict[str, Any]:
+        """Link or initialize a user's Hyperliquid wallet metadata.
+
+        This does not fetch a real deposit address (provider-specific). It prepares
+        the profile structure so the API can expose account and deposit instructions.
+
+        Args:
+            user_id: The user identifier.
+            env:    "mainnet" or "testnet" (lowercased).
+
+        Returns:
+            Dict with hl_wallet info now stored on the profile.
+        """
+        profiles = self._load_profiles()
+        if user_id not in profiles:
+            raise ValueError(f"User ID '{user_id}' not found")
+
+        env = (env or "mainnet").lower()
+
+        # Preserve any existing address if already set, just normalize env/status
+        hl_wallet = profiles[user_id].get("hl_wallet", {}) or {}
+        address = hl_wallet.get("address")
+
+        # Initialize structure
+        profiles[user_id]["hl_wallet"] = {
+            "env": env,
+            "address": address,  # may be None until an external system provides it
+            "linked_at": hl_wallet.get("linked_at") or datetime.now().isoformat(),
+            "status": "linked" if address else "pending",
+        }
+
+        self._save_profiles(profiles)
+        return {"success": True, "hl_wallet": profiles[user_id]["hl_wallet"]}
 
     async def authenticate(
         self, username_or_email: str, password: str

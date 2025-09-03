@@ -1,0 +1,14 @@
+import { PublicKey } from '@solana/web3.js';
+export declare const PERCENTAGE_DECIMALS = 4;
+export declare const USD_DECIMALS = 6;
+export declare const BPS_DECIMALS = 4;
+export declare const BPS_POWER: number;
+export declare const LP_DECIMALS = 6;
+export declare const FAF_DECIMALS = 6;
+export declare const RATE_DECIMALS = 9;
+export declare const RATE_POWER: number;
+export declare const ORACLE_EXPONENT = 9;
+export declare const BN_ZERO: import("bn.js");
+export declare const BN_ONE: import("bn.js");
+export declare const DAY_SECONDS: import("bn.js");
+export declare const METAPLEX_PROGRAM_ID: PublicKey;

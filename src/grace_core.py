@@ -11,6 +11,7 @@ import threading
 import queue
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+import uuid
 
 # Assuming these imports are correct based on the provided files
 from src.memory_system import MemorySystem
@@ -515,6 +516,12 @@ class GraceCore:
         conversation_storage_dir = os.path.join(self.data_dir, "conversations")
         os.makedirs(conversation_storage_dir, exist_ok=True)
         conversation_manager = ConversationManager(storage_dir=conversation_storage_dir)
+        # Link conversation manager to agent manager so it can emit tasks
+        if hasattr(conversation_manager, "set_agent_manager"):
+            try:
+                conversation_manager.set_agent_manager(agent_manager)
+            except Exception as e:
+                logger.error(f"Failed to link ConversationManager to AgentManager: {e}")
             
         # Register specialized agents for specific task types
         # Core message processing
@@ -599,6 +606,13 @@ class GraceCore:
         os.makedirs(conversation_storage_dir, exist_ok=True)
         conversation_manager = ConversationManager(storage_dir=conversation_storage_dir)
         
+        # Link conversation manager to agent manager so it can emit tasks
+        if hasattr(conversation_manager, "set_agent_manager"):
+            try:
+                conversation_manager.set_agent_manager(agent_manager)
+            except Exception as e:
+                logger.error(f"Failed to link ConversationManager to AgentManager: {e}")
+        
         # Register specialized agents for specific task types
         # Core message processing
         agent_manager.register_agent_for_task_type("process_message", conversation_manager, AgentPriority.HIGH)
@@ -616,6 +630,21 @@ class GraceCore:
         agent_manager.register_agent_for_task_type("trade_preparation", self.gmgn_service, AgentPriority.HIGH)
         agent_manager.register_agent_for_task_type("execute_swap", self.gmgn_service, AgentPriority.HIGH)
         agent_manager.register_agent_for_task_type("monitor_smart_trading", self.gmgn_service, AgentPriority.LOW)
+
+        # Create and register LeverageTradeAgent (ensure Flash leverage tasks are handled)
+        try:
+            from src.leverage_trade_agent import LeverageTradeAgent
+            leverage_trade_agent = LeverageTradeAgent(
+                agent_id="leverage_trade_agent",
+                leverage_trade_manager=self.leverage_trade_manager,
+                config=self.config
+            )
+            agent_manager.register_agent(leverage_trade_agent)
+            agent_manager.register_agent_for_task_type("execute_leverage_trade", leverage_trade_agent, AgentPriority.HIGH)
+            agent_manager.register_agent_for_task_type("get_leverage_positions", leverage_trade_agent, AgentPriority.MEDIUM)
+            agent_manager.register_agent_for_task_type("update_leverage_trade", leverage_trade_agent, AgentPriority.HIGH)
+        except Exception as e:
+            logger.error(f"Failed to initialize/register LeverageTradeAgent: {e}")
         
         # Schedule smart trading monitoring task to run every 5 minutes
         agent_manager.schedule_task(

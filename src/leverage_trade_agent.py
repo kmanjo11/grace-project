@@ -149,7 +149,109 @@ class LeverageTradeAgent(BaseAgent):
         ):
             return {"success": False, "error": "Trade exceeds risk limits"}
 
-        # Execute trade through Mango V3
+        # Optional execution modes:
+        # - prompt/manual: build unsigned tx and return confirmation payload for client signing
+        # - immediate: return raw Flash build response (still unsigned tx) for direct UI handling
+        # - default: create conditional trade to be executed by manager when conditions met
+        try:
+            action = (trade_params.get("action") or "open").lower()
+            immediate = bool(trade_params.get("immediate", False))
+            prompt = bool(trade_params.get("prompt", trade_params.get("manual", False)))
+
+            # Prompt/manual flow: construct unsigned tx and return confirmation_required shape
+            if prompt:
+                if action == "close":
+                    close_size = trade_params.get("size")
+                    payout_token = trade_params.get("payout_token") or trade_params.get("payoutTokenSymbol")
+                    resp = self.leverage_trade_manager._flash_close(
+                        market=trade_condition.market,
+                        size=close_size,
+                        payout_token=payout_token,
+                    )
+                    if not isinstance(resp, dict) or not resp.get("success"):
+                        return resp if isinstance(resp, dict) else {"success": False, "error": "Unexpected response"}
+
+                    confirmation_id = f"flash_close_{trade_condition.market}_{int(datetime.now().timestamp())}"
+                    return {
+                        "status": "confirmation_required",
+                        "provider": "flash",
+                        "flow": "perp_leverage",
+                        "operation": "close",
+                        "confirmation_id": confirmation_id,
+                        "unsigned_tx_b64": resp.get("unsigned_tx_b64") or resp.get("transaction"),
+                        "details": {
+                            "market": trade_condition.market,
+                            "size": close_size,
+                            "payoutTokenSymbol": payout_token,
+                            "user_id": user_id,
+                        },
+                    }
+                else:
+                    # Open position via Flash
+                    side = 'buy' if trade_condition.side in ('long', 'buy') else 'sell'
+                    payout_token = trade_params.get("payout_token") or trade_params.get("payoutTokenSymbol")
+                    collateral_token = trade_params.get("collateral_token") or trade_params.get("collateralTokenSymbol")
+                    resp = self.leverage_trade_manager._flash_order(
+                        market=trade_condition.market,
+                        side=side,
+                        size=trade_condition.size,
+                        leverage=trade_condition.leverage,
+                        reduce_only=False,
+                        payout_token=payout_token,
+                        collateral_token=collateral_token,
+                    )
+                    if not isinstance(resp, dict) or not resp.get("success"):
+                        return resp if isinstance(resp, dict) else {"success": False, "error": "Unexpected response"}
+
+                    confirmation_id = f"flash_order_{trade_condition.market}_{int(datetime.now().timestamp())}"
+                    return {
+                        "status": "confirmation_required",
+                        "provider": "flash",
+                        "flow": "perp_leverage",
+                        "operation": "open",
+                        "confirmation_id": confirmation_id,
+                        "unsigned_tx_b64": resp.get("unsigned_tx_b64") or resp.get("transaction"),
+                        "details": {
+                            "market": trade_condition.market,
+                            "side": side,
+                            "size": trade_condition.size,
+                            "leverage": trade_condition.leverage,
+                            "payoutTokenSymbol": payout_token,
+                            "collateralTokenSymbol": collateral_token,
+                            "user_id": user_id,
+                        },
+                    }
+
+            if immediate:
+                if action == "close":
+                    close_size = trade_params.get("size")
+                    payout_token = trade_params.get("payout_token") or trade_params.get("payoutTokenSymbol")
+                    resp = self.leverage_trade_manager._flash_close(
+                        market=trade_condition.market,
+                        size=close_size,
+                        payout_token=payout_token,
+                    )
+                    return resp if isinstance(resp, dict) else {"success": False, "error": "Unexpected response"}
+                else:
+                    # Open position via Flash
+                    side = 'buy' if trade_condition.side in ('long', 'buy') else 'sell'
+                    payout_token = trade_params.get("payout_token") or trade_params.get("payoutTokenSymbol")
+                    collateral_token = trade_params.get("collateral_token") or trade_params.get("collateralTokenSymbol")
+                    resp = self.leverage_trade_manager._flash_order(
+                        market=trade_condition.market,
+                        side=side,
+                        size=trade_condition.size,
+                        leverage=trade_condition.leverage,
+                        reduce_only=False,
+                        payout_token=payout_token,
+                        collateral_token=collateral_token,
+                    )
+                    return resp if isinstance(resp, dict) else {"success": False, "error": "Unexpected response"}
+        except Exception as e:
+            self.logger.error(f"Direct Flash execution error: {e}")
+            # Fall through to conditional flow
+
+        # Default: conditional flow managed by LeverageTradeManager (Flash-backed)
         return self.leverage_trade_manager.add_trade_condition(trade_condition)
 
     def _handle_get_leverage_positions(self, task: AgentTask) -> Dict[str, Any]:

@@ -2,11 +2,14 @@
 
 import React, { useEffect, useState, FormEvent, useRef } from 'react';
 import { useAuth } from '../components/AuthContext';
-import { api, API_ENDPOINTS } from '../api/apiClient';
+import { api, API_ENDPOINTS, SmartSettingsApi } from '../api/apiClient';
 import { useRouter } from 'next/router';
 import LightweightPositionsWidget from '../components/LightweightPositionsWidget';
 import WalletDebugger from '../components/WalletDebugger';
 import PositionsWidgetDebugger from '../components/PositionsWidgetDebugger';
+import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 
 // Crypto wallet address converter - compatible with existing setup
 const COOL_PREFIXES = [
@@ -127,6 +130,8 @@ interface TransactionResult {
 
 export default function Wallet() {
   const { user } = useAuth();
+  const { publicKey, connected, disconnect: disconnectAdapter } = useWallet();
+  const { connection } = useConnection();
   const [connectionSession, setConnectionSession] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'timeout' | 'error'>('idle');
   const [walletData, setWalletData] = useState<WalletData | null>(null);
@@ -135,9 +140,81 @@ export default function Wallet() {
   const [amount, setAmount] = useState<string>('');
   const [tokenType, setTokenType] = useState<string>('sol');
   const [txResult, setTxResult] = useState<string>('');
+  // Smart settings state
+  const [smartSettings, setSmartSettings] = useState<any | null>(null);
+  const [updatingSettings, setUpdatingSettings] = useState<boolean>(false);
+  // Live Phantom balances via adapter
+  const [liveSol, setLiveSol] = useState<number | null>(null);
+  const [liveSpl, setLiveSpl] = useState<Array<{ mint: string; amount: number }>>([]);
   const phantomWindowRef = useRef<Window | null>(null);
   const connectionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
+
+  // Helper to extract a token amount from balances array
+  const getTokenAmount = (wallet?: WalletData | null, symbol?: string): number => {
+    if (!wallet || !symbol) return 0;
+    try {
+      const found = (wallet.balances || []).find(
+        (b) => String(b.token).toUpperCase() === String(symbol).toUpperCase()
+      );
+      return Number(found?.amount || 0);
+    } catch {
+      return 0;
+    }
+  };
+
+  // Derived/effective activation based on settings and Phantom precedence
+  const isPhantomConnected = Boolean(connected || walletData?.phantom_wallet?.address);
+  const configuredAutoTrade = Boolean(smartSettings?.auto_trading_enabled);
+  const configuredPreference = String(smartSettings?.wallet_preference || '').toLowerCase();
+  const wantsInternal = configuredPreference === 'internal' || configuredPreference === 'auto';
+  const internalWalletAddress = walletData?.internal_wallet?.address;
+  const internalReady = Boolean(internalWalletAddress);
+  const effectiveInternalActive = configuredAutoTrade && wantsInternal && internalReady && !isPhantomConnected;
+
+  // Toggle handler: enable/disable internal wallet auto-trade
+  const handleToggleInternal = async () => {
+    if (!user) return;
+    if (isPhantomConnected) {
+      // Guardrail: do not allow enabling when Phantom is connected
+      setError('Phantom is connected. Disconnect Phantom to enable Internal Auto-Trade.');
+      return;
+    }
+    try {
+      setUpdatingSettings(true);
+      // If enabling, ensure internal wallet exists
+      if (!(configuredAutoTrade && wantsInternal)) {
+        if (!internalReady) {
+          const gen = await api.post(API_ENDPOINTS.WALLET.GENERATE, {});
+          if (!gen.success) throw new Error(gen?.data?.error || 'Failed to generate internal wallet');
+          // refresh wallet data
+          await fetchWalletData();
+        }
+        const res = await SmartSettingsApi.update({
+          auto_trading_enabled: true,
+          wallet_preference: 'internal',
+        });
+        if (!res?.success) throw new Error('Failed to update smart settings');
+        const ss = await SmartSettingsApi.get();
+        if (ss?.success) setSmartSettings(ss.settings || {});
+      } else {
+        // Disabling: turn off auto trading and prefer phantom (default)
+        const res = await SmartSettingsApi.update({
+          auto_trading_enabled: false,
+          wallet_preference: 'phantom',
+        });
+        if (!res?.success) throw new Error('Failed to update smart settings');
+        const ss = await SmartSettingsApi.get();
+        if (ss?.success) setSmartSettings(ss.settings || {});
+      }
+      setError('');
+    } catch (e: any) {
+      console.error('Toggle internal wallet failed:', e);
+      setError(e?.message || 'Failed to update internal wallet setting');
+    } finally {
+      setUpdatingSettings(false);
+    }
+  };
 
   // Function to validate a Phantom session with the backend
   const validatePhantomSession = async (sessionId: string): Promise<boolean> => {
@@ -210,7 +287,7 @@ export default function Wallet() {
     };
   }, []);
 
-// Update fetchWalletData to also get Mango balance
+// Fetch wallet data (internal + phantom) from backend
 const fetchWalletData = async () => {
   try {
     setError('');
@@ -218,21 +295,6 @@ const fetchWalletData = async () => {
     const { data, success } = await api.get(API_ENDPOINTS.WALLET.DATA);
     
     if (success && data) {
-      // Also get Mango balance
-      try {
-        const mangoResponse = await api.get(API_ENDPOINTS.WALLET.MANGO_BALANCE);
-        if (mangoResponse.success) {
-          // Add Mango balance to wallet data
-          data.mango_balance = {
-            total_value: calculateTotalValue(mangoResponse.data.balances),
-            balances: mangoResponse.data.balances
-          };
-        }
-      } catch (mangoErr) {
-        console.error('Error fetching Mango balance:', mangoErr);
-        data.mango_balance = { total_value: 0, balances: {} };
-      }
-      
       setWalletData(data);
     } else {
       throw new Error('Failed to load wallet data');
@@ -243,29 +305,66 @@ const fetchWalletData = async () => {
   }
 };
 
-// Helper function to calculate total value from Mango balances
-const calculateTotalValue = (balances) => {
-  if (!balances) return 0;
-  
-  let total = 0;
-  // Handle different possible structures in the API response
-  Object.values(balances).forEach((token: any) => {
-    if (typeof token === 'object') {
-      // Try different possible property names for the USD value
-      const value = token.value_usd || token.notionalValue || token.usd_value || 
-                    (token.amount && token.price ? token.amount * token.price : 0);
-      total += Number(value) || 0;
-    }
-  });
-  
-  return total;
-};
   // Load wallet data when user is authenticated
   useEffect(() => {
-    if (user) {
-      fetchWalletData();
-    }
+    const run = async () => {
+      if (!user) return;
+      // Fetch wallet and smart settings in parallel
+      await fetchWalletData();
+      try {
+        const ss = await SmartSettingsApi.get();
+        if (ss?.success) {
+          setSmartSettings(ss.settings || {});
+        }
+      } catch (e) {
+        // non-fatal
+        console.warn('Failed to load smart settings', e);
+      }
+    };
+    run();
   }, [user]);
+
+  // Fetch live balances from adapter connection when Phantom is connected
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        if (!connected || !publicKey) {
+          setLiveSol(null);
+          setLiveSpl([]);
+          return;
+        }
+        // SOL
+        const lamports = await connection.getBalance(publicKey);
+        if (!cancelled) setLiveSol(lamports / 1e9);
+        // SPL tokens
+        const resp = await connection.getParsedTokenAccountsByOwner(publicKey, { programId: TOKEN_PROGRAM_ID });
+        const spl = resp.value
+          .map((ta: any) => {
+            const info = ta.account.data.parsed.info;
+            const mint = info.mint as string;
+            const ui = info.tokenAmount?.uiAmount ?? Number(info.tokenAmount?.amount || 0) / Math.pow(10, Number(info.tokenAmount?.decimals || 0));
+            const amount = Number(ui) || 0;
+            return { mint, amount };
+          })
+          .filter((x: any) => x.amount > 0)
+          .sort((a: any, b: any) => b.amount - a.amount)
+          .slice(0, 6);
+        if (!cancelled) setLiveSpl(spl);
+      } catch (e) {
+        if (!cancelled) {
+          console.warn('Live balance fetch failed:', e);
+          setLiveSpl([]);
+        }
+      }
+    };
+    run();
+    const id = setInterval(run, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [connected, publicKey, connection]);
 
   // Get query params from Next.js router
   
@@ -394,6 +493,8 @@ const calculateTotalValue = (balances) => {
       const { data, success } = await api.post(API_ENDPOINTS.WALLET.DISCONNECT_PHANTOM, {});
       
       if (success) {
+        // Also disconnect client adapter to clear local state
+        try { await disconnectAdapter(); } catch {}
         // Clear local session data
         localStorage.removeItem('phantom_session');
         setConnectionSession(null);
@@ -487,13 +588,10 @@ const calculateTotalValue = (balances) => {
               <h2 className="text-red-400 mb-2">Internal Wallet</h2>
               <p className="text-sm break-all">Address: <span className="text-white">{walletData.internal_wallet?.address}</span></p>
               <p className="text-sm">
-                <span className="text-purple-400">◎ SOL</span>: {walletData.internal_wallet?.balances?.sol || '0.00'}
+                <span className="text-purple-400">◎ SOL</span>: {getTokenAmount(walletData.internal_wallet as any, 'SOL').toFixed(4)}
               </p>
               <p className="text-sm">
-                <span className="text-green-400">$ USDC</span>: {walletData.internal_wallet?.balances?.usdc || '0.00'}
-              </p>
-              <p className="text-sm">
-                <span className="text-orange-400">🥭 Mango Balance</span>: ${typeof walletData.mango_balance?.total_value === 'number' ? walletData.mango_balance.total_value.toFixed(2) : '0.00'}
+                <span className="text-green-400">$ USDC</span>: {getTokenAmount(walletData.internal_wallet as any, 'USDC').toFixed(2)}
               </p>
               
               {/* Crypto Bro Address Converter for Internal Wallet */}
@@ -539,82 +637,68 @@ const calculateTotalValue = (balances) => {
             </div>
 
             <div className="border border-red-800 rounded p-4">
-              <h2 className="text-red-400 mb-2">Phantom Wallet</h2>
-              {walletData.phantom_wallet?.address ? (
+              <h2 className="text-red-400 mb-2 flex items-center gap-2">
+                <span className="inline-flex items-center justify-center w-5 h-5">
+                  {/* Ghost icon */}
+                  <span role="img" aria-label="ghost">👻</span>
+                </span>
+                Phantom Wallet
+              </h2>
+              <div className="mb-3">
+                <WalletMultiButton className="wallet-adapter-button-trigger" />
+              </div>
+              {(connected || walletData.phantom_wallet?.address) ? (
                 <>
                   <div className="flex justify-between items-start">
                     <div>
-                      <p className="text-sm break-all">Address: <span className="text-white">{walletData.phantom_wallet?.address}</span></p>
+                      <p className="text-sm break-all">Address: <span className="text-white">{publicKey?.toBase58() || walletData.phantom_wallet?.address}</span></p>
                       <p className="text-sm">
-                        <span className="text-purple-400">◎ SOL</span>: {walletData.phantom_wallet?.balances?.sol || '0.00'}
+                        <span className="text-purple-400">◎ SOL</span>: {(connected && liveSol !== null)
+                          ? liveSol.toFixed(4)
+                          : getTokenAmount(walletData.phantom_wallet as any, 'SOL').toFixed(4)}
                       </p>
                       <p className="text-sm">
-                        <span className="text-green-400">$ USDC</span>: {walletData.phantom_wallet?.balances?.usdc || '0.00'}
+                        <span className="text-green-400">$ USDC</span>: {getTokenAmount(walletData.phantom_wallet as any, 'USDC').toFixed(2)}
                       </p>
+                      {/* Live balances from adapter */}
+                      {connected && (
+                        <div className="mt-2 p-2 bg-black/30 rounded border border-purple-800">
+                          <div className="text-xs text-purple-300 mb-1">Live (adapter)</div>
+                          <div className="text-xs text-gray-200">SOL: {liveSol !== null ? liveSol.toFixed(4) : '—'}</div>
+                          {liveSpl.length > 0 ? (
+                            <div className="mt-1 space-y-0.5">
+                              {liveSpl.map((t) => (
+                                <div key={t.mint} className="text-[11px] text-gray-300">
+                                  {t.mint.slice(0, 4)}…{t.mint.slice(-4)}: {t.amount}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-gray-500">No SPL balances</div>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <button
                       onClick={disconnectPhantom}
                       className="bg-red-900 hover:bg-red-800 text-xs px-2 py-1 rounded"
                     >
-                      Disconnect
+                      Disconnect (server)
                     </button>
                   </div>
-                  
                   {/* Crypto Bro Address Converter */}
                   <div className="mt-4 p-3 bg-gradient-to-r from-purple-900/30 to-pink-900/30 rounded-lg border border-purple-700">
                     <h3 className="text-pink-400 text-sm font-bold mb-2">🔥 CRYPTO BRO ADDRESS 🔥</h3>
                     <div className="bg-black/50 p-2 rounded">
                       <p className="text-sm font-mono text-green-400 break-all">
-                        {convertToReadableAddress(walletData.phantom_wallet?.address)}
+                        {convertToReadableAddress(publicKey?.toBase58() || walletData.phantom_wallet?.address)}
                       </p>
                     </div>
                     <p className="text-xs text-gray-400 mt-1 text-center">Full address for crypto operations</p>
                   </div>
                 </>
               ) : (
-                <div>
-                  <button
-                    onClick={connectPhantom}
-                    className="mt-2 rounded bg-red-700 px-4 py-2 text-sm hover:bg-red-900"
-                    disabled={connectionStatus === 'connecting'}
-                  >
-                    {connectionStatus === 'connecting' ? 'Connecting...' : 'Connect Phantom'}
-                  </button>
-                  
-                  {connectionStatus === 'connecting' && (
-                    <p className="text-xs text-yellow-300 mt-1">
-                      Waiting for Phantom authorization. Please complete the process in the popup window.
-                    </p>
-                  )}
-                  
-                  {connectionStatus === 'timeout' && (
-                    <div className="mt-2">
-                      <p className="text-xs text-orange-400 mb-1">
-                        Connection timed out. Did you close the popup window?
-                      </p>
-                      <button 
-                        onClick={connectPhantom}
-                        className="text-xs bg-orange-900 hover:bg-orange-800 px-2 py-1 rounded"
-                      >
-                        Retry Connection
-                      </button>
-                    </div>
-                  )}
-                  
-                  {connectionStatus === 'error' && (
-                    <div className="mt-2">
-                      <p className="text-xs text-red-400 mb-1">
-                        Connection failed. Please try again.
-                      </p>
-                      <button 
-                        onClick={connectPhantom}
-                        className="text-xs bg-red-900 hover:bg-red-800 px-2 py-1 rounded"
-                      >
-                        Retry Connection
-                      </button>
-                    </div>
-                  )}
-                </div>
+                <p className="text-xs text-gray-400">Connect your wallet to view balances.</p>
               )}
             </div>
           </div>

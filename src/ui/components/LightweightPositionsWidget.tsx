@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Transaction } from '@solana/web3.js';
+import { Buffer } from 'buffer';
 import { useAuth } from './AuthContext';
 import { 
   LeveragePosition, 
@@ -10,6 +12,7 @@ import {
   Trade
 } from '../api/apiTypes';
 import { api, API_ENDPOINTS, ApiError, TradingApi } from '../api/apiClient';
+import flashTradeService from '../services/flashTradeService';
 import { toast } from 'react-toastify';
 import { AgentTaskManager } from '../../services/AgentTaskManager';
 
@@ -112,8 +115,14 @@ interface TransactionDetails {
   type: 'buy' | 'sell' | 'swap' | 'transfer';
   token: string;
   amount: number;
-  timestamp: string;
-  status: 'pending' | 'completed' | 'failed';
+  timestamp: string; // ISO string
+  status: 'pending' | 'confirmed' | 'completed' | 'failed';
+  // Unified backend metadata
+  source?: 'gmgn' | 'flash' | 'hyperliquid' | string;
+  order_type?: string;
+  side?: 'buy' | 'sell' | 'long' | 'short';
+  signature?: string; // Solana signature
+  txHash?: string; // Alternative hash field
 }
 
 interface CompactPosition {
@@ -211,7 +220,7 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
   const positionInterval = useRef<NodeJS.Timeout>();
   const transactionsInterval = useRef<NodeJS.Timeout>();
 
-  // Fetch transaction history with retry logic
+  // Fetch transaction history with retry logic (unified)
   const fetchTransactions = useCallback(async (isRetry = false): Promise<void> => {
     if (!user?.token) {
       setError('Authentication required');
@@ -223,28 +232,22 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
     }
 
     try {
-      const { data, success, error } = await api.get<TransactionDetails[]>(
-        API_ENDPOINTS.WALLET.TRANSACTIONS,
-        { headers: { 'Authorization': `Bearer ${user.token}` } }
-      );
-      
-      if (success && data) {
-        setTransactions(Array.isArray(data) ? data : []);
+      const res = await TradingApi.getUnifiedTransactions();
+      if (res && (res as any).success !== false) {
+        const txs = (res as any).transactions || (Array.isArray((res as any)) ? (res as any) : []);
+        setTransactions(txs as any);
       } else {
-        throw new Error(error || 'Failed to fetch transactions');
+        throw new Error((res as any)?.error || 'Failed to fetch transactions');
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to fetch transactions';
-      console.error('Error fetching transactions:', error);
+      console.error('Error fetching unified transactions:', error);
       
       if (!isRetry) {
-        // Only show error toast on first attempt
         toast.error(errorMessage);
-        // Auto-retry after delay
         setTimeout(() => fetchTransactions(true), 5000);
       }
-      
-      throw error; // Re-throw for handling in the caller if needed
+      throw error;
     } finally {
       if (!isRetry) {
         setIsLoading(false);
@@ -319,34 +322,8 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
     }
 
     try {
-      // Use TradingApi methods that match your API types
-      // Wrap in try-catch to prevent Promise.all from failing completely if one request fails
-      let spotResponse = { positions: [] };
-      let leverageResponse = { positions: [] };
-      
-      try {
-        spotResponse = await TradingApi.getUserSpotPositions();
-        // Emit wallet integration event for spot positions update
-        tradingEventBus.emit('walletPositionsUpdated', {
-          type: 'spot',
-          count: spotResponse.positions.length,
-          timestamp: new Date().toISOString()
-        });
-      } catch (spotError) {
-        console.error('Error fetching spot positions:', spotError);
-      }
-      
-      try {
-        leverageResponse = await TradingApi.getUserLeveragePositions();
-        // Emit wallet integration event for leverage positions update
-        tradingEventBus.emit('walletPositionsUpdated', {
-          type: 'leverage',
-          count: leverageResponse.positions.length,
-          timestamp: new Date().toISOString()
-        });
-      } catch (leverageError) {
-        console.error('Error fetching leverage positions:', leverageError);
-      }
+      // Use unified positions endpoint
+      const unified = await TradingApi.getUnifiedPositions();
 
       if (!isMounted.current) return;
 
@@ -361,7 +338,7 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
           currentPrice: pos.currentPrice || 0,
           currentValue: pos.amount * (pos.currentPrice || 0),
           profitLoss: pos.unrealizedPnl || 0,
-          openTimestamp: new Date(pos.openTimestamp || Date.now()).toISOString(),
+          openTimestamp: new Date((pos as any).openTimestamp || Date.now()).toISOString(),
           side: pos.side,
           market: pos.market,
           timestamp: pos.timestamp,
@@ -383,12 +360,8 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
         return basePosition;
       };
 
-      // Transform and combine all positions
-      const allPositions = [
-        ...(spotResponse.positions || []).map(transformToUIPosition),
-        ...(leverageResponse.positions || []).map(transformToUIPosition)
-      ];
-
+      // Transform unified positions
+      const allPositions = ((unified as any)?.positions || []).map(transformToUIPosition);
       setPositions(allPositions);
       setLastUpdated(new Date());
       
@@ -418,25 +391,68 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
     fetchPositions();
   }, [user]);
 
+  // Enrich leverage positions with server-side liquidation price
+  useEffect(() => {
+    const fetchLiqPrices = async () => {
+      try {
+        const leveragePositions = positions.filter((p) => p.type === 'leverage');
+        if (leveragePositions.length === 0) return;
+
+        const updates = await Promise.all(
+          leveragePositions.map(async (p) => {
+            try {
+              const market = (p as any).market || p.token;
+              const resp = await flashTradeService.getLiquidationPrice({ market });
+              const lp = (resp as any)?.data?.liquidationPrice || (resp as any)?.liquidationPrice;
+              const num = Number(lp);
+              return { id: p.id, liquidationPrice: isFinite(num) ? num : undefined };
+            } catch {
+              return { id: p.id, liquidationPrice: undefined };
+            }
+          })
+        );
+
+        // Merge updates without causing unnecessary re-renders
+        setPositions((prev) =>
+          prev.map((pos) => {
+            const u = updates.find((x) => x.id === pos.id && x.liquidationPrice !== undefined);
+            return u ? { ...pos, liquidationPrice: u.liquidationPrice } : pos;
+          })
+        );
+      } catch (e) {
+        // Silent fail; widget should remain resilient
+      }
+    };
+    // Trigger when positions list changes or refresh timestamp updates
+    if (positions && positions.length > 0) {
+      fetchLiqPrices();
+    }
+  }, [positions.length, lastUpdated]);
+
   // Listen for trade confirmation events
   useEffect(() => {
     // Handler for trade confirmation events
     const handleTradeConfirmation = (eventData: any) => {
-      console.log('Trade confirmed, refreshing positions:', eventData);
-      // Refresh positions immediately after trade confirmation
+      console.log('Trade confirmed, refreshing positions & transactions:', eventData);
+      // Refresh positions and transactions immediately after trade confirmation
       fetchPositions().catch(err => {
         console.error('Error refreshing positions after trade confirmation:', err);
       });
+      fetchTransactions().catch(err => {
+        console.error('Error refreshing transactions after trade confirmation:', err);
+      });
     };
     
-    // Subscribe to trade:confirmed events
+    // Subscribe to both event names for compatibility
     tradingEventBus.on('trade:confirmed', handleTradeConfirmation);
+    tradingEventBus.on('tradeConfirmed', handleTradeConfirmation);
     
     // Cleanup when component unmounts
     return () => {
       tradingEventBus.off('trade:confirmed', handleTradeConfirmation);
+      tradingEventBus.off('tradeConfirmed', handleTradeConfirmation);
     };
-  }, [fetchPositions]);
+  }, [fetchPositions, fetchTransactions]);
 
   // Set up polling with proper cleanup
   useEffect(() => {
@@ -589,53 +605,155 @@ const LightweightPositionsWidget: React.FC<LightweightPositionsWidgetProps> = ({
 
     try {
       setIsLoading(true);
-      
-      // Use the TradingApi to sell/close the position
-      const response = await TradingApi.sellPosition({
-        positionId,
-        token: positionToClose.token,
-        amount: positionToClose.amount,
-        type: positionToClose.type,
-        percentage: percentage // This will adjust the amount on the backend if needed
-      });
-      
-      if (response.success) {
-        // Optimistic update
+
+      if (positionToClose.type === 'spot') {
+        const signingToastId = toast.loading('Preparing Solana transaction...');
+        // GMGN spot flow: initiate -> Phantom sign -> submit
+        // 1) Initiate trade to get unsigned tx (Phantom-signable)
+        const init = await TradingApi.initiateTrade({
+          action: 'sell',
+          token: positionToClose.token,
+          amount: closeAmount
+        });
+
+        // Try to locate unsigned transaction payload in common shapes
+        const unsignedB64: string | undefined =
+          init?.unsignedTransaction ||
+          init?.transaction ||
+          init?.data?.unsignedTransaction ||
+          init?.data?.transaction ||
+          init?.result?.unsignedTransaction ||
+          init?.result?.transaction;
+
+        if (!unsignedB64) {
+          toast.update(signingToastId, { render: 'Failed to prepare transaction', type: 'error', isLoading: false, autoClose: 4000 });
+          throw new Error('Missing unsigned transaction from initiateTrade');
+        }
+
+        // 2) Phantom signing
+        const provider = (window as any)?.solana;
+        if (!provider || !provider?.isPhantom) {
+          toast.update(signingToastId, { render: 'Phantom wallet not found', type: 'error', isLoading: false, autoClose: 5000 });
+          throw new Error('Phantom wallet not found. Please install or unlock Phantom.');
+        }
+
+        const tx = Transaction.from(Buffer.from(unsignedB64, 'base64'));
+        toast.update(signingToastId, { render: 'Please confirm in Phantom…', isLoading: true });
+        let signed;
+        try {
+          signed = await provider.signTransaction(tx);
+        } catch (sigErr: any) {
+          const msg = (sigErr?.code === 4001 || /reject/i.test(sigErr?.message || ''))
+            ? 'Signature rejected in Phantom'
+            : 'Failed to sign transaction';
+          toast.update(signingToastId, { render: msg, type: 'error', isLoading: false, autoClose: 4000 });
+          throw new Error(msg);
+        }
+        const signedB64 = Buffer.from(signed.serialize()).toString('base64');
+
+        // 3) Submit signed transaction
+        toast.update(signingToastId, { render: 'Submitting transaction…', isLoading: true });
+        let submit;
+        try {
+          submit = await TradingApi.submitSignedTransaction({ signedTransaction: signedB64 });
+        } catch (subErr: any) {
+          const raw = String(subErr?.message || 'Submission failed');
+          const friendly =
+            /insufficient|balance/i.test(raw) ? 'Insufficient funds to complete transaction' :
+            /blockhash/i.test(raw) ? 'Transaction expired. Please try again' :
+            /slippage|price/i.test(raw) ? 'Price moved too much (slippage). Try again with higher slippage' :
+            'Failed to submit transaction';
+          toast.update(signingToastId, { render: friendly, type: 'error', isLoading: false, autoClose: 5000 });
+          throw new Error(friendly);
+        }
+
+        // Optimistic update on success
         if (isPartial) {
-          // For partial closes, update the position amount
-          setPositions(prev => prev.map(pos => 
-            pos.id === positionId 
-              ? { ...pos, amount: pos.amount - closeAmount } 
+          setPositions(prev => prev.map(pos =>
+            pos.id === positionId
+              ? { ...pos, amount: pos.amount - closeAmount }
               : pos
           ));
         } else {
-          // For full closes, remove the position
           setPositions(prev => prev.filter(pos => pos.id !== positionId));
         }
-        
-        // Emit position sold event
+
+        // Emit events and refresh
         tradingEventBus.emit('positionSold', {
           ...positionToClose,
           amount: closeAmount,
           percentage: percentage || 100,
-          isPartial: isPartial,
+          isPartial,
+          signature: submit?.signature || submit?.txHash,
+          source: 'gmgn',
           timestamp: new Date().toISOString()
         });
+        tradingEventBus.emit('tradeConfirmed', {
+          action: 'sell',
+          type: 'spot',
+          token: positionToClose.token,
+          amount: closeAmount,
+          signature: submit?.signature || submit?.txHash,
+          source: 'gmgn'
+        });
 
-      // Refresh data in the background
-      await Promise.all([
-        fetchPositions(),
-        fetchTransactions()
-      ]);
-      
+        await Promise.all([fetchPositions(), fetchTransactions()]);
+
         const successMessage = isPartial
-          ? `Successfully closed ${percentage}% of ${positionToClose.token} position`
-          : `Successfully closed ${positionToClose.token} position`;
-          
-        toast.success(response.message || successMessage);
-      return true;
-    } else {
-      throw new Error(response.error || 'Failed to close position');
+          ? `Closed ${percentage}% of ${positionToClose.token} spot position`
+          : `Closed ${positionToClose.token} spot position`;
+        toast.update(signingToastId, { render: successMessage, type: 'success', isLoading: false, autoClose: 3000 });
+        return true;
+      } else {
+        // Flash leverage flow: call closePosition on backend
+        const levToastId = toast.loading('Closing leverage position…');
+        const closeRes = await TradingApi.closePosition({
+          market: positionToClose.market || positionToClose.token,
+          position_id: positionId,
+          size: closeAmount
+        });
+
+        // Basic success heuristic
+        if (closeRes?.success === false) {
+          const msg = closeRes?.error || 'Failed to close leverage position';
+          toast.update(levToastId, { render: msg, type: 'error', isLoading: false, autoClose: 5000 });
+          throw new Error(msg);
+        }
+
+        // Optimistic update
+        if (isPartial) {
+          setPositions(prev => prev.map(pos =>
+            pos.id === positionId
+              ? { ...pos, amount: pos.amount - closeAmount }
+              : pos
+          ));
+        } else {
+          setPositions(prev => prev.filter(pos => pos.id !== positionId));
+        }
+
+        tradingEventBus.emit('positionSold', {
+          ...positionToClose,
+          amount: closeAmount,
+          percentage: percentage || 100,
+          isPartial,
+          source: 'flash',
+          timestamp: new Date().toISOString()
+        });
+        tradingEventBus.emit('tradeConfirmed', {
+          action: 'sell',
+          type: 'leverage',
+          token: positionToClose.token,
+          amount: closeAmount,
+          source: 'flash'
+        });
+
+        await Promise.all([fetchPositions(), fetchTransactions()]);
+
+        const successMessage = isPartial
+          ? `Closed ${percentage}% of ${positionToClose.token} leverage position`
+          : `Closed ${positionToClose.token} leverage position`;
+        toast.success(successMessage, { toastId: levToastId });
+        return true;
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to close position';
@@ -768,6 +886,11 @@ const PositionCard: React.FC<{
           <div className="text-xs text-gray-500">
             Current: ${position.currentPrice.toFixed(2)}
           </div>
+          {isLeverage && 'liquidationPrice' in position && (position as any).liquidationPrice !== undefined && (
+            <div className="text-xs text-red-400 mt-1">
+              Liq: ${((position as any).liquidationPrice as number).toFixed(2)}
+            </div>
+          )}
         </div>
       </div>
       

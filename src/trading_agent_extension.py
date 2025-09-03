@@ -1,8 +1,9 @@
 """
 Trading Agent Extension for Grace
 
-This module extends the TradingAgent with Mango V3 as primary service
-while maintaining GMGN compatibility.
+This module extends the TradingAgent focusing on GMGN/Flash integration.
+Leverage trading is handled via Flash (unsigned transaction prompt flow),
+and spot/trade utilities remain GMGN-compatible.
 """
 
 import datetime
@@ -19,8 +20,8 @@ logger = logging.getLogger("EnhancedTradingAgent")
 
 class EnhancedTradingAgent(TradingAgent):
     """
-    Enhanced Trading Agent that uses Mango V3 as primary service.
-    Non-invasive extension of the original TradingAgent.
+    Enhanced Trading Agent with GMGN + Flash integration.
+    Leverage trading routes to Flash via LeverageTradeManager.
     """
 
     def __init__(self, agent_id="enhanced_trading_agent", api_services_manager=None, 
@@ -67,13 +68,6 @@ class EnhancedTradingAgent(TradingAgent):
             )
             self.logger.info("TradingServiceSelector initialized successfully")
             
-            # Initialize Mango V3 client if available
-            if hasattr(self.service_selector, 'services') and hasattr(self.service_selector.services, 'get'):
-                mango_service = self.service_selector.services.get('mango')
-                if mango_service:
-                    self.mango_v3_client = mango_service
-                    self.logger.info("Mango V3 client initialized")
-                    
         except Exception as e:
             self.logger.error(f"Failed to initialize TradingServiceSelector: {str(e)}", exc_info=True)
             raise
@@ -312,6 +306,92 @@ class EnhancedTradingAgent(TradingAgent):
         except Exception as e:
             error_msg = str(e)
             self.logger.error(f"Error in trade execution: {error_msg}")
+            task.status = "failed"
+            task.error = error_msg
+            task.completed_at = datetime.datetime.now()
+            return {"success": False, "error": error_msg, "task_id": task.task_id}
+
+    async def _handle_trade_initiate(self, task: AgentTask) -> Dict[str, Any]:
+        """
+        Handle initial GMGN spot trade initiation with validation and routing via TradingServiceSelector.
+
+        This is a lighter-weight path than _handle_execute_trade and is intended for initiating
+        spot orders (market/limit) with minimal pre-processing.
+        """
+        # Mark task as in-progress
+        task.status = "in_progress"
+        task.started_at = datetime.datetime.now()
+
+        # Validate required parameters
+        required_params = ["market", "side", "size"]
+        missing_params = [p for p in required_params if not task.content.get(p)]
+        if missing_params:
+            error_msg = f"Missing required parameters: {', '.join(missing_params)}"
+            self.logger.error(f"trade_initiate validation failed: {error_msg}")
+            task.status = "failed"
+            task.error = error_msg
+            task.completed_at = datetime.datetime.now()
+            return {"success": False, "error": error_msg, "task_id": task.task_id}
+
+        try:
+            user_id = task.content.get("user_id")
+            client_id = task.content.get("client_id", task.task_id)
+
+            # Deduplicate by client_id + task_id
+            transaction_key = f"{client_id}_{task.task_id}"
+            if transaction_key in self.transaction_cache:
+                self.logger.warning(
+                    f"Duplicate trade_initiate detected: {transaction_key} - returning cached result"
+                )
+                cached_result = self.transaction_cache[transaction_key]
+                task.status = "completed"
+                task.result = cached_result
+                task.completed_at = datetime.datetime.now()
+                return cached_result
+
+            # Build trade params
+            trade_params: Dict[str, Any] = {
+                "market": task.content.get("market", ""),
+                "side": task.content.get("side", "buy"),
+                "type": task.content.get("type", "market"),
+                "size": float(task.content.get("size", 0)),
+                "user_id": user_id,
+                "client_id": client_id,
+            }
+            if task.content.get("price") is not None:
+                trade_params["price"] = float(task.content.get("price"))
+
+            self.logger.info(
+                f"[trade_initiate] {trade_params['side']} {trade_params['size']} {trade_params['market']} "
+                f"(type={trade_params.get('type','market')}) for user {str(user_id)[-4:] if user_id else 'anon'}"
+            )
+
+            # Execute via service selector (GMGN primary)
+            result = await self.service_selector.execute_trade(trade_params)
+
+            # Update task status and cache
+            if result.get("success", False):
+                task.status = "completed"
+                task.result = result
+                # Cache to prevent duplicate execution
+                self.transaction_cache[transaction_key] = result
+            else:
+                task.status = "failed"
+                task.error = result.get("error", "Unknown error")
+
+            task.completed_at = datetime.datetime.now()
+
+            # Include task_id in result for tracking
+            if isinstance(result, dict):
+                result["task_id"] = task.task_id
+            else:
+                result = {"success": True, "result": result, "task_id": task.task_id}
+
+            return result
+
+        except Exception as e:
+            error_msg = str(e)
+            self.logger.error(f"Error in trade_initiate: {error_msg}", exc_info=True)
             task.status = "failed"
             task.error = error_msg
             task.completed_at = datetime.datetime.now()
@@ -574,47 +654,33 @@ class EnhancedTradingAgent(TradingAgent):
                 f"Leverage trade execution: {side} {size} {market} with {leverage}x leverage"
             )
             
-            # Check if we have a leverage manager
-            if self.leverage_manager is not None:
-                # Use the leverage trade manager for execution
-                self.logger.info("Using leverage trade manager for execution")
-                result = await self.leverage_manager.execute_leverage_trade(
-                    user_id=user_id,
-                    market=market,
-                    side=side,
-                    size=size,
-                    leverage=leverage,
-                    order_type=order_type,
-                    price=price,
-                    reduce_only=reduce_only,
-                    client_id=client_id
-                )
-            else:
-                # Fall back to direct Mango V3 execution through the service selector
-                self.logger.info("Leverage manager not available, using service selector")
-                
-                # First check wallet balance if user_id is provided
-                if user_id:
-                    balance_check = await self.service_selector.check_wallet_balance(user_id)
-                    if not balance_check.get("success", False):
-                        error_msg = balance_check.get("error", "Failed to check wallet balance")
-                        self.logger.warning(f"Wallet balance check failed: {error_msg}")
-                
-                # Prepare leverage trade parameters for Mango V3
-                leverage_params = {
-                    "market": market,
-                    "side": side,
-                    "size": size,
-                    "leverage": leverage,
-                    "price": price,
-                    "type": order_type,
-                    "reduce_only": reduce_only,
-                    "client_id": client_id,
-                    "user_id": user_id
-                }
-                
-                # Execute leverage trade via service selector
-                result = await self.service_selector.execute_leverage_trade(leverage_params)
+            # Ensure leverage manager exists (Flash-backed)
+            if self.leverage_manager is None:
+                try:
+                    from src.leverage_trading_handler import LeverageTradeManager as _LTM
+                    self.logger.info("Instantiating LeverageTradeManager for Flash leverage execution")
+                    self.leverage_manager = _LTM(
+                        gmgn_service=getattr(self, 'gmgn_service', None),
+                        memory_system=self.memory_system,
+                        logger=self.logger,
+                        **self.config.get('leverage_trading', {}) if hasattr(self.config, 'get') else {}
+                    )
+                except Exception as ie:
+                    self.logger.error(f"Failed to instantiate LeverageTradeManager: {ie}", exc_info=True)
+                    raise
+
+            # Use leverage manager (Flash) for execution
+            result = await self.leverage_manager.execute_leverage_trade(
+                user_id=user_id,
+                market=market,
+                side=side,
+                size=size,
+                leverage=leverage,
+                order_type=order_type,
+                price=price,
+                reduce_only=reduce_only,
+                client_id=client_id
+            )
             
             # Update task status based on result
             if result.get("success", False):

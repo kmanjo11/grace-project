@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  hyperliquid-adapter:
+    build:
+      context: ../src/adapters/hyperliquid
+      dockerfile: Dockerfile
+    image: grace/hyperliquid-adapter:latest
+    container_name: hyperliquid-adapter
+    environment:
+      - HL_ENV=${HL_ENV:-mainnet}
+      - PORT=9010
+    ports:
+      - "9010:9010"
+    restart: unless-stopped

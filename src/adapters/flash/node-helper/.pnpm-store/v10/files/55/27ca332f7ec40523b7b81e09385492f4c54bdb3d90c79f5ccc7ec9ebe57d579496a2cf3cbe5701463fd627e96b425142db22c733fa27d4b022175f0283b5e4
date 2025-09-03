@@ -1,0 +1,14 @@
+import BN from "bn.js";
+import { Connection, PublicKey } from "@solana/web3.js";
+import BigNumber from 'bignumber.js';
+export declare const getUnixTs: () => number;
+export declare function toUiDecimalsOldSDK(nativeAmount: BN | number | string, decimals: number, precision?: number, commaSeperated?: boolean): string;
+export declare const uiDecimalsToNative: (amountUi: string, decimals: number) => BN;
+export declare const validateNumberString: (str: string) => boolean;
+export declare function nativeToUiDecimals(nativeAmount: BN | number | string | BigNumber, decimals: number, precision?: number, commaSeperated?: boolean): string;
+export declare function checkIfAccountExists(account: PublicKey, connection: Connection): Promise<boolean>;
+export declare const scaleToExponent: (arg: BN, exponent: BN, target_exponent: BN) => BN;
+export declare const checkedCeilDiv: (arg1: BN, arg2: BN) => BN;
+export declare const checkedDecimalCeilMul: (coefficient1: BN, exponent1: BN, coefficient2: BN, exponent2: BN, target_exponent: BN) => BN;
+export declare const checkedDecimalMul: (coefficient1: BN, exponent1: BN, coefficient2: BN, exponent2: BN, target_exponent: BN) => BN;
+export declare const checkedDecimalDiv: (coefficient1: BN, exponent1: BN, coefficient2: BN, exponent2: BN, target_exponent: BN) => BN;

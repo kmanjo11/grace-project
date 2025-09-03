@@ -1,0 +1,31 @@
+import { BN } from "@coral-xyz/anchor";
+import { PublicKey } from "@solana/web3.js";
+import { ContractOraclePrice, Position } from "./types";
+export declare class PositionAccount implements Position {
+    publicKey: PublicKey;
+    owner: PublicKey;
+    market: PublicKey;
+    delegate: PublicKey;
+    openTime: BN;
+    updateTime: BN;
+    entryPrice: ContractOraclePrice;
+    sizeUsd: BN;
+    sizeAmount: BN;
+    lockedAmount: BN;
+    lockedUsd: BN;
+    collateralAmount: BN;
+    collateralUsd: BN;
+    unsettledAmount: BN;
+    unsettledFeesUsd: BN;
+    cumulativeLockFeeSnapshot: BN;
+    takeProfitPrice: ContractOraclePrice;
+    stopLossPrice: ContractOraclePrice;
+    sizeDecimals: number;
+    lockedDecimals: number;
+    collateralDecimals: number;
+    bump: number;
+    constructor(publicKey: PublicKey, parseData: Position);
+    static from(publicKey: PublicKey, parseData: Position): PositionAccount;
+    clone(): PositionAccount;
+    updatePositionData(position: Position): void;
+}

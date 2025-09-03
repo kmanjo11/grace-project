@@ -9,14 +9,25 @@ import re
 import json
 import time
 import logging
+import os
 from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover
+    requests = None  # type: ignore
+
+# Optional Flash helper client (direct to helper microservice)
+try:
+    from adapters.flash.flash_helper_client import FlashHelperClient  # type: ignore
+except Exception:  # pragma: no cover
+    FlashHelperClient = None  # type: ignore
 
 class LeverageTradeCondition:
     """
     Represents a conditional leverage trade with advanced risk management.
-    Integrates directly with Mango V3's margin system.
+    Refactored to work with Flash protocol via backend proxy.
     """
 
     def __init__(
@@ -64,12 +75,12 @@ class LeverageTradeCondition:
         self.exit_condition = exit_condition or {}
         self.expiry = expiry or datetime.now() + timedelta(days=30)
 
-        # Mango V3 specific margin parameters
-        self.initial_margin_ratio = 0.0  # Required initial margin
-        self.maintenance_margin_ratio = 0.0  # Required maintenance margin
-        self.current_margin_ratio = 0.0  # Current margin ratio
-        self.free_collateral = 0.0  # Available collateral
-        self.account_leverage = 0.0  # Current account leverage
+        # Margin state placeholders (protocol-agnostic)
+        self.initial_margin_ratio = 0.0
+        self.maintenance_margin_ratio = 0.0
+        self.current_margin_ratio = 0.0
+        self.free_collateral = 0.0
+        self.account_leverage = 0.0
 
         # Risk management parameters
         self.max_drawdown = max_drawdown
@@ -158,13 +169,13 @@ class LeverageTradeCondition:
 class LeverageTradeManager:
     """
     Manages leverage trades with advanced tracking and execution capabilities.
-    Direct integration with Mango V3 for proper leverage handling.
+    Refactored to use Flash protocol via backend proxy endpoints.
     """
 
     def __init__(
         self,
-        mango_v3_client=None,  # MangoV3Extension instance (deprecated, use gmgn_service)
-        gmgn_service=None,     # GMGN service instance (preferred)
+        mango_v3_client=None,  # Deprecated
+        gmgn_service=None,     # GMGN service instance (provides user context)
         memory_system=None,
         max_leverage: float = 10.0,  # Default max leverage
         min_margin_ratio: float = 0.05,  # 5% minimum margin ratio
@@ -187,19 +198,8 @@ class LeverageTradeManager:
         self.max_leverage = max_leverage
         self.min_margin_ratio = min_margin_ratio
         
-        # Handle both gmgn_service and mango_v3_client for backward compatibility
-        if gmgn_service is not None:
-            self.gmgn_service = gmgn_service
-            self.mango_v3_client = getattr(gmgn_service, 'mango_v3_client', None)
-        else:
-            self.gmgn_service = None
-            self.mango_v3_client = mango_v3_client
-
-        if self.mango_v3_client is None and self.gmgn_service is None:
-            self.logger.warning(
-                "No Mango V3 client or GMGN service provided. "
-                "Some features may be limited."
-            )
+        # Prefer gmgn_service for user context; Mango client deprecated
+        self.gmgn_service = gmgn_service
         
         # Initialize trade conditions storage
         self.trade_conditions: Dict[str, List[LeverageTradeCondition]] = {}
@@ -211,30 +211,31 @@ class LeverageTradeManager:
                 setattr(self, key, value)
             else:
                 self.logger.warning(f"Invalid config key for LeverageTradeManager: {key}")
-        """
-        Initialize the Leverage Trade Manager.
-
-        Args:
-            mango_v3_client: Mango V3 client for trade execution
-            memory_system: Optional memory system for persistent storage
-            max_leverage: Maximum leverage allowed per trade
-            min_margin_ratio: Minimum required margin ratio
-            logger: Optional logger
-        """
-        self.mango = mango_v3_client
+        # In-memory trade and risk tracking
         self.memory_system = memory_system
         self.max_leverage = max_leverage
         self.min_margin_ratio = min_margin_ratio
         self.logger = logger or logging.getLogger(__name__)
-
-        # In-memory trade and risk tracking
         self.active_trades: Dict[str, Dict[str, LeverageTradeCondition]] = {}
-        self.position_risk: Dict[str, Dict[str, float]] = (
-            {}
-        )  # Track risk per user/market
-        self.active_limit_orders: Dict[str, Dict[str, Any]] = (
-            {}
-        )  # Track active limit orders
+        self.position_risk: Dict[str, Dict[str, float]] = {}
+        self.active_limit_orders: Dict[str, Dict[str, Any]] = {}
+
+        # Flash proxy base
+        self.api_base = os.environ.get("GRACE_API_BASE", "http://localhost:9000")
+
+        # HTTP session
+        self._http = requests
+
+        # Initialize optional direct Flash helper client when enabled
+        # Enable with env FLASH_USE_CLIENT=1 or FLASH_DIRECT=1
+        use_client = str(os.environ.get("FLASH_USE_CLIENT") or os.environ.get("FLASH_DIRECT") or "").strip().lower() in ("1", "true", "yes")
+        self._flash_client = None
+        if use_client and FlashHelperClient is not None:
+            try:
+                self._flash_client = FlashHelperClient()
+                self.logger.info("FlashHelperClient enabled for direct helper calls")
+            except Exception as e:  # pragma: no cover
+                self.logger.warning(f"Failed to init FlashHelperClient, will use proxy: {e}")
 
     def place_limit_order(
         self,
@@ -264,68 +265,58 @@ class LeverageTradeManager:
             Limit order placement result
         """
         try:
-            # Validate leverage
             if leverage > self.max_leverage:
-                return {
-                    "success": False,
-                    "error": f"Leverage {leverage}x exceeds max {self.max_leverage}x",
-                }
+                return {"success": False, "error": f"Leverage {leverage}x exceeds max {self.max_leverage}x"}
 
-            # Generate client ID if not provided
             generated_client_id = client_id or f"grace-limit-{int(time.time())}"
 
-            # Place limit order via Mango V3
-            order_result = self.mango.place_leverage_trade(
-                market=market,
-                side=side,
-                price=price,
-                size=size,
-                leverage=leverage,
-                reduce_only=reduce_only,
-                order_type="limit",
-                client_id=generated_client_id,
-            )
+            # Flash adapter currently builds market orders; limit specifics may not be supported.
+            # We'll submit as reduceOnly if requested, ignoring price.
+            payload = {
+                "market": market,
+                "side": side,
+                "size": size,
+                "leverage": leverage,
+                "reduceOnly": bool(reduce_only),
+                "clientId": generated_client_id,
+            }
+            resp = self._post_flash("/api/flash/order", payload)
+            if not resp.get("success"):
+                return resp
 
-            # Track limit order
-            if order_result.get("success"):
-                limit_order_details = {
-                    "market": market,
-                    "side": side,
-                    "price": price,
-                    "size": size,
-                    "leverage": leverage,
-                    "client_id": generated_client_id,
-                    "status": "active",
-                    "timestamp": time.time(),
-                }
+            limit_order_details = {
+                "market": market,
+                "side": side,
+                "price": price,
+                "size": size,
+                "leverage": leverage,
+                "client_id": generated_client_id,
+                "status": "pending_signature",
+                "timestamp": time.time(),
+            }
 
-                # Optional user tracking
-                if user_id:
-                    if user_id not in self.active_limit_orders:
-                        self.active_limit_orders[user_id] = {}
-                    self.active_limit_orders[user_id][
-                        generated_client_id
-                    ] = limit_order_details
+            if user_id:
+                self.active_limit_orders.setdefault(user_id, {})[generated_client_id] = limit_order_details
+                if self.memory_system:
+                    try:
+                        self.memory_system.create_memory(
+                            title=f"Limit Order: {market} {side}",
+                            content=json.dumps(limit_order_details),
+                            tags=["limit_order", "leverage_trade"],
+                        )
+                    except Exception:
+                        pass
 
-                # Optional: Log to memory system
-                if self.memory_system and user_id:
-                    self.memory_system.create_memory(
-                        title=f"Limit Order: {market} {side}",
-                        content=json.dumps(limit_order_details),
-                        tags=["limit_order", "leverage_trade"],
-                    )
-
-                self.logger.info(f"Limit order placed: {limit_order_details}")
-                return {
-                    "success": True,
-                    "order_details": limit_order_details,
-                    **order_result,
-                }
-
-            return order_result
+            self.logger.info(f"Flash order built (limit semantics best-effort): {limit_order_details}")
+            return {
+                "success": True,
+                "order_details": limit_order_details,
+                "provider": "flash",
+                "unsigned_tx_b64": resp.get("transaction"),
+            }
 
         except Exception as e:
-            self.logger.error(f"Error placing limit order: {e}", exc_info=True)
+            self.logger.error(f"Error placing limit order (flash): {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
     def parse_trade_request(
@@ -566,34 +557,43 @@ class LeverageTradeManager:
         return min(max_position_from_equity, max_position_from_collateral)
 
     def execute_trades(
-        self, current_market_prices: Dict[str, float]
+        self, current_market_prices: Optional[Dict[str, float]] = None
     ) -> List[Dict[str, Any]]:
         """
-        Execute trades based on current market conditions with proper risk management.
-        Integrates directly with Mango V3's margin system.
-
+        Execute trades based on current market conditions (Flash-tailored).
+        - Uses Flash order/close endpoints.
+        - If a price map isn't provided, fetches Pyth prices via `get_flash_price()`
+          for markets that look like perps (e.g., "BTC-PERP").
+        
         Args:
-            current_market_prices: Current prices for different markets
-
+            current_market_prices: Optional map of { market: price }. If omitted or missing
+                                   a market, price will be fetched from Flash/Pyth.
+        
         Returns:
             List of trade execution results
         """
-        execution_results = []
+        execution_results: List[Dict[str, Any]] = []
+        prices = dict(current_market_prices or {})
 
         for user_id, user_trades in self.active_trades.items():
-            # Get complete portfolio data from Mango V3
-            portfolio = self.mango.get_portfolio_summary(user_id)
-            if not portfolio.get("success"):
-                self.logger.error(f"Failed to get portfolio for user {user_id}")
-                continue
-
-            # Get all open positions for position adjustment
-            positions = portfolio.get("positions", [])
+            positions = []  # Position risk can be integrated from Flash positions if needed
 
             for trade_id, trade_condition in list(user_trades.items()):
-                market_price = current_market_prices.get(trade_condition.market)
+                market_name = trade_condition.market
+                market_price = prices.get(market_name)
                 if market_price is None:
-                    continue
+                    # Default to Flash/Pyth price for *-PERP markets
+                    if "-PERP" in (market_name or "").upper():
+                        fetched = self.get_flash_price(market_name)
+                        if fetched is not None:
+                            market_price = fetched
+                            prices[market_name] = fetched
+                        else:
+                            # Can't price this market; skip
+                            continue
+                    else:
+                        # No price available and not a perp: skip
+                        continue
 
                 # Update market price in trade condition
                 trade_condition.market_price = market_price
@@ -609,86 +609,26 @@ class LeverageTradeManager:
                 )
 
                 if existing_position:
-                    # Update position tracking
-                    trade_condition.current_margin_ratio = existing_position.get(
-                        "margin_ratio", 0
-                    )
-                    trade_condition.liquidation_price = existing_position.get(
-                        "liquidation_price", 0
-                    )
-                    trade_condition.unrealized_pnl = existing_position.get(
-                        "unrealized_pnl", 0
-                    )
-
-                    # Check if position needs adjustment (e.g., take profit or stop loss)
-                    if (
-                        trade_condition.status == "open"
-                        and trade_condition.is_exit_condition_met(market_price)
-                    ):
-                        trade_result = self.mango.place_leverage_trade(
-                            market=trade_condition.market,
-                            side=(
-                                "sell" if trade_condition.side == "buy" else "buy"
-                            ),  # Opposite side
-                            price=market_price,
-                            size=trade_condition.size,
-                            leverage=trade_condition.leverage,
-                            reduce_only=True,  # Important: only reduce position
-                            client_id=f"{trade_condition.client_id}_close",
-                        )
+                    # If we had position details, we could update tracking here
+                    if trade_condition.status == "open" and trade_condition.is_exit_condition_met(market_price):
+                        trade_result = self._flash_close(trade_condition.market, size=trade_condition.size)
                         if trade_result.get("success"):
                             trade_condition.status = "closed"
                             trade_condition.closed_at = datetime.now()
-                            trade_condition.realized_pnl = trade_result.get(
-                                "realized_pnl", 0
-                            )
 
                 # For new trades, check entry conditions and risk
                 elif (
                     trade_condition.status == "pending"
                     and trade_condition.is_entry_condition_met(market_price)
                 ):
-                    # Check wallet balance and allocate if needed
-                    required_margin = (
-                        trade_condition.size * market_price / trade_condition.leverage
-                    )
-                    mango_balance = portfolio.get("total_collateral", 0)
-
-                    if mango_balance < required_margin:
-                        # Try to allocate funds from internal wallet
-                        allocation_result = self.mango.deposit_funds(
-                            user_id=user_id,
-                            amount=required_margin - mango_balance,
-                            asset="USDC",  # Default collateral
-                        )
-                        if not allocation_result.get("success"):
-                            self.logger.error(
-                                f"Failed to allocate funds for user {user_id}"
-                            )
-                            continue
-
-                        # Refresh portfolio after allocation
-                        portfolio = self.mango.get_portfolio_summary(user_id)
-
-                    # Perform comprehensive risk checks
-                    if not self._check_risk_limits(user_id, trade_condition, portfolio):
-                        continue
-
-                    # Calculate safe position size based on portfolio risk
-                    safe_size = self._calculate_safe_position_size(
-                        portfolio, market_price, trade_condition.leverage
-                    )
-
-                    # Execute trade through Mango V3
-                    trade_result = self.mango.place_leverage_trade(
+                    # Execute trade via Flash order endpoint
+                    side = 'buy' if trade_condition.side in ('long', 'buy') else 'sell'
+                    trade_result = self._flash_order(
                         market=trade_condition.market,
-                        side=trade_condition.side,
-                        price=market_price,
-                        size=min(safe_size, trade_condition.size),
+                        side=side,
+                        size=min(trade_condition.size, trade_condition.size),
                         leverage=min(trade_condition.leverage, self.max_leverage),
                         reduce_only=False,
-                        order_type=trade_condition.order_type,
-                        client_id=trade_condition.client_id,
                     )
 
                     if trade_result.get("success"):
@@ -704,15 +644,8 @@ class LeverageTradeManager:
                     trade_condition.status == "active"
                     and trade_condition.is_exit_condition_met(market_price)
                 ):
-                    # Close trade (opposite side)
-                    close_side = "sell" if trade_condition.side == "long" else "buy"
-                    close_result = self.gmgn_service.place_mango_v3_leverage_trade(
-                        market=trade_condition.market,
-                        side=close_side,
-                        price=market_price,
-                        size=trade_condition.size,
-                        leverage=trade_condition.leverage,
-                    )
+                    # Close trade using Flash close endpoint
+                    close_result = self._flash_close(trade_condition.market, size=trade_condition.size)
 
                     if close_result.get("success"):
                         trade_condition.status = "closed"
@@ -724,6 +657,162 @@ class LeverageTradeManager:
                     )
 
         return execution_results
+
+    # --- Flash helpers ---
+    def _post_flash(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            if not self._http:
+                return {"success": False, "error": "requests unavailable"}
+            url = f"{self.api_base}{path}"
+            r = self._http.post(url, json=payload, timeout=30)
+            return r.json() if r.ok else {"success": False, "error": f"HTTP {r.status_code}", "details": r.text}
+        except Exception as e:
+            self.logger.error(f"Flash proxy POST {path} error: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _flash_order(self, market: str, side: str, size: float, leverage: float = 1.0, reduce_only: bool = False, payout_token: Optional[str] = None, collateral_token: Optional[str] = None) -> Dict[str, Any]:
+        # Prefer direct helper execute when available
+        if getattr(self, "_flash_client", None):
+            try:
+                extra: Dict[str, Any] = {"reduceOnly": bool(reduce_only)}
+                if payout_token:
+                    extra["payoutTokenSymbol"] = payout_token
+                if collateral_token:
+                    extra["collateralTokenSymbol"] = collateral_token
+                result = self._flash_client.execute_order(
+                    market=market,
+                    side=side,
+                    size=size,
+                    leverage=leverage,
+                    extra=extra,
+                )
+                # Normalize response
+                if isinstance(result, dict):
+                    result.setdefault("provider", "flash")
+                    if "transaction" in result:
+                        result.setdefault("unsigned_tx_b64", result.get("transaction"))
+                return result  # type: ignore[return-value]
+            except Exception as e:
+                self.logger.error(f"FlashHelperClient execute_order error: {e}")
+                # Fall through to proxy
+        payload = {
+            "market": market,
+            "side": side,
+            "size": size,
+            "leverage": leverage,
+            "reduceOnly": bool(reduce_only),
+        }
+        if payout_token:
+            payload["payoutTokenSymbol"] = payout_token
+        if collateral_token:
+            payload["collateralTokenSymbol"] = collateral_token
+        resp = self._post_flash("/api/flash/order", payload)
+        if resp.get("success"):
+            # Include compatibility fields
+            resp.setdefault("provider", "flash")
+            if "transaction" in resp:
+                resp.setdefault("unsigned_tx_b64", resp.get("transaction"))
+        return resp
+
+    def _flash_close(self, market: str, size: Optional[float] = None, payout_token: Optional[str] = None) -> Dict[str, Any]:
+        # Prefer direct helper execute when available
+        if getattr(self, "_flash_client", None):
+            try:
+                extra: Dict[str, Any] = {}
+                if payout_token:
+                    extra["payoutTokenSymbol"] = payout_token
+                result = self._flash_client.execute_close(market=market, size=size, extra=extra)
+                # Normalize response
+                if isinstance(result, dict):
+                    result.setdefault("provider", "flash")
+                    if "transaction" in result:
+                        result.setdefault("unsigned_tx_b64", result.get("transaction"))
+                return result  # type: ignore[return-value]
+            except Exception as e:
+                self.logger.error(f"FlashHelperClient execute_close error: {e}")
+                # Fall through to proxy
+        payload: Dict[str, Any] = {"market": market}
+        if size is not None:
+            payload["size"] = size
+        if payout_token:
+            payload["payoutTokenSymbol"] = payout_token
+        resp = self._post_flash("/api/flash/close", payload)
+        if resp.get("success"):
+            resp.setdefault("provider", "flash")
+            if "transaction" in resp:
+                resp.setdefault("unsigned_tx_b64", resp.get("transaction"))
+        return resp
+
+    def _flash_set_tpsl(self, market: str, take_profit: Optional[float] = None, stop_loss: Optional[float] = None, size: Optional[float] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"market": market}
+        if take_profit is not None:
+            payload["takeProfit"] = take_profit
+        if stop_loss is not None:
+            payload["stopLoss"] = stop_loss
+        if size is not None:
+            payload["size"] = size
+        resp = self._post_flash("/api/flash/tpsl", payload)
+        if resp.get("success"):
+            resp.setdefault("provider", "flash")
+            if "transaction" in resp:
+                resp.setdefault("unsigned_tx_b64", resp.get("transaction"))
+        return resp
+
+    def _flash_get_liquidation_price(self, market: str) -> Dict[str, Any]:
+        # Keep using proxy for now; helper GET variant requires additional params
+        payload: Dict[str, Any] = {"market": market}
+        resp = self._post_flash("/api/flash/liquidation-price", payload)
+        # Response expected: { success, market, owner, liquidationPrice }
+        return resp
+
+    # --- Flash price helpers (Pyth via node-helper) ---
+    def _get_flash(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        try:
+            if not self._http:
+                return {"success": False, "error": "requests unavailable"}
+            url = f"{self.api_base}{path}"
+            r = self._http.get(url, params=params or {}, timeout=15)
+            return r.json() if r.ok else {"success": False, "error": f"HTTP {r.status_code}", "details": r.text}
+        except Exception as e:
+            self.logger.error(f"Flash proxy GET {path} error: {e}")
+            return {"success": False, "error": str(e)}
+
+    def flash_get_prices(self) -> Dict[str, Any]:
+        """
+        Fetch Pyth prices for current Flash pool tokens via backend proxy.
+        Returns structure: { success, network, pool, prices: { SYMBOL: { price, emaPrice, exponent, ... } } }
+        """
+        # Prefer direct helper when available
+        if getattr(self, "_flash_client", None):
+            try:
+                return self._flash_client.get_prices()  # type: ignore[return-value]
+            except Exception as e:
+                self.logger.error(f"FlashHelperClient get_prices error: {e}")
+                # Fall through to proxy
+        return self._get_flash("/api/flash/prices")
+
+    def get_flash_price(self, market: str, use_ema: bool = False) -> Optional[float]:
+        """
+        Convenience to get a float price for a given market (e.g., 'BTC-PERP').
+        Applies exponent scaling from Pyth response.
+        """
+        try:
+            symbol = (market or "").split("-")[0].upper()
+            data = self.flash_get_prices()
+            if not data.get("success"):
+                return None
+            info = (data.get("prices", {}) or {}).get(symbol)
+            if not info or not info.get("success"):
+                return None
+            val_str = (info.get("emaPrice") if use_ema else info.get("price"))
+            exp = int(info.get("exponent", 0))
+            if val_str is None:
+                return None
+            # price fields are big-integer components as strings; apply 10^exponent
+            return float(val_str) * (10 ** exp)
+        except Exception as e:
+            self.logger.warning(f"Failed to get flash price for {market}: {e}")
+            return None
 
 
 # Example usage and testing

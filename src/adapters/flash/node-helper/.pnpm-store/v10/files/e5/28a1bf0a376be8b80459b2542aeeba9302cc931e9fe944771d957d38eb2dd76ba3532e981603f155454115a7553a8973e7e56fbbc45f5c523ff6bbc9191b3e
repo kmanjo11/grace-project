@@ -1,0 +1,34 @@
+import { PublicKey } from "@solana/web3.js";
+import { Assets, FeesStats, Custody, Fees, PricingParams, Permissions, BorrowRateParams, OracleParams, BorrowRateState } from "./types";
+import BN from "bn.js";
+export declare class CustodyAccount implements Custody {
+    publicKey: PublicKey;
+    pool: PublicKey;
+    mint: PublicKey;
+    tokenAccount: PublicKey;
+    decimals: number;
+    isStable: boolean;
+    depegAdjustment: boolean;
+    isVirtual: boolean;
+    distributeRewards: boolean;
+    oracle: OracleParams;
+    pricing: PricingParams;
+    permissions: Permissions;
+    fees: Fees;
+    borrowRate: BorrowRateParams;
+    rewardThreshold: BN;
+    assets: Assets;
+    feesStats: FeesStats;
+    borrowRateState: BorrowRateState;
+    bump: number;
+    tokenAccountBump: number;
+    token22: boolean;
+    uid: number;
+    reservedAmount: BN;
+    minReserveUsd: BN;
+    limitPriceBufferBps: BN;
+    padding: number[];
+    constructor(publicKey: PublicKey, parseData: Custody);
+    static from(publicKey: PublicKey, parseData: Custody): CustodyAccount;
+    updateCustodyData(custody: Custody): void;
+}

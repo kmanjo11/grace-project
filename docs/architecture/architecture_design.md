@@ -63,8 +63,8 @@ Grace is a crypto trading application based on Open Interpreter that enables use
   - Buy/sell operations
   - Coin swaps
   - Price checking
-- **Leverage Trading**: Via Mango Client
-- **Liquidity Pool Trading**: Through Raydium DEX
+- **Leverage Trading**: Via (Flash Protocol) tbd
+- **Liquidity Pool Trading**: Via (Flash Protocol) tbd
 - **Auto-Trading**: Risk-based settings and strategies
 
 ### 8. UI Interface

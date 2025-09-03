@@ -4,6 +4,7 @@ This guide lets you run:
 - Terminal A: Python backend (port 9000)
 - Terminal B: UI with pnpm (port 3000)
 - Terminal C: Docker external services (Mango proxy/service on 8080, Redis on 6379)
+ - Terminal D: Flash Node-Helper (port 9020)
 
 Assumptions
 - macOS + zsh
@@ -24,7 +25,10 @@ export MANGO_V3_BASE_URL="http://localhost:8080"              # points to docker
 # export OPENAI_API_KEY=sk-...
 
 # Run backend
-python -m src.run_server
+set -a
+source /Users/wonkasworld/Downloads/grace-project/.env
+set +a
+python3 -m src.run_server
 
 # Health check (in another shell)
 curl -sS http://localhost:9000/api/health | jq .
@@ -32,16 +36,24 @@ curl -sS http://localhost:9000/api/health | jq .
 -------------------------------------------------------------------------------
 Terminal B — UI (local pnpm)
 -------------------------------------------------------------------------------
-# From project root (or cd src/ui), then run:
+# From project root (or cd src/ui), then run: (Make a UI ENV doc)
 
 # UI env for production-style Next.js run
 export NODE_ENV=production
 # Next.js runtime/public envs
 export NEXT_PUBLIC_API_URL="/api"                              # your UI’s base API path
 export NEXT_PUBLIC_MANGO_V3_BASE_URL="http://localhost:8080"   # same proxy as backend
+
 # Optional compatibility (if code references VITE_* envs)
 export VITE_API_URL="/api"
 export VITE_MANGO_V3_BASE_URL="http://localhost:8080"
+
+***
+NEXT_PUBLIC_DISABLE_STATE_PERSIST=1
+NEXT_PUBLIC_ENABLE_CLIENT_LOGS=true
+NEXT_PUBLIC_API_URL=http://localhost:9000
+NEXT_PUBLIC_MANGO_V3_BASE_URL=http://localhost:8080
+***
 
 # Build and start Next.js
 cd src/ui

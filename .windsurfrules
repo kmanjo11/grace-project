@@ -8,4 +8,6 @@ Context of file should always be put in perspective prior to making edits.
 Understand the contextual relalationship between dockerfile and dockercompose file in deployment folder. 
 in testing i am running python3 backend and pnpm start for the UI. these run in 2 seperate terminals
 
+App has 3 trade protocols Flash for leverage on solana, GMGN for spot.. And Hyper Liquid for EVM ETH 
 
+When creating new features and execution , more than likely we will need to wire/include it in Grace/OI prompt logic 

@@ -1,0 +1,11 @@
+import { PriceServiceConnection } from "@pythnetwork/price-service-client";
+import { TransactionInstruction } from "@solana/web3.js";
+import { PoolConfig } from "./PoolConfig";
+import { BackupOracle } from "./types";
+import { Program } from "@coral-xyz/anchor";
+import { Perpetuals } from "./idl/perpetuals";
+export declare const API_ENDPOINT: string;
+export declare const pythPriceServiceConnection: PriceServiceConnection;
+export declare const getPythnetOraclePrices: (program: Program<Perpetuals>, poolConfig: PoolConfig, backupOracleSecretKey: string) => Promise<TransactionInstruction>;
+export declare const getBackupOracleInstruction: (program: Program<Perpetuals>, poolConfig: PoolConfig, backupOracleSecretKey: string, backupCaches: BackupOracle[]) => TransactionInstruction;
+export declare function createBackupOracleInstruction(poolAddress: string, overrideCheck?: boolean): Promise<TransactionInstruction[]>;

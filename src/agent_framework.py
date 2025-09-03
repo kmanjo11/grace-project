@@ -11,11 +11,15 @@ import queue
 import json
 import logging
 import asyncio
+import asyncio as _asyncio
 import uuid
 import threading
 from enum import Enum
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Union, Tuple
+from src.trading_service_selector import TradingServiceSelector
+from src.automation_coordinator import AutomationCoordinator
+from src.chroma_store import ChromaStore
 
 import logging
 
@@ -787,8 +791,41 @@ class TradingAgent(BaseAgent):
                 "get_token_price",
                 "check_wallet_balance",
                 "trade_initiate",
+                "automation_tick",
             ]
         )
+
+        # Initialize service selector for trade routing (GMGN primary)
+        try:
+            self.service_selector = TradingServiceSelector(
+                config=self.config,
+                memory_system=self.memory_system,
+                logger=self.logger,
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to initialize TradingServiceSelector in TradingAgent: {str(e)}",
+                exc_info=True,
+            )
+            self.service_selector = None
+
+        # Initialize automation coordinator
+        try:
+            auto_cfg = (self.config or {}).get("automation", {})
+            self.automation_coordinator = AutomationCoordinator(
+                memory_system=self.memory_system,
+                logger=self.logger,
+                dry_run=bool(auto_cfg.get("dry_run", False)),
+            )
+        except Exception:
+            self.automation_coordinator = None
+
+        # Initialize ChromaStore for persisting evals/backtests
+        try:
+            self.chroma_store = ChromaStore()
+        except Exception as _e:
+            self.logger.error(f"Failed to initialize ChromaStore: {str(_e)}", exc_info=True)
+            self.chroma_store = None
 
     def _process_task(self, task: AgentTask) -> Dict[str, Any]:
         """
@@ -819,6 +856,8 @@ class TradingAgent(BaseAgent):
                 return self._handle_check_wallet_balance(task)
             elif task.task_type == "trade_initiate":
                 return self._handle_trade_initiate(task)
+            elif task.task_type == "automation_tick":
+                return self._handle_automation_tick(task)
             else:
                 self.logger.warning(f"Unsupported task type: {task.task_type}")
                 return {
@@ -834,88 +873,166 @@ class TradingAgent(BaseAgent):
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {"error": str(e), "status": "error"}
 
-    def _handle_execute_trade(self, task: AgentTask) -> Dict[str, Any]:
+    def _handle_automation_tick(self, task: AgentTask) -> Dict[str, Any]:
         """
-        Handle an execute_trade task.
-
-        Args:
-            task: Task to process
-
-        Returns:
-            Dict: Task result
+        Handle an automation_tick: fetch strategy config, build state, evaluate via coordinator.
         """
-        if not self.api_services_manager or not hasattr(
-            self.api_services_manager, "mango_spot_market"
-        ):
-            raise ValueError("Mango spot market not available")
+        if not self.automation_coordinator:
+            return {"success": False, "error": "AutomationCoordinator not initialized"}
+        content = task.content or {}
+        user_id = content.get("user_id")
+        if not user_id:
+            return {"success": False, "error": "user_id required"}
 
-        # Extract trade parameters
-        user_id = task.content.get("user_id")
-        market = task.content.get("market")  # e.g. "BTC/USDC"
-        side = task.content.get("side")  # "buy" or "sell"
-        order_type = task.content.get("type", "market")  # "limit" or "market"
-        size = task.content.get("size")
-        price = task.content.get("price")  # Optional for market orders
-        client_id = task.content.get("client_id")  # Optional
+        # Fetch strategy config from user_profile_system if available, else from task content
+        strategy_config = None
+        ups = None
+        try:
+            if self.memory_system and hasattr(self.memory_system, "user_profile_system"):
+                ups = getattr(self.memory_system, "user_profile_system", None)
+            if ups and hasattr(ups, "get_user_settings"):
+                settings = ups.get_user_settings(user_id)
+                # Expected nested under trading/strategy or similar
+                trading = (settings or {}).get("trading", {}) if isinstance(settings, dict) else {}
+                # Enforce smart-trade toggle; support both keys just in case
+                auto_enabled = trading.get("auto_trading")
+                if auto_enabled is None:
+                    auto_enabled = trading.get("auto_trading_enabled")
+                if auto_enabled is False:
+                    return {
+                        "success": True,
+                        "disabled": True,
+                        "message": "Smart Trade disabled. Manually close open positions if needed.",
+                        "task_id": task.task_id,
+                    }
 
-        # Validate required fields
-        if not all([user_id, market, side, size]):
-            raise ValueError("user_id, market, side, and size are required")
-        if order_type == "limit" and not price:
-            raise ValueError("price is required for limit orders")
+                # Base strategy config plus merged thin user params for coordinator
+                strategy_config = trading.get("strategy") or trading.get("strategy_config") or {}
+                # Merge thin UI settings if present
+                if "risk_level" in trading:
+                    strategy_config["risk_level"] = trading.get("risk_level")
+                if "max_trade_size" in trading:
+                    strategy_config["max_trade_size"] = trading.get("max_trade_size")
+                if "stop_loss" in trading:
+                    strategy_config["stop_loss"] = trading.get("stop_loss")
+                if "take_profit" in trading:
+                    strategy_config["take_profit"] = trading.get("take_profit")
+        except Exception:
+            strategy_config = None
+        if not strategy_config:
+            strategy_config = content.get("strategy_config") or {}
 
-        # Prepare trade request
-        trade_request = {
+        # Build a minimal state from content or adapters later
+        state = {
+            "market": content.get("market"),
+            "timeframe": content.get("timeframe", "1m"),
+            "indicators": content.get("indicators"),
+            "force_buy": content.get("force_buy"),
+            "force_sell": content.get("force_sell"),
+        }
+
+        # Evaluate; execution is delegated via TradingServiceSelector by the coordinator if needed
+        try:
+            eval_result = self.automation_coordinator.evaluate_and_maybe_execute(
+                user_id=user_id,
+                strategy_config=strategy_config,
+                state=state,
+                adapters=None,
+                service_selector=self.service_selector,
+            )
+            # Persist evaluation snapshot to ChromaDB if available
+            try:
+                if self.chroma_store:
+                    import json as _json
+                    strategy_id = (
+                        strategy_config.get("strategy_id")
+                        or content.get("strategy_id")
+                        or "default"
+                    )
+                    doc_text = _json.dumps(eval_result, ensure_ascii=False)
+                    rid = self.chroma_store.add_strategy_eval(
+                        user_id=user_id,
+                        strategy_id=strategy_id,
+                        document=doc_text,
+                        score=float(eval_result.get("decision", {}).get("confidence", 0.0)),
+                        metadata={
+                            "eval_id": eval_result.get("eval_id"),
+                            "market": eval_result.get("market"),
+                            "timeframe": eval_result.get("timeframe"),
+                            "status": eval_result.get("status"),
+                            "decision": eval_result.get("decision"),
+                            "execution": eval_result.get("execution"),
+                        },
+                    )
+                    eval_result["storage_id"] = rid
+            except Exception as _se:
+                # Non-fatal; log and continue
+                self.logger.error(f"Failed to persist eval to ChromaStore: {str(_se)}", exc_info=True)
+
+            return {"success": True, "result": eval_result, "task_id": task.task_id}
+        except Exception as e:
+            self.logger.error(f"automation_tick failed: {str(e)}", exc_info=True)
+            return {"success": False, "error": str(e), "task_id": task.task_id}
+
+
+    def _handle_trade_initiate(self, task: AgentTask) -> Dict[str, Any]:
+        """
+        Handle a trade_initiate task by validating params and routing to GMGN via TradingServiceSelector.
+
+        Synchronous bridge to the async selector for spot trades.
+        """
+        if not getattr(self, "service_selector", None):
+            return {"success": False, "error": "TradingServiceSelector not initialized"}
+
+        content = task.content or {}
+        user_id = content.get("user_id")
+        market = content.get("market")  # e.g., "SOL/USDC"
+        side = content.get("side")  # buy/sell
+        size = content.get("size")
+        order_type = content.get("type", "market")
+        price = content.get("price")
+        client_id = content.get("client_id", task.task_id)
+
+        missing = [name for name, val in [("user_id", user_id), ("market", market), ("side", side), ("size", size)] if not val]
+        if missing:
+            return {"success": False, "error": f"Missing required parameters: {', '.join(missing)}"}
+        if order_type == "limit" and price is None:
+            return {"success": False, "error": "price is required for limit orders"}
+
+        trade_params: Dict[str, Any] = {
             "market": market,
             "side": side,
             "type": order_type,
             "size": float(size),
+            "user_id": user_id,
+            "client_id": client_id,
         }
-        if price:
-            trade_request["price"] = float(price)
-        if client_id:
-            trade_request["client_id"] = client_id
+        if price is not None:
+            trade_params["price"] = float(price)
 
-        # Execute trade through MangoSpotMarket
+        self.logger.info(
+            f"[trade_initiate] {side} {trade_params['size']} {market} (type={order_type}) for user {str(user_id)[-4:]}"
+        )
+
+        import asyncio as _asyncio
+
+        async def _run():
+            return await self.service_selector.execute_trade(trade_params)
+
         try:
-            result = self.api_services_manager.mango_spot_market.process_trade_request(
-                entities=trade_request, client_id=user_id
-            )
-
-            # Store trade in memory system
-            if (
-                hasattr(self.api_services_manager, "memory_system")
-                and self.api_services_manager.memory_system
-            ):
-                trade_memory = {
-                    "type": "trade_execution",
-                    "source": "mango_v3",
-                    "user_id": user_id,
-                    "trade_details": trade_request,
-                    "result": result,
-                    "timestamp": datetime.datetime.now().isoformat(),
-                }
-                self.api_services_manager.memory_system.add_to_short_term(
-                    user_id=user_id,
-                    text=f"Executed {trade_request['side']} trade of {trade_request['size']} {trade_request['market']} via Mango V3",
-                    metadata=trade_memory,
-                )
-
-            return {
-                "status": "success",
-                "user_id": user_id,
-                "trade_details": trade_request,
-                "result": result,
-            }
-
+            try:
+                _asyncio.get_running_loop()
+            except RuntimeError:
+                return _asyncio.run(_run())
+            # If a loop exists, run in a dedicated new loop
+            new_loop = _asyncio.new_event_loop()
+            try:
+                return new_loop.run_until_complete(_run())
+            finally:
+                new_loop.close()
         except Exception as e:
-            self.logger.error(f"Trade execution failed: {str(e)}")
-            return {
-                "status": "error",
-                "error": str(e),
-                "user_id": user_id,
-                "trade_details": trade_request,
-            }
+            self.logger.error(f"trade_initiate failed: {str(e)}", exc_info=True)
+            return {"success": False, "error": str(e), "task_id": task.task_id}
 
     def _handle_get_user_trades(self, task: AgentTask) -> Dict[str, Any]:
         """
@@ -994,27 +1111,9 @@ class TradingAgent(BaseAgent):
             return {"status": "error", "error": "Token symbol not provided"}
 
         try:
-            # Try Mango V3 first
-            if hasattr(self.api_services_manager, "mango_spot_market"):
-                try:
-                    market_data = (
-                        self.api_services_manager.mango_spot_market.get_market_data(
-                            token_symbol
-                        )
-                    )
-                    if market_data and "price" in market_data:
-                        return {
-                            "status": "success",
-                            "source": "mango_v3",
-                            "price": market_data["price"],
-                            "market_data": market_data,
-                        }
-                except Exception as e:
-                    self.logger.warning(
-                        f"Mango V3 price check failed: {str(e)}, falling back to GMGN"
-                    )
+            # Try GMGN first
 
-            # Fallback to GMGN
+            
             try:
                 price = self._get_token_price(token_symbol)
                 return {
@@ -1025,7 +1124,7 @@ class TradingAgent(BaseAgent):
                 }
             except Exception as e:
                 self.logger.error(
-                    f"Both Mango V3 and GMGN price checks failed for {token_symbol}: {str(e)}"
+                    f"GMGN price checks failed for {token_symbol}: {str(e)}"
                 )
                 return {"status": "error", "error": str(e)}
 
@@ -1062,27 +1161,8 @@ class TradingAgent(BaseAgent):
             raise ValueError("user_id is required")
 
         try:
-            # Try Mango V3 first
-            if hasattr(self.api_services_manager, "mango_spot_market"):
-                try:
-                    balances = (
-                        self.api_services_manager.mango_spot_market.get_wallet_balances(
-                            user_id
-                        )
-                    )
-                    return {
-                        "status": "success",
-                        "source": "mango_v3",
-                        "user_id": user_id,
-                        "wallet_address": wallet_address,
-                        "balances": balances,
-                    }
-                except Exception as e:
-                    self.logger.warning(
-                        f"Mango V3 balance check failed: {str(e)}, falling back to GMGN"
-                    )
+            # Try GMGN first
 
-            # Fallback to GMGN
             result = self.api_services_manager.get_wallet_balance(
                 user_id=user_id, wallet_address=wallet_address
             )
@@ -1115,7 +1195,7 @@ class TradingAgent(BaseAgent):
             }
 
         except Exception as e:
-            self.logger.error(f"Both Mango V3 and GMGN balance checks failed: {str(e)}")
+            self.logger.error(f"GMGN balance checks failed: {str(e)}")
             return {
                 "status": "error",
                 "error": str(e),
@@ -1133,8 +1213,9 @@ class TradingAgent(BaseAgent):
         Returns:
             Dict: Task result
         """
-        if not self.api_services_manager:
-            raise ValueError("API services manager not available")
+        # Require TradingServiceSelector for routing
+        if not getattr(self, "service_selector", None):
+            raise ValueError("TradingServiceSelector not available")
 
         user_id = task.content.get("user_id")
         risk_level = task.content.get("risk_level")
@@ -1154,15 +1235,39 @@ class TradingAgent(BaseAgent):
                 "user_id, risk_level, max_trade_size, stop_loss, and take_profit are required"
             )
 
-        # Setup auto-trading
-        result = self.api_services_manager.setup_auto_trading(
-            user_id=user_id,
-            risk_level=risk_level,
-            max_trade_size=max_trade_size,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            wallet_address=wallet_address,
-        )
+        async def _run():
+            return await self.service_selector.setup_auto_trading(
+                user_id=user_id,
+                risk_level=risk_level,
+                max_trade_size=max_trade_size,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                wallet_address=wallet_address,
+            )
+
+        # Bridge sync to async, mirroring _handle_trade_initiate pattern
+        try:
+            try:
+                _asyncio.get_running_loop()
+            except RuntimeError:
+                result = _asyncio.run(_run())
+            else:
+                new_loop = _asyncio.new_event_loop()
+                try:
+                    result = new_loop.run_until_complete(_run())
+                finally:
+                    new_loop.close()
+        except Exception as e:
+            self.logger.error(f"setup_auto_trading failed: {str(e)}", exc_info=True)
+            return {
+                "user_id": user_id,
+                "risk_level": risk_level,
+                "max_trade_size": max_trade_size,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "wallet_address": wallet_address,
+                "result": {"success": False, "error": str(e)},
+            }
 
         return {
             "user_id": user_id,
@@ -1828,6 +1933,11 @@ class SystemAgentManager:
         self.memory_system = memory_system
         self.wallet_connection_system = wallet_connection_system
         self.config = config or {}
+        # Feature flags
+        self.features = {
+            "scheduling_enabled": bool((self.config.get("scheduling") or {}).get("enabled", True)),
+            "legacy_monitoring": bool((self.config.get("features") or {}).get("legacy_monitoring", False)),
+        }
         self.logger = logging.getLogger("GraceAgentManager")
 
         # Initialize result queue
@@ -1869,6 +1979,39 @@ class SystemAgentManager:
         self.scheduled_tasks = {}
         self.scheduler_thread = None
         self.last_schedule_run = time.time()
+        # Idempotent locks: lock_key -> last_acquired_ts
+        self.scheduler_locks: Dict[str, float] = {}
+
+    def register_automation_tick(
+        self,
+        user_id: str,
+        strategy_id: str,
+        interval: float,
+        market: Optional[str] = None,
+        timeframe: str = "1m",
+        lock_ttl: Optional[float] = None,
+    ) -> str:
+        """
+        Register an automation_tick scheduled task with idempotent locking.
+
+        Returns the scheduled task id.
+        """
+        task_id = f"auto:{user_id}:{strategy_id}:{market or 'ANY'}:{timeframe}"
+        self.scheduled_tasks[task_id] = {
+            "task_type": "automation_tick",
+            "content": {
+                "user_id": user_id,
+                "strategy_id": strategy_id,
+                "market": market,
+                "timeframe": timeframe,
+            },
+            "interval": float(interval),
+            "last_run": 0.0,
+            "lock_key": task_id,
+            "lock_ttl": float(lock_ttl) if lock_ttl is not None else max(1.0, float(interval) / 2.0),
+        }
+        self.logger.info(f"Registered automation_tick schedule: {task_id}")
+        return task_id
 
     def _initialize_agents(self):
         """Initialize all agents."""
@@ -2202,7 +2345,7 @@ class SystemAgentManager:
         content: Dict[str, Any],
         interval_seconds: int,
         priority: AgentPriority = AgentPriority.LOW,
-    ):
+    ) -> str:
         """
         Schedule a task to run periodically.
 
@@ -2216,9 +2359,9 @@ class SystemAgentManager:
         self.scheduled_tasks[task_id] = {
             "task_type": task_type,
             "content": content,
-            "interval": interval_seconds,
+            "interval": int(interval_seconds),
             "priority": priority,
-            "last_run": 0,  # Never run yet
+            "last_run": 0.0,  # Never run yet
         }
         self.logger.info(
             f"Scheduled task {task_id} of type {task_type} to run every {interval_seconds} seconds"
@@ -2233,6 +2376,9 @@ class SystemAgentManager:
         """
         Start the scheduler thread if it's not already running.
         """
+        if not self.features.get("scheduling_enabled", True):
+            self.logger.info("Scheduler disabled by config")
+            return
         if self.scheduler_thread is None or not self.scheduler_thread.is_alive():
             self.scheduler_thread = threading.Thread(target=self._scheduler_loop)
             self.scheduler_thread.daemon = True
@@ -2249,55 +2395,71 @@ class SystemAgentManager:
             try:
                 current_time = time.time()
 
+                # Cleanup expired locks
+                try:
+                    for k, ts in list(self.scheduler_locks.items()):
+                        # Default expiry 300s if not found in task
+                        ttl = 300.0
+                        if k in self.scheduled_tasks:
+                            ttl = float(self.scheduled_tasks[k].get("lock_ttl", ttl))
+                        if current_time - ts >= ttl:
+                            self.scheduler_locks.pop(k, None)
+                except Exception:
+                    pass
+
                 # Check if any scheduled tasks need to run
-                for task_id, task_info in list(self.scheduled_tasks.items()):
+                for stask_id, task_info in list(self.scheduled_tasks.items()):
                     if current_time - task_info["last_run"] >= task_info["interval"]:
                         # Time to run this task
                         self.logger.info(
-                            f"Running scheduled task {task_id} of type {task_info['task_type']}"
+                            f"Running scheduled task {stask_id} of type {task_info['task_type']}"
                         )
+                        # Idempotent lock check
+                        lock_key = task_info.get("lock_key") or stask_id
+                        lock_ttl = float(task_info.get("lock_ttl", max(1.0, task_info["interval"] / 2.0)))
+                        last = self.scheduler_locks.get(lock_key)
+                        if last is not None and (current_time - last) < lock_ttl:
+                            self.logger.debug(f"Skip {stask_id}: locked")
+                            continue
+                        # Acquire lock
+                        self.scheduler_locks[lock_key] = current_time
 
-                        # Create and submit the task
-                        task = AgentTask(
-                            task_id=f"{task_id}_{int(current_time)}",
-                            task_type=task_info["task_type"],
-                            content=task_info["content"],
-                            priority=task_info["priority"],
-                        )
-
-                        # Route the task
-                        if task_info["task_type"] in self.task_type_to_agent:
-                            service = self.task_type_to_agent[task_info["task_type"]][
-                                "service"
-                            ]
-                            try:
-                                # Process the task with the registered service
-                                result = service.process_task(task.content)
-                                self.logger.info(
-                                    f"Processed scheduled task {task_id} with result: {result}"
-                                )
-                            except Exception as e:
-                                self.logger.error(
-                                    f"Error processing scheduled task {task_id}: {str(e)}"
-                                )
-                        else:
-                            # Use the router if no direct service is available
-                            if not self.router.route_task(task):
-                                self.logger.error(
-                                    f"Could not route scheduled task {task_id}"
-                                )
-
-                        # Update last run time
-                        self.scheduled_tasks[task_id]["last_run"] = current_time
+                        try:
+                            # Create and route the task immediately
+                            scheduled_task = AgentTask(
+                                task_id=f"scheduled_{stask_id}_{int(current_time)}",
+                                task_type=task_info["task_type"],
+                                content=task_info["content"],
+                                priority=AgentPriority.MEDIUM,
+                                source_agent="SystemScheduler",
+                                target_agent=None,
+                            )
+                            if task_info["task_type"] in self.task_type_to_agent:
+                                service = self.task_type_to_agent[task_info["task_type"]]["service"]
+                                try:
+                                    # Process the task with the registered service
+                                    result = service.process_task(scheduled_task.content)
+                                    self.logger.info(
+                                        f"Processed scheduled task {stask_id} with result: {result}"
+                                    )
+                                except Exception as e:
+                                    self.logger.error(
+                                        f"Error processing scheduled task {stask_id}: {str(e)}"
+                                    )
+                            else:
+                                # Use the router if no direct service is available
+                                if not self.router.route_task(scheduled_task):
+                                    self.logger.error(
+                                        f"Could not route scheduled task {stask_id}"
+                                    )
+                        finally:
+                            # Update last run time regardless of success
+                            self.scheduled_tasks[stask_id]["last_run"] = current_time
 
                 # Sleep for a bit to avoid high CPU usage
                 time.sleep(1.0)
-
             except Exception as e:
-                self.logger.error(f"Error in scheduler loop: {str(e)}")
-                import traceback
-
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                self.logger.error(f"Scheduler loop error: {str(e)}")
                 time.sleep(5.0)  # Sleep longer after an error
 
         self.logger.info("Scheduler thread stopped")

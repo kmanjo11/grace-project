@@ -9,7 +9,10 @@
     "preview": "cd src/ui && npm run preview",
     "test": "cd src/ui && npm test",
     "test:ci": "cd src/ui && npm run test:ci",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "mango:check": "MODE=check node ./scripts/mango-create-account.mjs",
+    "mango:create": "MODE=create node ./scripts/mango-create-account.mjs",
+    "mango:build-unsigned-tx": "MODE=build-unsigned-tx node ./scripts/mango-create-account.mjs"
   },
   "dependencies": {
     "@babel/core": "^7.23.7",
@@ -18,7 +21,7 @@
     "@babel/preset-env": "^7.23.7",
     "@babel/preset-react": "^7.23.3",
     "@babel/runtime": "^7.27.4",
-
+    "@blockworks-foundation/mango-client": "^3.2.16",
     "@mui/core-downloads-tracker": "^7.1.0",
     "@mui/icons-material": "^7.1.0",
     "@mui/material": "^7.1.0",
@@ -29,6 +32,7 @@
     "@project-serum/anchor": "^0.26.0",
     "@solana/spl-token": "^0.4.9",
     "@solana/wallet-adapter-base": "^0.9.26",
+    "@solana/wallet-adapter-phantom": "^0.9.28",
     "@solana/wallet-adapter-react": "^0.15.38",
     "@solana/wallet-adapter-react-ui": "^0.9.38",
     "@solana/wallet-adapter-wallets": "^0.19.36",
@@ -83,7 +87,6 @@
     "@babel/plugin-transform-runtime": "^7.23.6",
     "@babel/preset-env": "^7.23.7",
     "@babel/preset-react": "^7.23.3",
-
     "@rollup/plugin-commonjs": "^28.0.3",
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@testing-library/jest-dom": "^6.6.3",
@@ -97,7 +100,6 @@
     "@types/ws": "^8.5.10",
     "@typescript-eslint/eslint-plugin": "^6.14.0",
     "@typescript-eslint/parser": "^6.14.0",
-
     "autoprefixer": "^10.4.17",
     "eslint": "^8.55.0",
     "eslint-plugin-react": "^7.33.2",
@@ -109,7 +111,6 @@
     "rollup-plugin-visualizer": "^5.10.0",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.2.2"
-
   },
   "packageManager": "pnpm@10.4.1+sha512.c753b6c3ad7afa13af388fa6d808035a008e30ea9993f58c6663e2bc5ff21679aa834db094987129aa4d488b86df57f7b634981b2f827cdcacc698cc0cfb88af"
 }

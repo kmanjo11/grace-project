@@ -30,7 +30,11 @@ interface AxiosError extends Error {
  * Base URL for Mango V3 API
  * @default 'http://mango-v3-service:8080'
  */
-const MANGO_V3_BASE_URL = getEnv('NEXT_PUBLIC_MANGO_V3_BASE_URL', 'http://mango-v3-service:8080');
+// Prefer Next.js style var, then Vite style var, then default
+const MANGO_V3_BASE_URL = getEnv(
+  'NEXT_PUBLIC_MANGO_V3_BASE_URL',
+  getEnv('VITE_MANGO_V3_BASE_URL', 'http://mango-v3-service:8080')
+);
 
 /**
  * Time in seconds for different resolution aliases

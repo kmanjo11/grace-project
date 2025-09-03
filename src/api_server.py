@@ -1,3 +1,877 @@
+import os
+from typing import Optional, Dict, Any, List
+from functools import wraps
+# Early app initialization to satisfy route decorators defined above later imports
+from quart import Quart, request, jsonify  # safe to import twice; idempotent
+from quart_cors import cors  # safe to import twice; idempotent
+app = Quart(__name__, static_folder='/app/static', static_url_path='')
+# CORS will be (re)applied later in the file where full config is available
+
+# NOTE: HL routes moved below app initialization to avoid NameError: app not defined
+
+# --- JWT decorator (must be defined before any @jwt_required() usage) ---
+def jwt_required():
+    def handle_error(e):
+        # Log the error and return an appropriate response
+        try:
+            logger.error("Error: %s", str(e), exc_info=True)  # logger will be defined later
+        except Exception:
+            pass
+        return jsonify({"success": False, "error": str(e)})
+
+    def decorator(f):
+        @wraps(f)
+        async def decorated_function(*args, **kwargs):
+            # Check for token using our existing get_token_from_request function
+            token = await get_token_from_request()
+            if not token:
+                return jsonify({"error": "Missing authorization token"}), 401
+
+            # Verify token using our existing verify_jwt_token function
+            result = verify_jwt_token(token)
+            # verify_jwt_token returns a dict with 'success' boolean
+            if not result.get("success", False):
+                return jsonify({"error": "Invalid or expired token"}), 401
+
+            # Set user_id in request context for get_jwt_identity function
+            request.user_id = result.get("user_id")
+
+            return await f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+# Replacement for get_jwt_identity (used by handlers)
+def get_jwt_identity():
+    return request.user_id
+
+# --- Adapter proxy (read-only) ---
+ADAPTER_BASE = os.environ.get("HL_ADAPTER_BASE", "http://127.0.0.1:9010")
+
+# Flash node-helper base
+# Default to 9020 per src/adapters/flash/node-helper/src/server.ts
+FLASH_ADAPTER_BASE = os.environ.get("FLASH_ADAPTER_BASE", "http://127.0.0.1:9020")
+
+# GMGN base for router/txproxy
+GMGN_API_BASE = os.environ.get("GMGN_API_BASE", "https://gmgn.ai/defi")
+
+
+@app.route("/api/hl/markets", methods=["GET"])
+async def proxy_hl_markets():
+    try:
+        r = requests.get(f"{ADAPTER_BASE}/markets", params=request.args, timeout=10)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/hl/markets error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+
+@app.route("/api/hl/candles", methods=["GET"])
+async def proxy_hl_candles():
+    try:
+        r = requests.get(f"{ADAPTER_BASE}/candles", params=request.args, timeout=10)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/hl/candles error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+
+# --- Flash Trade adapter proxy ---
+@app.route("/api/flash/pools", methods=["GET"])
+async def proxy_flash_pools():
+    try:
+        r = requests.get(f"{FLASH_ADAPTER_BASE}/pools", params=request.args, timeout=10)
+        if r.status_code >= 400:
+            logger.warning("Flash adapter /pools non-200: %s %s", r.status_code, r.text[:300])
+            return jsonify({
+                "success": True,
+                "network": None,
+                "pools": [],
+                "warning": "flash adapter error; using empty pools",
+            }), 200
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/pools error: {e}")
+        return jsonify({
+            "success": True,
+            "network": None,
+            "pools": [],
+            "warning": "flash adapter unavailable; using empty pools",
+        }), 200
+
+
+@app.route("/api/flash/markets", methods=["GET"])
+async def proxy_flash_markets():
+    try:
+        r = requests.get(f"{FLASH_ADAPTER_BASE}/markets", params=request.args, timeout=10)
+        if r.status_code >= 400:
+            logger.warning("Flash adapter /markets non-200: %s %s", r.status_code, r.text[:300])
+            return jsonify({
+                "success": True,
+                "network": None,
+                "pool": request.args.get("pool"),
+                "tokens": [],
+                "markets": [],
+                "warning": "flash adapter error; using empty markets",
+            }), 200
+        # Normalize to array shape for UI
+        try:
+            data = r.json()
+            if isinstance(data, list):
+                return jsonify(data)
+            if isinstance(data, dict):
+                rows = data.get("markets")
+                if isinstance(rows, list):
+                    return jsonify(rows)
+                if isinstance(rows, dict):
+                    # Convert mapping to list
+                    out = []
+                    for k, v in rows.items():
+                        if isinstance(v, dict):
+                            v = {**v}
+                            v.setdefault("symbol", v.get("symbol") or v.get("market") or k)
+                        out.append(v)
+                    return jsonify(out)
+                # Some upstreams might (incorrectly) return a prices-shaped payload here. Normalize it too.
+                prices_map = data.get("prices")
+                if isinstance(prices_map, dict):
+                    out = []
+                    for sym, row in prices_map.items():
+                        if isinstance(row, dict):
+                            row = {**row}
+                            row.setdefault("symbol", row.get("symbol") or sym)
+                            # Convert common numeric strings
+                            for k in ("price", "emaPrice"):
+                                if k in row:
+                                    try:
+                                        row[k] = float(row[k]) if isinstance(row[k], str) else row[k]
+                                    except Exception:
+                                        pass
+                        out.append(row)
+                    return jsonify(out)
+            # Fallback: return empty array to avoid UI crashes
+            return jsonify([])
+        except Exception:
+            # If JSON parse fails, pass through raw but avoid crashing
+            return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/markets error: {e}")
+        return jsonify({
+            "success": True,
+            "network": None,
+            "pool": request.args.get("pool"),
+            "tokens": [],
+            "markets": [],
+            "warning": "flash adapter unavailable; using empty markets",
+        }), 200
+
+@app.route("/api/flash/prices", methods=["GET"])
+async def proxy_flash_prices():
+    """Proxy Flash Pyth prices for current pool tokens."""
+    try:
+        r = requests.get(f"{FLASH_ADAPTER_BASE}/prices", params=request.args, timeout=10)
+        # If adapter returns an error, provide a graceful fallback to avoid blank UI
+        if r.status_code >= 400:
+            logger.warning(
+                "Flash adapter /prices non-200: %s %s", r.status_code, r.text[:300]
+            )
+            fallback = {
+                "success": True,
+                "network": None,
+                "pool": None,
+                "prices": [],
+                "warning": "flash adapter error; using empty prices",
+            }
+            return jsonify(fallback), 200
+        # Normalize various shapes into an array for UI consumption
+        try:
+            data = r.json()
+            if isinstance(data, list):
+                return jsonify(data)
+            if isinstance(data, dict):
+                # Common shape: { success, network, pool, prices: { SYMBOL: {...} } }
+                rows = data.get("prices")
+                if isinstance(rows, list):
+                    return jsonify(rows)
+                if isinstance(rows, dict):
+                    out = []
+                    for sym, row in rows.items():
+                        if isinstance(row, dict):
+                            row = {**row}
+                            row.setdefault("symbol", row.get("symbol") or sym)
+                            # Convert string numerics if present
+                            for k in ("price", "emaPrice"):
+                                if k in row:
+                                    try:
+                                        row[k] = float(row[k]) if isinstance(row[k], str) else row[k]
+                                    except Exception:
+                                        pass
+                        out.append(row)
+                    return jsonify(out)
+            # If structure is unexpected, return empty array to keep UI stable
+            return jsonify([])
+        except Exception:
+            # If JSON parse fails, pass through raw
+            return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        # Do not block UI rendering if adapter is down; return empty dataset with success=true
+        logger.error(f"Proxy /api/flash/prices error: {e}")
+        fallback = {
+            "success": True,
+            "network": None,
+            "pool": None,
+            "prices": [],
+            "warning": "flash adapter unavailable; using empty prices",
+        }
+        return jsonify(fallback), 200
+
+
+@app.route("/api/flash/positions", methods=["GET"])
+async def proxy_flash_positions():
+    try:
+        # Inject owner from authenticated profile if not provided
+        auth = await verify_token_and_get_user_id()
+        params = dict(request.args)
+        if auth.get("success") and "owner" not in params:
+            try:
+                user_id = auth["user_id"]
+                user_info = await run_grace_sync(
+                    grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                )
+                pubkey = (
+                    (user_info or {}).get("internal_wallet", {}) or {}
+                ).get("public_key")
+                if pubkey:
+                    params["owner"] = pubkey
+            except Exception as ie:
+                logger.warning(f"Could not inject owner for /api/flash/positions: {ie}")
+
+        r = requests.get(f"{FLASH_ADAPTER_BASE}/positions", params=params, timeout=10)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/positions error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+
+@app.route("/api/flash/quote", methods=["POST"])
+async def proxy_flash_quote():
+    try:
+        payload = await request.get_json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Inject ownerPubkey from authenticated profile if not provided
+        if "ownerPubkey" not in payload:
+            auth = await verify_token_and_get_user_id()
+            if auth.get("success"):
+                try:
+                    user_id = auth["user_id"]
+                    user_info = await run_grace_sync(
+                        grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                    )
+                    pubkey = (
+                        (user_info or {}).get("internal_wallet", {}) or {}
+                    ).get("public_key")
+                    if pubkey:
+                        payload["ownerPubkey"] = pubkey
+                except Exception as ie:
+                    logger.warning(f"Could not inject ownerPubkey for /api/flash/quote: {ie}")
+
+        r = requests.post(f"{FLASH_ADAPTER_BASE}/quote", json=payload, timeout=20)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/quote error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+
+@app.route("/api/flash/order", methods=["POST"])
+async def proxy_flash_order():
+    try:
+        payload = await request.get_json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Inject ownerPubkey from authenticated profile if not provided
+        if "ownerPubkey" not in payload:
+            auth = await verify_token_and_get_user_id()
+            if auth.get("success"):
+                try:
+                    user_id = auth["user_id"]
+                    user_info = await run_grace_sync(
+                        grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                    )
+                    pubkey = (
+                        (user_info or {}).get("internal_wallet", {}) or {}
+                    ).get("public_key")
+                    if pubkey:
+                        payload["ownerPubkey"] = pubkey
+                except Exception as ie:
+                    logger.warning(f"Could not inject ownerPubkey for /api/flash/order: {ie}")
+
+        # Map to server-side execution endpoint in node-helper
+        r = requests.post(f"{FLASH_ADAPTER_BASE}/order/execute", json=payload, timeout=30)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/order error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+@app.route("/api/flash/close", methods=["POST"])
+async def proxy_flash_close():
+    try:
+        payload = await request.get_json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Inject ownerPubkey from authenticated profile if not provided
+        if "ownerPubkey" not in payload:
+            auth = await verify_token_and_get_user_id()
+            if auth.get("success"):
+                try:
+                    user_id = auth["user_id"]
+                    user_info = await run_grace_sync(
+                        grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                    )
+                    pubkey = ((user_info or {}).get("internal_wallet", {}) or {}).get("public_key")
+                    if pubkey:
+                        payload["ownerPubkey"] = pubkey
+                except Exception as ie:
+                    logger.warning(f"Could not inject ownerPubkey for /api/flash/close: {ie}")
+
+        r = requests.post(f"{FLASH_ADAPTER_BASE}/close", json=payload, timeout=30)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/close error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+@app.route("/api/flash/tpsl", methods=["POST"])
+async def proxy_flash_tpsl():
+    try:
+        payload = await request.get_json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Inject ownerPubkey from authenticated profile if not provided
+        if "ownerPubkey" not in payload:
+            auth = await verify_token_and_get_user_id()
+            if auth.get("success"):
+                try:
+                    user_id = auth["user_id"]
+                    user_info = await run_grace_sync(
+                        grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                    )
+                    pubkey = ((user_info or {}).get("internal_wallet", {}) or {}).get("public_key")
+                    if pubkey:
+                        payload["ownerPubkey"] = pubkey
+                except Exception as ie:
+                    logger.warning(f"Could not inject ownerPubkey for /api/flash/tpsl: {ie}")
+
+        r = requests.post(f"{FLASH_ADAPTER_BASE}/tpsl", json=payload, timeout=30)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/tpsl error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+@app.route("/api/flash/liquidation-price", methods=["POST"])
+async def proxy_flash_liquidation_price():
+    try:
+        payload = await request.get_json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Inject ownerPubkey from authenticated profile if not provided
+        if "ownerPubkey" not in payload:
+            auth = await verify_token_and_get_user_id()
+            if auth.get("success"):
+                try:
+                    user_id = auth["user_id"]
+                    user_info = await run_grace_sync(
+                        grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                    )
+                    pubkey = ((user_info or {}).get("internal_wallet", {}) or {}).get("public_key")
+                    if pubkey:
+                        payload["ownerPubkey"] = pubkey
+                except Exception as ie:
+                    logger.warning(f"Could not inject ownerPubkey for /api/flash/liquidation-price: {ie}")
+
+        r = requests.post(f"{FLASH_ADAPTER_BASE}/liquidation-price", json=payload, timeout=20)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/liquidation-price error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+
+# --- GMGN Solana spot trading proxy endpoints (authenticated) ---
+@app.route("/api/gmgn/quote", methods=["POST"])
+@jwt_required()
+async def gmgn_quote():
+    """Get GMGN Solana swap route or unsigned tx.
+
+    Body should contain tokenIn, tokenOut, amount, slippageBps, and optional from_address.
+    We inject the user's internal Solana wallet public key as from_address if missing.
+    By default this proxies to router/v1/sol/tx which typically returns an unsigned transaction.
+    """
+    try:
+        payload = await request.get_json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Inject from_address from authenticated profile if not provided
+        if not payload.get("from_address"):
+            try:
+                user_id = get_jwt_identity()
+                user_info = await run_grace_sync(
+                    grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                )
+                pubkey = ((user_info or {}).get("internal_wallet", {}) or {}).get("public_key")
+                if pubkey:
+                    payload["from_address"] = pubkey
+            except Exception as ie:
+                logger.warning(f"Could not inject from_address for /api/gmgn/quote: {ie}")
+
+        # Allow optional override of router endpoint via query param 'endpoint'
+        endpoint_override = request.args.get("endpoint")
+        if endpoint_override:
+            url = f"{GMGN_API_BASE}/{endpoint_override.lstrip('/')}"
+        else:
+            # Default to unsigned tx builder
+            url = f"{GMGN_API_BASE}/router/v1/sol/tx"
+
+        r = requests.post(url, json=payload, timeout=30)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"/api/gmgn/quote error: {e}")
+        return jsonify({"success": False, "message": "GMGN router unavailable"}), 502
+
+
+@app.route("/api/gmgn/submit", methods=["POST"])
+@jwt_required()
+async def gmgn_submit():
+    """Submit a signed Solana transaction via GMGN txproxy.
+
+    Body: { signedTransaction: base64, anti_mev?: bool }
+    Forwards to: txproxy/v1/send_transaction
+    """
+    try:
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            body = {}
+        signed_tx = body.get("signedTransaction") or body.get("signedTx") or body.get("transaction")
+        if not signed_tx:
+            return jsonify({"success": False, "message": "signedTransaction (base64) is required"}), 400
+
+        payload = {
+            # Follow common GMGN field naming; pass through signed tx
+            "signed_tx": signed_tx,
+        }
+        # Optional Anti-MEV flag passthrough using a few common keys
+        anti_mev = body.get("anti_mev")
+        if anti_mev is None:
+            anti_mev = body.get("antiMev")
+        if anti_mev is not None:
+            try:
+                payload["anti_mev"] = bool(anti_mev)
+            except Exception:
+                pass
+
+        url = f"{GMGN_API_BASE}/txproxy/v1/send_transaction"
+        r = requests.post(url, json=payload, timeout=30)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"/api/gmgn/submit error: {e}")
+        return jsonify({"success": False, "message": "Failed to submit transaction"}), 502
+
+
+@app.route("/api/gmgn/tx-status", methods=["GET"])
+@jwt_required()
+async def gmgn_tx_status():
+    """Poll transaction status via GMGN txproxy.
+
+    Query params: txHash=<signature>&lastValidBlockHeight=<height>
+    Forwards to: txproxy/v1/tx_status
+    """
+    try:
+        params = {
+            "txHash": request.args.get("txHash") or request.args.get("signature") or request.args.get("tx"),
+            "lastValidBlockHeight": request.args.get("lastValidBlockHeight") or request.args.get("blockHeight"),
+        }
+        # Remove Nones
+        params = {k: v for k, v in params.items() if v is not None}
+        if "txHash" not in params:
+            return jsonify({"success": False, "message": "txHash is required"}), 400
+
+        url = f"{GMGN_API_BASE}/txproxy/v1/tx_status"
+        r = requests.get(url, params=params, timeout=20)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"/api/gmgn/tx-status error: {e}")
+        return jsonify({"success": False, "message": "Failed to poll transaction status"}), 502
+
+# Flash Liquidity proxy endpoints
+@app.route("/api/flash/liquidity/add", methods=["POST"])
+async def proxy_flash_liquidity_add():
+    try:
+        payload = await request.get_json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Inject ownerPubkey from authenticated profile if not provided
+        if "ownerPubkey" not in payload:
+            auth = await verify_token_and_get_user_id()
+            if auth.get("success"):
+                try:
+                    user_id = auth["user_id"]
+                    user_info = await run_grace_sync(
+                        grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                    )
+                    pubkey = ((user_info or {}).get("internal_wallet", {}) or {}).get("public_key")
+                    if pubkey:
+                        payload["ownerPubkey"] = pubkey
+                except Exception as ie:
+                    logger.warning(f"Could not inject ownerPubkey for /api/flash/liquidity/add: {ie}")
+
+        r = requests.post(f"{FLASH_ADAPTER_BASE}/liquidity/add", json=payload, timeout=30)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/liquidity/add error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+
+@app.route("/api/flash/liquidity/remove", methods=["POST"])
+async def proxy_flash_liquidity_remove():
+    try:
+        payload = await request.get_json()
+        if not isinstance(payload, dict):
+            payload = {}
+
+        # Inject ownerPubkey from authenticated profile if not provided
+        if "ownerPubkey" not in payload:
+            auth = await verify_token_and_get_user_id()
+            if auth.get("success"):
+                try:
+                    user_id = auth["user_id"]
+                    user_info = await run_grace_sync(
+                        grace_instance.memory_system.user_profile_system.get_user_info, user_id
+                    )
+                    pubkey = ((user_info or {}).get("internal_wallet", {}) or {}).get("public_key")
+                    if pubkey:
+                        payload["ownerPubkey"] = pubkey
+                except Exception as ie:
+                    logger.warning(f"Could not inject ownerPubkey for /api/flash/liquidity/remove: {ie}")
+
+        r = requests.post(f"{FLASH_ADAPTER_BASE}/liquidity/remove", json=payload, timeout=30)
+        return Response(r.content, status=r.status_code, content_type=r.headers.get("Content-Type", "application/json"))
+    except Exception as e:
+        logger.error(f"Proxy /api/flash/liquidity/remove error: {e}")
+        return jsonify({"success": False, "message": "Adapter unavailable"}), 502
+
+
+# --- Solana JSON-RPC relay for client-signed transactions ---
+def _get_solana_rpc_url() -> Optional[str]:
+    return os.environ.get("FLASH_RPC_URL") or os.environ.get("SOLANA_RPC_URL")
+
+
+@app.route("/api/solana/send-transaction", methods=["POST"])
+@jwt_required()
+async def solana_send_transaction():
+    """Relay a client-signed base64 transaction to Solana JSON-RPC sendTransaction.
+
+    Body: { signedTransaction: base64, options?: { skipPreflight?, maxRetries?, preflightCommitment? } }
+    Returns the JSON-RPC response (e.g., signature string) wrapped in success/error.
+    """
+    try:
+        rpc_url = _get_solana_rpc_url()
+        if not rpc_url:
+            return jsonify({"success": False, "message": "RPC URL missing (set FLASH_RPC_URL or SOLANA_RPC_URL)"}), 500
+
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            body = {}
+        signed_tx = body.get("signedTransaction") or body.get("signedTx") or body.get("transaction")
+        if not signed_tx:
+            return jsonify({"success": False, "message": "signedTransaction (base64) is required"}), 400
+
+        opts = body.get("options") or {}
+        rpc_payload = {
+            "jsonrpc": "2.0",
+            "id": int(time.time()),
+            "method": "sendTransaction",
+            "params": [
+                signed_tx,
+                {
+                    "encoding": "base64",
+                    **({"skipPreflight": bool(opts.get("skipPreflight"))} if "skipPreflight" in opts else {}),
+                    **({"maxRetries": int(opts.get("maxRetries"))} if "maxRetries" in opts and str(opts.get("maxRetries")).isdigit() else {}),
+                    **({"preflightCommitment": str(opts.get("preflightCommitment"))} if "preflightCommitment" in opts else {}),
+                },
+            ],
+        }
+
+        r = requests.post(rpc_url, json=rpc_payload, timeout=30)
+        # Pass through JSON-RPC response payload
+        try:
+            data = r.json()
+        except Exception:
+            data = {"error": f"Non-JSON response from RPC: {r.status_code}"}
+        ok = (r.status_code == 200) and ("error" not in data)
+        return jsonify({"success": ok, "rpc": data}), (200 if ok else 502)
+    except Exception as e:
+        logger.error(f"/api/solana/send-transaction error: {e}")
+        return jsonify({"success": False, "message": "Failed to send transaction"}), 500
+
+
+@app.route("/api/solana/simulate-transaction", methods=["POST"])
+@jwt_required()
+async def solana_simulate_transaction():
+    """Relay a base64 transaction to Solana JSON-RPC simulateTransaction.
+
+    Body: { transaction: base64, options?: { sigVerify?, replaceRecentBlockhash?, commitment? } }
+    """
+    try:
+        rpc_url = _get_solana_rpc_url()
+        if not rpc_url:
+            return jsonify({"success": False, "message": "RPC URL missing (set FLASH_RPC_URL or SOLANA_RPC_URL)"}), 500
+
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            body = {}
+        tx_b64 = body.get("transaction") or body.get("signedTransaction") or body.get("signedTx")
+        if not tx_b64:
+            return jsonify({"success": False, "message": "transaction (base64) is required"}), 400
+
+        opts = body.get("options") or {}
+        rpc_payload = {
+            "jsonrpc": "2.0",
+            "id": int(time.time()),
+            "method": "simulateTransaction",
+            "params": [
+                tx_b64,
+                {
+                    "encoding": "base64",
+                    **({"sigVerify": bool(opts.get("sigVerify"))} if "sigVerify" in opts else {}),
+                    **({"replaceRecentBlockhash": bool(opts.get("replaceRecentBlockhash"))} if "replaceRecentBlockhash" in opts else {}),
+                    **({"commitment": str(opts.get("commitment"))} if "commitment" in opts else {}),
+                },
+            ],
+        }
+
+        r = requests.post(rpc_url, json=rpc_payload, timeout=30)
+        try:
+            data = r.json()
+        except Exception:
+            data = {"error": f"Non-JSON response from RPC: {r.status_code}"}
+        ok = (r.status_code == 200) and ("error" not in data)
+        return jsonify({"success": ok, "rpc": data}), (200 if ok else 502)
+    except Exception as e:
+        logger.error(f"/api/solana/simulate-transaction error: {e}")
+        return jsonify({"success": False, "message": "Failed to simulate transaction"}), 500
+
+# --- Smart trading settings (per-user, simple file-based store) ---
+def _smart_settings_path(user_id: str) -> str:
+    try:
+        base = os.path.join(data_dir, 'users', user_id)
+        os.makedirs(base, exist_ok=True)
+        return os.path.join(base, 'smart_settings.json')
+    except Exception:
+        # Fallback to data_dir root
+        return os.path.join(data_dir, f'smart_settings_{user_id}.json')
+
+
+@app.route('/api/trading/smart-settings', methods=['GET'])
+@jwt_required()
+async def get_smart_settings():
+    try:
+        user_id = get_jwt_identity()
+        path = _smart_settings_path(user_id)
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+        else:
+            settings = {}
+        # Provide sane defaults
+        defaults = {
+            'auto_trading_enabled': False,
+            'wallet_preference': 'phantom',  # 'phantom' | 'internal' | 'auto'
+            'risk_level': 'medium',          # 'low' | 'medium' | 'high'
+            'max_trade_size': 1.0,
+            'stop_loss': None,               # universal SL safety net (fraction, e.g., 0.05)
+            'take_profit': None,             # universal TP safety net (fraction, e.g., 0.10)
+        }
+        merged = {**defaults, **(settings or {})}
+        return jsonify({'success': True, 'settings': merged})
+    except Exception as e:
+        logger.error(f"get_smart_settings error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to read settings'}), 500
+
+
+@app.route('/api/trading/smart-settings', methods=['POST'])
+@jwt_required()
+async def update_smart_settings():
+    try:
+        user_id = get_jwt_identity()
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            body = {}
+        # Accept either { smart_settings: {...} } or raw settings object
+        settings = body.get('smart_settings') if isinstance(body.get('smart_settings'), dict) else body
+        # Whitelist keys to avoid arbitrary file writes
+        allowed_keys = {
+            'auto_trading_enabled',
+            'wallet_preference',
+            'max_daily_trades',
+            'max_trade_size',
+            'slippage_bps',
+            'risk_level',
+            'stop_loss',
+            'take_profit',
+        }
+        filtered = {k: v for k, v in (settings or {}).items() if k in allowed_keys}
+
+        path = _smart_settings_path(user_id)
+        # Merge with existing
+        current = {}
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    current = json.load(f) or {}
+            except Exception:
+                current = {}
+        current.update(filtered)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(current, f)
+
+        # Also persist thin trading params into user_profile_system settings so the TradingAgent reads latest
+        try:
+            # Fetch existing profile-backed settings to deep-merge trading block
+            existing = await run_grace_sync(
+                grace_instance.user_profile_system.get_user_settings, user_id
+            )
+            existing_settings = (existing or {}).get('settings', {}) or {}
+            existing_trading = (existing_settings.get('trading') or {})
+
+            # Map thin UI keys to internal trading settings
+            trading_updates = {}
+            if 'auto_trading_enabled' in filtered:
+                try:
+                    trading_updates['auto_trading'] = bool(filtered['auto_trading_enabled'])
+                except Exception:
+                    trading_updates['auto_trading'] = bool(filtered['auto_trading_enabled'])
+            if 'risk_level' in filtered:
+                trading_updates['risk_level'] = filtered['risk_level']
+            if 'max_trade_size' in filtered:
+                trading_updates['max_trade_size'] = filtered['max_trade_size']
+            if 'stop_loss' in filtered:
+                trading_updates['stop_loss'] = filtered['stop_loss']
+            if 'take_profit' in filtered:
+                trading_updates['take_profit'] = filtered['take_profit']
+
+            # Only call update if we actually have something to write
+            if trading_updates:
+                merged_trading = {**existing_trading, **trading_updates}
+                await run_grace_sync(
+                    grace_instance.user_profile_system.update_user_settings,
+                    user_id,
+                    {'trading': merged_trading},
+                )
+        except Exception as ie:
+            logger.warning(f"Failed to persist smart settings into user_profile_system: {ie}")
+
+        return jsonify({'success': True, 'settings': current})
+    except Exception as e:
+        logger.error(f"update_smart_settings error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to update settings'}), 500
+
+@app.route('/api/trading/automation-status', methods=['GET'])
+@jwt_required()
+async def get_automation_status():
+    """Return smart-trade toggle status and latest evaluation snapshot summary."""
+    try:
+        user_id = get_jwt_identity()
+        # Read settings
+        path = _smart_settings_path(user_id)
+        settings = {}
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f) or {}
+            except Exception:
+                settings = {}
+
+        # Lazy init chroma store
+        global chroma_store
+        if chroma_store is None:
+            try:
+                chroma_store = ChromaStore()
+            except Exception as ce:
+                logger.warning(f"ChromaStore init failed: {ce}")
+
+        latest_eval = None
+        if chroma_store is not None:
+            try:
+                q = chroma_store.query_strategy_evals(user_id=user_id, n_results=1)
+                # Normalize response
+                ids = (q or {}).get('ids') or [[]]
+                docs = (q or {}).get('documents') or [[]]
+                metas = (q or {}).get('metadatas') or [[]]
+                if ids and ids[0]:
+                    latest_eval = {
+                        'id': ids[0][0],
+                        'document': docs[0][0] if docs and docs[0] else None,
+                        'metadata': metas[0][0] if metas and metas[0] else None,
+                    }
+            except Exception as qe:
+                logger.warning(f"Failed to fetch latest eval: {qe}")
+
+        return jsonify({
+            'success': True,
+            'settings': settings,
+            'auto_trading_enabled': bool(settings.get('auto_trading_enabled', False)),
+            'risk_level': settings.get('risk_level', 'medium'),
+            'latest_evaluation': latest_eval,
+        })
+    except Exception as e:
+        logger.error(f"get_automation_status error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to read automation status'}), 500
+
+@app.route('/api/trading/evaluations', methods=['GET'])
+@jwt_required()
+async def list_evaluations():
+    """Return recent evaluation snapshots from ChromaDB for the authenticated user."""
+    try:
+        user_id = get_jwt_identity()
+        n = request.args.get('limit', default='10')
+        try:
+            n_results = max(1, min(50, int(n)))
+        except Exception:
+            n_results = 10
+
+        global chroma_store
+        if chroma_store is None:
+            chroma_store = ChromaStore()
+        q = chroma_store.query_strategy_evals(user_id=user_id, n_results=n_results)
+        return jsonify({'success': True, 'result': q})
+    except Exception as e:
+        logger.error(f"list_evaluations error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to query evaluations'}), 500
+
+@app.route('/api/trading/backtests', methods=['GET'])
+@jwt_required()
+async def list_backtests():
+    """Return recent backtest runs from ChromaDB for the authenticated user."""
+    try:
+        user_id = get_jwt_identity()
+        n = request.args.get('limit', default='10')
+        try:
+            n_results = max(1, min(50, int(n)))
+        except Exception:
+            n_results = 10
+
+        global chroma_store
+        if chroma_store is None:
+            chroma_store = ChromaStore()
+        q = chroma_store.query_backtests(user_id=user_id, n_results=n_results)
+        return jsonify({'success': True, 'result': q})
+    except Exception as e:
+        logger.error(f"list_backtests error: {e}")
+        return jsonify({'success': False, 'message': 'Failed to query backtests'}), 500
 """
 API Server for Grace UI
 
@@ -13,14 +887,29 @@ import os
 import time
 import uuid
 from datetime import datetime, timedelta
+# Import aggregator with package-aware fallback (similar to ChromaStore below)
+try:
+    from src.leverage_candles_aggregator import aggregator
+except Exception:
+    from leverage_candles_aggregator import aggregator  # type: ignore
 from functools import wraps
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+import subprocess
+import requests
 
 # Third-party imports
 import jwt
 from quart import Quart, request, jsonify, current_app, send_file, Response
 from quart_cors import cors
 from logging.handlers import TimedRotatingFileHandler
+
+# ChromaStore for eval/backtest retrieval
+try:
+    from src.chroma_store import ChromaStore
+except Exception:
+    # Fallback relative import if running as module
+    from chroma_store import ChromaStore  # type: ignore
+chroma_store: Optional[ChromaStore] = None
 
 # Configure logging
 logging.basicConfig(
@@ -49,37 +938,50 @@ def _ensure_client_log_handler():
     if not any(isinstance(h, logging.StreamHandler) for h in client_logger.handlers):
         client_logger.addHandler(logging.StreamHandler())
 
-# Custom jwt_required decorator for Quart
-def jwt_required():
-    def handle_error(e):
-        # Log the error and return an appropriate response
-        logger.error("Error: %s", str(e), exc_info=True)
-        return jsonify({"success": False, "error": str(e)})
+ 
 
-    def decorator(f):
-        @wraps(f)
-        async def decorated_function(*args, **kwargs):
-            # Check for token using our existing get_token_from_request function
-            token = await get_token_from_request()
-            if not token:
-                return jsonify({"error": "Missing authorization token"}), 401
-                
-            # Verify token using our existing verify_jwt_token function
-            result = verify_jwt_token(token)
-            # verify_jwt_token returns a dict with 'success' boolean
-            if not result.get("success", False):
-                return jsonify({"error": "Invalid or expired token"}), 401
-                
-            # Set user_id in request context for get_jwt_identity function
-            request.user_id = result.get("user_id")
-            
-            return await f(*args, **kwargs)
-        return decorated_function
-    return decorator
 
-# Replacement for get_jwt_identity
-def get_jwt_identity():
-    return request.user_id
+# --- Conversation session helper ---
+def get_latest_session_for_user(user_id: str) -> Optional[str]:
+    """
+    Return the most recently updated conversation session_id for a given user_id,
+    scanning data/conversation_data/sessions/*.json.
+
+    This is a lightweight heuristic to reuse the last active session when the
+    client doesn't provide a session_id.
+    """
+    try:
+        if grace_instance is None:
+            return None
+
+        base = os.path.join(grace_instance.data_dir, "conversation_data", "sessions")
+        if not os.path.isdir(base):
+            return None
+
+        latest_sid = None
+        latest_ts = -1.0
+
+        for name in os.listdir(base):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(base, name)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("user_id") != user_id:
+                    continue
+                # Prefer last_updated if present; fall back to created_at
+                ts = float(data.get("last_updated") or data.get("created_at") or 0)
+                if ts > latest_ts:
+                    latest_ts = ts
+                    latest_sid = data.get("session_id")
+            except Exception:
+                # Ignore malformed files
+                continue
+
+        return latest_sid
+    except Exception:
+        return None
 
 # Import chat_sessions_quart blueprint for chat functionality
 try:
@@ -104,8 +1006,8 @@ grace_instance = GraceCore(
     test_mode=os.environ.get('GRACE_TEST_MODE', '').lower() == 'true'
 )
 
-# Initialize Quart app with static file serving
-app = Quart(__name__, static_folder='/app/static', static_url_path='')
+# Reuse pre-initialized app; do not re-initialize to preserve earlier route bindings
+# app = Quart(__name__, static_folder='/app/static', static_url_path='')
 app = cors(
     app,
     allow_origin=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -206,6 +1108,206 @@ async def serve_routes(path):
         if '.' not in os.path.basename(path):
             return await app.send_static_file('index.html')
         return jsonify({"error": "Error serving request"}), 500
+
+# --- UI Aggregated Market/Candle Endpoints ---
+def _resolve_mode(val: Optional[str]) -> str:
+    v = (val or "").strip().lower()
+    return "leverage" if v in ("lev", "leverage", "margin", "perp", "perps") else "spot"
+
+def _resolve_symbol_to_market(symbol: str) -> str:
+    """Very small resolver to map common symbols to leverage markets.
+    Example: SOL -> SOL-PERP. If already looks like a market (has '-'), return as-is.
+    """
+    if not symbol:
+        return symbol
+    s = symbol.upper()
+    if "-" in s:
+        return s
+    # Common mappings
+    common = {
+        "SOL": "SOL-PERP",
+        "BTC": "BTC-PERP",
+        "ETH": "ETH-PERP",
+        "BONK": "BONK-PERP",
+    }
+    return common.get(s, f"{s}-PERP")
+
+def _normalize_candles(rows: List[dict]) -> List[dict]:
+    """Normalize various provider candle shapes to {ts, open, high, low, close, volume}."""
+    out: List[dict] = []
+    for r in rows or []:
+        try:
+            # Try common keys first
+            ts = r.get("ts") or r.get("time") or r.get("timestamp") or r.get("t")
+            o = r.get("open") or r.get("o")
+            h = r.get("high") or r.get("h")
+            l = r.get("low") or r.get("l")
+            c = r.get("close") or r.get("c")
+            v = r.get("volume") or r.get("v") or 0
+            # Some providers return arrays: [ts, o, h, l, c, v]
+            if ts is None and isinstance(r, list) and len(r) >= 5:
+                ts, o, h, l, c = r[:5]
+                v = r[5] if len(r) > 5 else 0
+            if ts is None:
+                continue
+            out.append({
+                "ts": int(ts),
+                "open": float(o),
+                "high": float(h),
+                "low": float(l),
+                "close": float(c),
+                "volume": float(v) if v is not None else 0.0,
+            })
+        except Exception:
+            continue
+    return out
+
+def _gmgn_kline(chain: str, token_ca: str, interval: str) -> List[dict]:
+    """Call GMGN kline. Expected path: https://www.gmgn.cc/kline/{chain}/{tokenCA}
+    Query params may include interval/resolution depending on GMGN API.
+    """
+    try:
+        base = os.environ.get("GMGN_KLINE_BASE", "https://www.gmgn.cc/kline")
+        url = f"{base}/{chain}/{token_ca}"
+        r = requests.get(url, params={"interval": interval}, timeout=10)
+        if r.status_code != 200:
+            logger.warning(f"GMGN kline error {r.status_code}: {r.text[:200]}")
+            return []
+        data = r.json()
+        # Attempt to find candles array; support direct list too
+        rows = data.get("data") if isinstance(data, dict) else data
+        return _normalize_candles(rows if isinstance(rows, list) else [])
+    except Exception as e:
+        logger.error(f"GMGN kline call failed: {e}")
+        return []
+
+@app.route("/api/ui/candles", methods=["GET"])
+async def ui_candles():
+    """Unified candles for UI.
+    Query:
+      - mode: spot|leverage
+      - symbol: e.g., SOL or SOL-PERP (leverage)
+      - chain: for GMGN spot, default 'sol'
+      - tokenCA: for GMGN spot if available
+      - interval: e.g., 1m,5m,15m,1h,4h,1d
+    """
+    try:
+        args = request.args
+        mode = _resolve_mode(args.get("mode"))
+        interval = args.get("interval") or "1h"
+        if mode == "leverage":
+            market = args.get("market") or _resolve_symbol_to_market(args.get("symbol", ""))
+            # 1) Prefer in-process leverage aggregator (Pyth-derived) if available
+            try:
+                # Normalize from/to to ms if provided
+                def _to_ms(v: Optional[str]) -> Optional[int]:
+                    if not v:
+                        return None
+                    try:
+                        x = int(v)
+                        return x if x > 10**12 else x * 1000
+                    except Exception:
+                        return None
+
+                ts_from_ms = _to_ms(args.get("from"))
+                ts_to_ms = _to_ms(args.get("to"))
+                aggregator.ensure_symbol(market or "")
+                agg_candles = aggregator.get_candles(market or "", interval, ts_from_ms, ts_to_ms)
+                if agg_candles:
+                    return jsonify({"success": True, "mode": mode, "market": market, "source": "aggregator", "candles": agg_candles})
+            except Exception as e:
+                logger.warning(f"Aggregator candles unavailable: {e}")
+
+            # 2) Try adapter (e.g., HyperLiquid) candles
+            try:
+                r = requests.get(f"{ADAPTER_BASE}/candles", params={"market": market, "interval": interval}, timeout=10)
+                if r.status_code == 200:
+                    rows = r.json()
+                    candles = _normalize_candles(rows if isinstance(rows, list) else rows.get("data", []))
+                    if candles:
+                        return jsonify({"success": True, "mode": mode, "market": market, "source": "adapter", "candles": candles})
+            except Exception as e:
+                logger.warning(f"HL candles fetch failed, will try fallback: {e}")
+
+            # Fallback to GMGN if tokenCA provided (or symbol treated as CA)
+            chain = args.get("chain") or "sol"
+            token_ca = args.get("tokenCA") or args.get("tokenCa") or args.get("token") or args.get("symbol")
+            candles = _gmgn_kline(chain, token_ca, interval) if token_ca else []
+            return jsonify({"success": bool(candles), "mode": mode, "market": market, "fallback": "gmgn" if candles else None, "candles": candles})
+        else:
+            # spot via GMGN
+            chain = args.get("chain") or "sol"
+            token_ca = args.get("tokenCA") or args.get("tokenCa") or args.get("token") or args.get("symbol")
+            if not token_ca:
+                return jsonify({"success": False, "message": "tokenCA or token required for spot"}), 400
+            candles = _gmgn_kline(chain, token_ca, interval)
+            return jsonify({"success": bool(candles), "mode": mode, "chain": chain, "token": token_ca, "candles": candles})
+    except Exception as e:
+        logger.error(f"/api/ui/candles error: {e}")
+        return jsonify({"success": False, "message": "Failed to fetch candles"}), 500
+
+@app.route("/api/ui/markets", methods=["GET"])
+async def ui_markets():
+    """Unified markets search/list for UI.
+    Query:
+      - mode: spot|leverage
+      - q: optional search query/symbol
+      - limit: optional
+    Response normalizes to: [{ symbol, name, market, chain, kind }]
+    """
+    try:
+        args = request.args
+        mode = _resolve_mode(args.get("mode"))
+        q = (args.get("q") or "").strip()
+        limit = int(args.get("limit") or 50)
+
+        results: List[dict] = []
+        if mode == "leverage":
+            # Use HL markets (correct path)
+            try:
+                r = requests.get(f"{ADAPTER_BASE}/markets", params={}, timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    rows = data if isinstance(data, list) else data.get("data", [])
+                    # Normalize HL rows -> { symbol, name, type, source }
+                    for row in (rows or []):
+                        try:
+                            sym = (row.get("symbol") or row.get("market") or row.get("name")) if isinstance(row, dict) else None
+                            if not sym:
+                                continue
+                            if q and q.lower() not in str(sym).lower():
+                                continue
+                            results.append({
+                                "symbol": sym,
+                                "name": (row.get("name") if isinstance(row, dict) else None) or sym,
+                                "type": "leverage",
+                                "source": "hl",
+                            })
+                        except Exception:
+                            continue
+                else:
+                    logger.warning(f"/api/ui/markets leverage adapter non-200: {r.status_code} {r.text[:200]}")
+            except Exception as e:
+                logger.warning(f"/api/ui/markets leverage adapter error: {e}")
+            return jsonify({"success": True, "mode": mode, "results": results})
+        else:
+            # Spot: we don't have a full GMGN markets list API here; implement a minimal token search passthrough when q is provided
+            if not q:
+                # Return a small curated list as a placeholder
+                base_list = [
+                    {"symbol": "SOL", "name": "Solana", "market": "SOL", "chain": "sol", "kind": "spot"},
+                    {"symbol": "BONK", "name": "BONK", "market": "BONK", "chain": "sol", "kind": "spot"},
+                    {"symbol": "ETH", "name": "Ethereum", "market": "ETH", "chain": "eth", "kind": "spot"},
+                ]
+                results = base_list[:limit]
+            else:
+                # Return the query as a single candidate; UI can request candles with tokenCA if known
+                results = [{"symbol": q.upper(), "name": q.upper(), "market": q.upper(), "chain": "sol", "kind": "spot"}]
+        return jsonify({"success": True, "mode": mode, "results": results})
+    except Exception as e:
+        logger.error(f"/api/ui/markets error: {e}")
+        # Never break UI; return an empty result set
+        return jsonify({"success": True, "mode": request.args.get("mode") or "spot", "results": []}), 200
 
 # JWT Secret and Expiry
 JWT_SECRET = os.environ.get("JWT_SECRET", "grace_default_jwt_secret")
@@ -607,6 +1709,255 @@ async def forgot_password():
         )
 
 
+@app.route("/api/trading/positions", methods=["GET"])
+@jwt_required()
+async def get_unified_positions():
+    """Aggregate GMGN spot + Flash leverage positions into a unified normalized list.
+
+    Returns shape:
+      {
+        success: bool,
+        positions: [
+          {
+            id: str,
+            token: str,
+            type: 'spot'|'leverage',
+            amount: float,
+            entryPrice: float,
+            currentPrice: float,
+            openTimestamp: int (ms),
+            side?: 'long'|'short',
+            market?: str,
+            unrealizedPnl?: float,
+            realizedPnl?: float,
+            // metadata
+            source: 'gmgn'|'flash',
+            orderType?: str
+          }
+        ],
+        timestamp: int (ms)
+      }
+    """
+    try:
+        user_id = get_jwt_identity()
+        if not user_id:
+            return jsonify({"success": False, "error": "Authentication required"}), 401
+
+        gmgn_service = grace_instance.gmgn_service
+
+        # Fetch both spot and leverage (Flash) via gmgn_service helpers
+        spot = await run_grace_sync(
+            gmgn_service.get_user_spot_positions,
+            user_identifier=user_id,
+        )
+        lev = await run_grace_sync(
+            gmgn_service.get_user_leverage_positions,
+            user_identifier=user_id,
+        )
+
+        def to_ms(ts_val):
+            try:
+                if ts_val is None:
+                    return int(time.time() * 1000)
+                # If already looks like ms
+                if isinstance(ts_val, (int, float)):
+                    v = float(ts_val)
+                    return int(v if v > 1e12 else v * 1000)
+                # ISO string
+                return int(datetime.fromisoformat(str(ts_val).replace('Z', '+00:00')).timestamp() * 1000)
+            except Exception:
+                return int(time.time() * 1000)
+
+        def normalize(items, source_tag: str):
+            res = []
+            for it in (items or []):
+                try:
+                    pos = {
+                        "id": it.get("id") or it.get("position_id") or str(uuid.uuid4()),
+                        "token": it.get("token") or it.get("symbol") or it.get("market", "").split("/")[0] or "UNKNOWN",
+                        "type": it.get("type") if it.get("type") in ("spot", "leverage") else ("leverage" if it.get("leverage") else "spot"),
+                        "amount": float(it.get("amount") or it.get("size") or 0),
+                        "entryPrice": float(it.get("entryPrice") or it.get("entry_price") or 0),
+                        "currentPrice": float(it.get("currentPrice") or it.get("mark_price") or it.get("price") or 0),
+                        "openTimestamp": to_ms(it.get("openTimestamp") or it.get("open_time") or it.get("timestamp")),
+                        "side": it.get("side"),
+                        "market": it.get("market"),
+                        "unrealizedPnl": float(it.get("unrealizedPnl") or it.get("pnl") or 0),
+                        "realizedPnl": float(it.get("realizedPnl") or 0),
+                        "source": source_tag,
+                        "orderType": it.get("orderType") or it.get("order_type"),
+                    }
+                    # Include leverage-specific metrics if present
+                    if it.get("leverage") is not None:
+                        try:
+                            pos["leverage"] = float(it.get("leverage") or 0)
+                        except Exception:
+                            pass
+                    if it.get("liquidationPrice") is not None:
+                        try:
+                            pos["liquidationPrice"] = float(it.get("liquidationPrice") or 0)
+                        except Exception:
+                            pass
+                    if it.get("marginRatio") is not None:
+                        try:
+                            pos["marginRatio"] = float(it.get("marginRatio") or 0)
+                        except Exception:
+                            pass
+                    res.append(pos)
+                except Exception as _e:
+                    logger.warning(f"Skipping position normalization error: {_e}")
+            return res
+
+        unified = []
+        unified.extend(normalize(spot.get("positions", []), "gmgn"))
+        unified.extend(normalize(lev.get("positions", []), "flash"))
+
+        return jsonify({
+            "success": True,
+            "positions": unified,
+            "timestamp": int(time.time() * 1000),
+        })
+    except Exception as e:
+        logger.error(f"Error aggregating unified positions: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/trading/transactions", methods=["GET"])
+@jwt_required()
+async def get_unified_transactions():
+    """Return unified transactions across sources. Currently reuses wallet transactions fallback."""
+    try:
+        result = await verify_token_and_get_user_id()
+        if not result.get("success"):
+            return jsonify(result), 401
+
+        user_id = result["user_id"]
+
+        # Prefer existing wallet transactions aggregator if available
+        tx = None
+        try:
+            if hasattr(grace_instance, "get_wallet_transactions"):
+                tx = await run_grace_sync(grace_instance.get_wallet_transactions, user_id=user_id)
+        except Exception as e:
+            logger.warning(f"get_wallet_transactions not available or failed: {e}")
+
+        # Fallback to calling the internal endpoint logic directly
+        if not tx:
+            # Call the same logic as /api/wallet/transactions
+            try:
+                # Some deployments store on disk under data/
+                tx = []
+            except Exception:
+                tx = []
+
+        # Normalize minimal shape for UI compatibility if needed
+        def norm_tx(item):
+            try:
+                return {
+                    "id": item.get("id") or item.get("signature") or str(uuid.uuid4()),
+                    "type": item.get("type") or item.get("category") or "swap",
+                    "token": item.get("token") or item.get("symbol") or item.get("market", "").split("/")[0] or "UNKNOWN",
+                    "amount": float(item.get("amount") or item.get("size") or 0),
+                    "timestamp": item.get("timestamp") or item.get("time") or datetime.now().isoformat(),
+                    "status": item.get("status") or "completed",
+                    "source": item.get("source") or "gmgn",
+                }
+            except Exception:
+                return None
+
+        data = [t for t in (norm_tx(x) for x in (tx or [])) if t]
+        return jsonify({"success": True, "transactions": data, "count": len(data)})
+    except Exception as e:
+        logger.error(f"Error getting unified transactions: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/trade/initiate", methods=["POST"])
+@jwt_required()
+async def trade_initiate():
+    """Build an unsigned GMGN transaction for Phantom signing.
+
+    Body: { action: 'buy'|'sell', token: str, amount: str|number }
+    """
+    try:
+        user_id = get_jwt_identity()
+        data = await request.get_json()
+        action = (data or {}).get("action")
+        token = (data or {}).get("token")
+        amount = (data or {}).get("amount")
+
+        if not action or not token or amount in (None, ""):
+            return jsonify({"success": False, "error": "Missing required fields"}), 400
+
+        # Ensure amount is str as expected by gmgn_service builder
+        amount_str = str(amount)
+
+        gmgn_service = grace_instance.gmgn_service
+        build = await run_grace_sync(
+            gmgn_service.build_unsigned_spot_transaction,
+            action,
+            amount_str,
+            token,
+            user_id,
+        )
+
+        if not build.get("success"):
+            return jsonify({"success": False, "error": build.get("error", "Failed to build unsigned tx")}), 502
+
+        # Standardize response for UI
+        payload = {
+            "success": True,
+            "status": build.get("status") or "signature_required",
+            "action": action,
+            "token": token,
+            "amount": amount,
+            "signature_required": True,
+            "serialized_tx": build.get("serialized_tx"),
+            "confirmation_id": build.get("confirmation_id") or build.get("confirmationId"),
+            "router": build.get("router"),
+        }
+        return jsonify(payload), 200
+    except Exception as e:
+        logger.error(f"trade_initiate error: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/trade/submit", methods=["POST"])
+@jwt_required()
+async def trade_submit():
+    """Accept a signed tx and broadcast via the existing Solana JSON-RPC relay.
+
+    Body: { signedTransaction: base64, options?: {...} }
+    """
+    try:
+        data = await request.get_json()
+        signed_tx = (data or {}).get("signedTransaction") or (data or {}).get("signed_tx")
+        options = (data or {}).get("options") or {}
+        if not signed_tx:
+            return jsonify({"success": False, "error": "signedTransaction is required"}), 400
+
+        # Reuse existing relay endpoint logic
+        rpc_url = get_solana_rpc_url()
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "sendTransaction",
+            "params": [signed_tx, options],
+        }
+        r = requests.post(rpc_url, json=payload, timeout=30, headers=headers)
+        data = {}
+        try:
+            data = r.json()
+        except Exception:
+            data = {"raw": r.text}
+
+        ok = (r.status_code == 200) and ("error" not in data)
+        return jsonify({"success": ok, "rpc": data}), (200 if ok else 502)
+    except Exception as e:
+        logger.error(f"trade_submit error: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route("/api/auth/reset-password", methods=["POST"])
 async def reset_password():
     """Reset password using recovery token"""
@@ -755,6 +2106,18 @@ async def register():
             )
 
         user_id = create_result.get("user_id")
+
+        # Link HL wallet metadata (env from HL_ENV, default mainnet)
+        try:
+            hl_env = os.environ.get("HL_ENV", "mainnet")
+            await run_grace_sync(
+                grace_instance.user_profile_system.link_hl_wallet,
+                user_id,
+                hl_env,
+            )
+        except Exception as e:
+            logger.warning(f"HL wallet link failed for {user_id}: {e}")
+
         token = generate_jwt_token(user_id)
 
         # Store session
@@ -763,6 +2126,22 @@ async def register():
             "created_at": datetime.utcnow().isoformat(),
         }
         logger.info(f"User registered and session created for user_id: {user_id}")
+
+        # Fetch HL wallet to include masked address in meta
+        hl_wallet = None
+        try:
+            prof = await run_grace_sync(
+                grace_instance.user_profile_system.get_user_profile, user_id
+            )
+            if prof and prof.get("success"):
+                hl_wallet = (prof.get("profile", {}) or {}).get("hl_wallet")
+        except Exception:
+            pass
+
+        def _mask(addr: Optional[str]) -> Optional[str]:
+            if not addr or len(addr) < 10:
+                return addr
+            return f"{addr[:6]}…{addr[-4:]}"
 
         return (
             jsonify(
@@ -774,6 +2153,11 @@ async def register():
                         "username": username,
                         "email": email,
                         "created_at": create_result.get("created_at"),
+                    },
+                    "meta": {
+                        "hl_env": (hl_wallet or {}).get("env"),
+                        "hl_address_masked": _mask((hl_wallet or {}).get("address")),
+                        "hl_status": (hl_wallet or {}).get("status"),
                     },
                 }
             ),
@@ -795,6 +2179,92 @@ async def register():
             500,
         )
 
+
+@app.route("/api/mango/account/existence", methods=["GET"])
+async def mango_account_existence():
+    """Check Mango v3 accounts for an owner pubkey.
+
+    Query params:
+      - owner: base58 owner pubkey (required)
+    """
+    try:
+        owner = request.args.get("owner")
+        if not owner:
+            return jsonify({"success": False, "message": "owner is required"}), 400
+
+        # Prepare environment for the CLI
+        env = os.environ.copy()
+        if not env.get("SOLANA_RPC_URL"):
+            return jsonify({"success": False, "message": "SOLANA_RPC_URL not set"}), 500
+        if not env.get("GROUP"):
+            env["GROUP"] = "mainnet.1"
+
+        script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "mango-create-account.mjs"))
+        if not os.path.exists(script_path):
+            return jsonify({"success": False, "message": f"CLI not found at {script_path}"}), 500
+
+        # Run CLI in check mode for specified owner via build-unsigned-tx mode (which also reports existing)
+        cmd = [
+            "node",
+            script_path,
+        ]
+        run_env = env.copy()
+        run_env["MODE"] = "build-unsigned-tx"
+        run_env["OWNER"] = owner
+
+        proc = subprocess.run(cmd, env=run_env, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return jsonify({"success": False, "message": proc.stderr.strip() or proc.stdout.strip()}), 500
+
+        try:
+            data = json.loads(proc.stdout.strip())
+        except Exception:
+            data = {"ok": False, "raw": proc.stdout.strip()}
+
+        return jsonify({"success": True, "data": data})
+    except Exception as e:
+        logger.error(f"mango_account_existence error: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/mango/account/create-tx", methods=["POST"])
+async def mango_account_create_tx():
+    """Build an unsigned Mango account creation transaction for a given owner.
+
+    Body JSON:
+      - owner: base58 owner pubkey (required)
+    Returns base64 transaction and a new mangoAccountPubkey.
+    """
+    try:
+        body = await request.get_json()
+        owner = (body or {}).get("owner")
+        if not owner:
+            return jsonify({"success": False, "message": "owner is required"}), 400
+
+        env = os.environ.copy()
+        if not env.get("SOLANA_RPC_URL"):
+            return jsonify({"success": False, "message": "SOLANA_RPC_URL not set"}), 500
+        if not env.get("GROUP"):
+            env["GROUP"] = "mainnet.1"
+
+        script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts", "mango-create-account.mjs"))
+        if not os.path.exists(script_path):
+            return jsonify({"success": False, "message": f"CLI not found at {script_path}"}), 500
+
+        cmd = ["node", script_path]
+        run_env = env.copy()
+        run_env["MODE"] = "build-unsigned-tx"
+        run_env["OWNER"] = owner
+
+        proc = subprocess.run(cmd, env=run_env, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return jsonify({"success": False, "message": proc.stderr.strip() or proc.stdout.strip()}), 500
+
+        data = json.loads(proc.stdout.strip())
+        return jsonify({"success": True, "transaction": data.get("transaction"), "mangoAccountPubkey": data.get("mangoAccountPubkey"), "exists": data.get("exists", False), "accounts": data.get("accounts", [])})
+    except Exception as e:
+        logger.error(f"mango_account_create_tx error: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
 
 @app.route("/api/auth/login", methods=["POST"])
 async def login():
@@ -1098,10 +2568,25 @@ async def process_chat_message():  # Renamed from process_message
         logger.warning("Invalid JSON format received for chat message")
         return jsonify({"error": "Invalid request format"}), 400
 
-    # If no session_id provided, generate one
+    # If no session_id provided, try to reuse the user's latest active session
     if not session_id:
-        session_id = str(uuid.uuid4())
-        logger.info(f"No session_id provided, generating new one: {session_id}")
+        try:
+            latest = await run_grace_sync(get_latest_session_for_user, user_id)
+            if latest:
+                session_id = latest
+                logger.info(
+                    f"No session_id provided; reusing user's latest session: {session_id}"
+                )
+            else:
+                session_id = str(uuid.uuid4())
+                logger.info(
+                    f"No prior session found; generating new session_id: {session_id}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to lookup latest session for user {user_id}: {e}; generating new session_id"
+            )
+            session_id = str(uuid.uuid4())
 
     try:
         # First, integrate with the chat sessions system
@@ -1539,9 +3024,11 @@ async def get_mango_wallet_balance():
     """Get Mango wallet balance information for the authenticated user."""
     try:
         # Verify authentication
-        user_id = await verify_token_and_get_user_id()
-        if not user_id:
-            return jsonify({"success": False, "error": "Authentication required"}), 401
+        result = await verify_token_and_get_user_id()
+        if not result.get("success"):
+            return jsonify(result), 401
+
+        user_id = result["user_id"]
 
         # Get Mango wallet balance through the trading service selector
         result = await run_grace_sync(

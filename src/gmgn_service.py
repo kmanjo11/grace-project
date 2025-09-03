@@ -36,8 +36,6 @@ except ImportError:
     MANGO_V3_AVAILABLE = False
     MangoV3Extension = None
 
-# Mango V3 is the only supported version
-
 
 # Enums for type safety
 class PositionType(str, Enum):
@@ -129,56 +127,180 @@ class GMGNService:
                 os.path.dirname(__file__), "mango_private_key.json"
             ),
         }
-
-        # Merge default config with provided config, giving priority to provided config
-        mango_v3_config = {**default_mango_v3_config, **self.config.get("mango_v3", {})}
-
-        # Always attempt to enable if Mango V3 is available
-        mango_v3_enabled = MANGO_V3_AVAILABLE and mango_v3_config.get("enabled", True)
-
-        if mango_v3_enabled:
-            try:
-                # Log detailed Mango V3 configuration
-                self.logger.info(
-                    f"Attempting to initialize Mango V3 Extension with configuration: {mango_v3_config}"
-                )
-
-                self.mango_v3 = MangoV3Extension(
-                    base_url=mango_v3_config.get("url", "http://localhost"),
-                    private_key_path=mango_v3_config.get("private_key_path"),
-                    logger=self.logger,
-                )
-
-                # Enhanced logging with more context
-                self.logger.info("Mango V3 Extension initialized successfully")
-                self.logger.info("Mango V3 Configuration Details:")
-                self.logger.info(f"  - Base URL: {mango_v3_config.get('url', 'N/A')}")
-                self.logger.info(
-                    f"  - Private Key Path: {'Configured' if mango_v3_config.get('private_key_path') else 'Not Specified'}"
-                )
-                self.logger.info(
-                    f"  - Additional Config: {', '.join(str(k) for k in mango_v3_config.keys() if k not in ['url', 'private_key_path'])}"
-                )
-            except Exception as e:
-                self.logger.error(f"Failed to initialize Mango V3 Extension: {e}")
-                self.logger.error(
-                    f"Mango V3 Configuration that caused the error: {mango_v3_config}"
-                )
         # IMPORTANT: Chart functionality must stay with GMGN, do not move to Mango V3
         self.price_chart_endpoint = (
             "https://www.gmgn.cc/kline"  # GMGN-only endpoint for charts
         )
 
         # Solana RPC settings
-        self.solana_rpc_url = get_config().get("solana_rpc_url")
-        self.solana_network = get_config().get("solana_network")
+        # Prefer values from provided config or environment; fallback to defaults
+        self.solana_rpc_url = (
+            self.config.get("solana_rpc_url")
+            or os.getenv("SOLANA_RPC_URL")
+            or get_config().get("solana_rpc_url")
+        )
+        self.solana_ws_url = (
+            self.config.get("solana_ws_url")
+            or os.getenv("SOLANA_WS_URL")
+            or None
+        )
+        self.solana_network = (
+            self.config.get("solana_network")
+            or os.getenv("SOLANA_NETWORK")
+            or get_config().get("solana_network")
+        )
 
         self.logger.info(
             f"Initialized GMGN Service with trade endpoint: {self.trade_endpoint}"
         )
         self.logger.info(f"Price chart endpoint: {self.price_chart_endpoint}")
         self.logger.info(f"Solana RPC URL: {self.solana_rpc_url}")
+        if self.solana_ws_url:
+            self.logger.info(f"Solana WS URL: {self.solana_ws_url}")
         self.logger.info(f"Solana network: {self.solana_network}")
+
+    def setup_auto_trading(
+        self,
+        user_id: str,
+        risk_level: str,
+        max_trade_size: float,
+        stop_loss: float,
+        take_profit: float,
+        wallet_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Configure auto-trading preferences for a user.
+
+        Persists settings into the user profile via the memory system so other
+        agents/tasks (e.g., monitoring) can act on them.
+
+        Args:
+            user_id: Grace user identifier
+            risk_level: e.g., "low" | "medium" | "high"
+            max_trade_size: maximum notional per trade
+            stop_loss: stop loss percentage (e.g., 0.05 for 5%)
+            take_profit: take profit percentage (e.g., 0.1 for 10%)
+            wallet_address: preferred wallet address to use (optional)
+
+        Returns:
+            Dict[str, Any]: result with persisted settings
+        """
+        try:
+            if not user_id:
+                raise ValueError("user_id is required")
+
+            # Basic validations and coercions
+            risk = (risk_level or "medium").lower()
+            if risk not in ("low", "medium", "high"):
+                raise ValueError(f"Invalid risk_level: {risk_level}")
+
+            try:
+                max_size = float(max_trade_size)
+                sl = float(stop_loss)
+                tp = float(take_profit)
+            except Exception as e:
+                raise ValueError(f"Numeric fields must be numbers: {e}")
+
+            if max_size <= 0:
+                raise ValueError("max_trade_size must be > 0")
+            if sl <= 0 or tp <= 0:
+                raise ValueError("stop_loss and take_profit must be > 0")
+
+            settings_payload = {
+                "trading": {
+                    "auto_trading": True,
+                    "risk_level": risk,
+                    "max_trade_size": max_size,
+                    "stop_loss": sl,
+                    "take_profit": tp,
+                    "wallet_address": wallet_address,
+                }
+            }
+
+            # Persist via user profile system if available
+            persisted: Optional[Dict[str, Any]] = None
+            ups = None
+            if self.memory_system and hasattr(self.memory_system, "user_profile_system"):
+                ups = getattr(self.memory_system, "user_profile_system", None)
+
+            if ups and hasattr(ups, "update_user_settings"):
+                # update_user_settings is async; run in a temporary loop
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    persisted = loop.run_until_complete(
+                        ups.update_user_settings(user_id, settings_payload)
+                    )
+                finally:
+                    try:
+                        loop.close()
+                    except Exception:
+                        pass
+
+            result = {
+                "success": True,
+                "user_id": user_id,
+                "settings": settings_payload,
+                "persisted": persisted,
+            }
+            self.logger.info(
+                "Auto-trading configured for user %s: %s",
+                user_id[-4:] if isinstance(user_id, str) and len(user_id) >= 4 else user_id,
+                {
+                    "risk": risk,
+                    "max_trade_size": max_size,
+                    "sl": sl,
+                    "tp": tp,
+                    "wallet": bool(wallet_address),
+                },
+            )
+            return result
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.error("Failed to setup auto trading: %s", str(e), exc_info=True)
+            return {
+                "success": False,
+                "error": str(e),
+                "code": "AUTO_TRADING_SETUP_ERROR",
+            }
+
+    def _resolve_user_pubkey(self, user_id: str) -> Optional[str]:
+        """Resolve the user's Solana public key from the memory system, if available.
+
+        Args:
+            user_id: The Grace user identifier
+
+        Returns:
+            The base58 Solana public key string if found, else None.
+        """
+        try:
+            if not self.memory_system or not hasattr(self.memory_system, "user_profile_system"):
+                return None
+
+            # Prefer get_user_info if available (richer structure)
+            try:
+                user_info = self.memory_system.user_profile_system.get_user_info(user_id)
+            except Exception:
+                user_info = None
+
+            pubkey = None
+            if user_info and isinstance(user_info, dict):
+                internal_wallet = (user_info.get("internal_wallet") or {})
+                pubkey = internal_wallet.get("public_key") or internal_wallet.get("address")
+
+            if not pubkey:
+                # Fallback to get_user_profile if present
+                try:
+                    profile = self.memory_system.user_profile_system.get_user_profile(user_id)
+                    if profile and isinstance(profile, dict):
+                        wallets = profile.get("wallets") or {}
+                        internal = wallets.get("internal") or {}
+                        pubkey = internal.get("public_key") or internal.get("address")
+                except Exception:
+                    pass
+
+            return pubkey
+        except Exception as e:
+            self.logger.warning(f"Failed to resolve user pubkey for {user_id}: {e}")
+            return None
 
     def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """
@@ -359,63 +481,85 @@ class GMGNService:
                 }
 
         try:
-            # Check if Mango V3 extension is available
-            if not self.mango_v3:
-                error_msg = "Mango V3 Extension not available"
-                self.logger.warning(error_msg)
+            # Route to Flash adapter via backend proxy instead of Mango
+            base_url = os.getenv("GRACE_API_BASE", "http://localhost:9000")
+            params: Dict[str, Any] = {}
+
+            # Try to provide owner explicitly; proxy will also inject if missing
+            try:
+                owner = self._resolve_user_pubkey(user_identifier)
+            except Exception:
+                owner = None
+            if owner:
+                params["owner"] = owner
+
+            url = f"{base_url}/api/flash/positions"
+            self.logger.debug(f"Requesting Flash positions from {url} with params: {params}")
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code != 200:
+                self.logger.error(f"Flash positions error {resp.status_code}: {resp.text}")
                 return {
                     "success": False,
                     "positions": [],
                     "error": {
-                        "message": error_msg,
-                        "code": "MANGO_V3_UNAVAILABLE"
+                        "message": "Adapter error fetching positions",
+                        "code": "FLASH_ADAPTER_ERROR",
+                        "status": resp.status_code,
                     },
                     "metadata": {
                         "user_id": user_identifier,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                }
-
-            # Fetch all positions from Mango V3
-            self.logger.debug(f"Fetching positions from Mango V3 for user: {user_identifier}")
-            all_positions = self.mango_v3.get_positions()
-            
-            if not isinstance(all_positions, dict) or "positions" not in all_positions:
-                error_msg = "Invalid response format from Mango V3"
-                self.logger.error(f"{error_msg}: {all_positions}")
-                return {
-                    "success": False,
-                    "positions": [],
-                    "error": {
-                        "message": error_msg,
-                        "code": "INVALID_RESPONSE_FORMAT"
+                        "timestamp": datetime.utcnow().isoformat(),
                     },
-                    "metadata": {
-                        "user_id": user_identifier,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
                 }
 
-            # Filter positions by type if specified
-            positions = all_positions.get("positions", [])
+            data = resp.json()
+
+            # Normalize potential shapes
+            if isinstance(data, dict) and "positions" in data:
+                raw_positions = data.get("positions") or []
+            elif isinstance(data, list):
+                raw_positions = data
+            else:
+                raw_positions = []
+
+            # Ensure each position is tagged as leverage and keys match processor expectations
+            normalized: List[Dict[str, Any]] = []
+            for p in raw_positions:
+                try:
+                    norm = {
+                        "id": p.get("id") or p.get("positionId") or p.get("txId") or f"pos_{int(time.time()*1000)}",
+                        "market": p.get("market") or p.get("symbol") or p.get("asset") or "",
+                        "type": "leverage",
+                        "size": p.get("size") or p.get("quantity") or p.get("positionSize") or 0,
+                        "entryPrice": p.get("entryPrice") or p.get("entry_price") or p.get("avgEntryPrice") or 0,
+                        "currentPrice": p.get("currentPrice") or p.get("indexPrice") or p.get("markPrice") or 0,
+                        "leverage": p.get("leverage") or p.get("lev") or 1.0,
+                        "openTimestamp": p.get("openTimestamp") or p.get("openedAt") or p.get("timestamp") or datetime.utcnow().isoformat(),
+                        "side": p.get("side") or p.get("direction") or "",
+                        "liquidationPrice": p.get("liquidationPrice") or p.get("liqPrice") or 0.0,
+                        "marginUsed": p.get("marginUsed") or p.get("margin") or 0.0,
+                        "unrealizedPnl": p.get("unrealizedPnl") or p.get("uPnl") or 0.0,
+                        "pnlPercentage": p.get("pnlPercentage") or p.get("uPnlPct") or 0.0,
+                    }
+                    normalized.append(norm)
+                except Exception as ne:
+                    self.logger.warning(f"Skipping position due to normalization error: {ne}")
+
+            # Apply optional filter
             if position_type:
-                positions = self._filter_positions_by_type(positions, position_type)
-                self.logger.debug(f"Filtered to {len(positions)} {position_type.value} positions")
+                normalized = self._filter_positions_by_type(normalized, position_type)
 
-            # Transform and return the positions
-            result = self._transform_positions(positions, user_identifier)
+            result = self._transform_positions(normalized, user_identifier)
 
-            # Log successful operation
             duration_ms = (time.time() - start_time) * 1000
             self.logger.info(
-                f"Successfully retrieved {len(result.get('positions', []))} positions "
-                f"for user {user_identifier} in {duration_ms:.2f}ms"
+                f"Retrieved {len(result.get('positions', []))} Flash positions for user {user_identifier} in {duration_ms:.2f}ms"
             )
-            
+
             return result
 
         except Exception as e:
-            error_msg = f"Error retrieving positions: {str(e)}"
+            error_msg = f"Error retrieving positions via Flash: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
             return {
                 "success": False,
@@ -423,68 +567,26 @@ class GMGNService:
                 "error": {
                     "message": "Failed to retrieve positions",
                     "code": "POSITION_RETRIEVAL_ERROR",
-                    "details": str(e)
+                    "details": str(e),
                 },
                 "metadata": {
                     "user_id": user_identifier,
                     "timestamp": datetime.utcnow().isoformat(),
-                    "position_type": position_type.value if position_type else None
-                }
-            }
-
-        try:
-            # Fetch all positions from Mango V3
-            all_positions = self.mango_v3.get_positions()
-
-            # Filter positions based on type if specified
-            filtered_positions = all_positions.get("positions", [])
-            if position_type:
-                filtered_positions = [
-                    pos
-                    for pos in filtered_positions
-                    if pos.get("type", "").lower() == position_type.lower()
-                ]
-
-            # Transform positions to match frontend expectations
-            transformed_positions = [
-                {
-                    "id": pos.get("id", f"pos_{time.time()}"),
-                    "token": pos.get("market", ""),
-                    "type": pos.get("type", "spot"),
-                    "amount": pos.get("size", 0),
-                    "entryPrice": pos.get("entryPrice", 0),
-                    "currentPrice": pos.get("currentPrice", 0),
-                    "leverage": pos.get("leverage", 1),
-                    "openTimestamp": pos.get(
-                        "openTimestamp", datetime.utcnow().isoformat()
-                    ),
-                    "market": pos.get("market", ""),
-                    "side": pos.get("side", ""),
-                    "liquidationPrice": pos.get("liquidationPrice", 0),
-                    "marginUsed": pos.get("marginUsed", 0),
-                    "unrealizedPnl": pos.get("unrealizedPnl", 0),
-                    "pnlPercentage": pos.get("pnlPercentage", 0),
-                }
-                for pos in filtered_positions
-            ]
-
-            return {
-                "success": True,
-                "positions": transformed_positions,
-                "metadata": {
-                    "total_positions": len(transformed_positions),
-                    "user_identifier": user_identifier,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "position_type": position_type.value if position_type else None,
                 },
             }
 
-        except Exception as e:
-            logger.error(f"Error retrieving user positions: {e}")
-            return {
-                "success": False,
-                "positions": [],
-                "error": {"message": str(e), "code": "POSITION_RETRIEVAL_ERROR"},
-            }
+        # Legacy Mango V3 fallback code removed in favor of Flash adapter
+        # Intentionally left without an additional fallback to avoid Mango dependency
+        return {
+            "success": True,
+            "positions": [],
+            "metadata": {
+                "total_positions": 0,
+                "user_identifier": user_identifier,
+                "timestamp": datetime.utcnow().isoformat(),
+            },
+        }
 
     def get_user_spot_positions(self, user_identifier: str) -> Dict[str, Any]:
         """Retrieve user spot positions.
@@ -818,6 +920,124 @@ class GMGNService:
                 "message": f"Error getting market info: {str(e)}",
             }
 
+    def build_unsigned_spot_transaction(
+        self,
+        action: str,
+        amount: str,
+        token: str,
+        wallet_address: Optional[str] = None,
+        user_id: Optional[str] = None,
+        slippage_bps: int = 50,
+    ) -> Dict[str, Any]:
+        """
+        Build an unsigned GMGN spot transaction for Phantom signing.
+
+        Args:
+            action: "buy" or "sell"
+            amount: token amount as string (in human units)
+            token: token symbol or contract address (for buy: tokenOut; sell: tokenIn)
+            wallet_address: optional explicit sender address; falls back to user's wallet
+            user_id: Grace user id (used for wallet resolution)
+            slippage_bps: slippage in basis points (default 50 = 0.5%)
+
+        Returns:
+            Dict with keys:
+              - success (bool)
+              - status: "signature_required" on success
+              - action, token, amount, wallet_address
+              - serialized_tx: base64 unsigned transaction for Phantom
+              - confirmation_id: identifier to correlate subsequent confirmation
+              - router: raw router response for debugging/metadata
+        """
+        try:
+            act = (action or "buy").lower()
+            if act not in ("buy", "sell"):
+                return {"success": False, "error": f"Invalid action: {action}"}
+
+            # Resolve wallet
+            sender = wallet_address or (self._resolve_user_pubkey(user_id) if user_id else None)
+            if not sender:
+                return {"success": False, "error": "wallet_address is required (or resolvable via user_id)"}
+
+            # Basic amount validation
+            try:
+                amt_float = float(amount)
+                if amt_float <= 0:
+                    return {"success": False, "error": "amount must be > 0"}
+            except Exception:
+                return {"success": False, "error": f"Invalid amount: {amount}"}
+
+            # Decide routing pair. Convention: SOL/USDC spot routing via GMGN usually expects mint addresses.
+            # We pass through provided token identifiers; upstream may resolve.
+            # For now we default counter-asset to USDC.
+            usdc = self.config.get("usdc_mint") or os.getenv("USDC_MINT") or "USDC"
+            if act == "buy":
+                token_in = usdc
+                token_out = token
+            else:
+                token_in = token
+                token_out = usdc
+
+            payload = {
+                "tokenIn": token_in,
+                "tokenOut": token_out,
+                "amount": str(amount),
+                "slippageBps": int(slippage_bps),
+                "from_address": sender,
+            }
+
+            self.logger.info(
+                f"Requesting GMGN unsigned tx: action={act} amount={amount} token={token} sender={sender} slippageBps={slippage_bps}"
+            )
+
+            # Call GMGN router to build unsigned transaction
+            url = self.trade_endpoint  # e.g., https://gmgn.ai/defi/router/v1/sol/tx
+            r = requests.post(url, json=payload, timeout=30)
+            if r.status_code != 200:
+                self.logger.error(f"GMGN router error {r.status_code}: {r.text}")
+                return {"success": False, "error": f"GMGN router error {r.status_code}", "details": r.text}
+
+            try:
+                data = r.json()
+            except Exception:
+                data = {"raw": r.text}
+
+            # Try to extract serialized base64 transaction commonly returned by GMGN
+            # Accept common keys: transaction, tx, unsignedTx
+            tx_b64 = None
+            if isinstance(data, dict):
+                tx_b64 = (
+                    data.get("transaction")
+                    or data.get("tx")
+                    or (data.get("data") or {}).get("transaction")
+                    or (data.get("result") or {}).get("transaction")
+                )
+
+            if not tx_b64:
+                # Return raw for debugging; client can handle alternative shapes if necessary
+                self.logger.warning("GMGN router response missing 'transaction' field")
+                return {
+                    "success": False,
+                    "error": "Router response missing transaction",
+                    "router": data,
+                }
+
+            confirmation_id = f"gmgn_spot_{act}_{token}_{amount}_{int(time.time())}"
+            return {
+                "success": True,
+                "status": "signature_required",
+                "action": act,
+                "token": token,
+                "amount": str(amount),
+                "wallet_address": sender,
+                "serialized_tx": tx_b64,
+                "confirmation_id": confirmation_id,
+                "router": data,
+            }
+        except Exception as e:
+            self.logger.error(f"Error building unsigned spot transaction: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
     def execute_trade(
         self, action: str, amount: str, token: str, user_id: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -833,58 +1053,27 @@ class GMGNService:
         Returns:
             Dict[str, Any]: Trade result
         """
-        # For trades, we need to return a confirmation request first
-        # The actual execution would happen after user confirmation
-
+        # For spot trades, return an unsigned transaction for Phantom signing
         try:
-            # Validate parameters
-            if action not in ["buy", "sell"]:
-                return {
-                    "status": "error",
-                    "message": f"Invalid action: {action}. Must be 'buy' or 'sell'.",
-                }
-
-            try:
-                amount_float = float(amount)
-                if amount_float <= 0:
-                    return {
-                        "status": "error",
-                        "message": f"Invalid amount: {amount}. Must be greater than 0.",
-                    }
-            except ValueError:
-                return {
-                    "status": "error",
-                    "message": f"Invalid amount: {amount}. Must be a number.",
-                }
-
-            # Get current price
-            price_data = self.get_token_price(token, "sol", "1d", user_id)
-
-            if price_data["status"] != "success":
-                return {
-                    "status": "error",
-                    "message": f"Error getting price data for {token}.",
-                    "details": price_data,
-                }
-
-            current_price = price_data.get("current_price")
-
-            # Calculate estimated total
-            estimated_total = float(amount) * current_price
-
-            # Generate confirmation request
-            return {
-                "status": "confirmation_required",
-                "action": action,
-                "amount": amount,
-                "token": token,
-                "current_price": current_price,
-                "estimated_total": estimated_total,
-                "confirmation_id": f"trade_{action}_{token}_{amount}_{int(time.time())}",
-            }
+            build = self.build_unsigned_spot_transaction(
+                action=action, amount=amount, token=token, user_id=user_id
+            )
+            # Preserve legacy shape fields for UI compatibility if possible
+            if build.get("success"):
+                # Optionally enrich with a price snapshot
+                try:
+                    price_data = self.get_token_price(token, "sol", "1d", user_id)
+                    if price_data.get("status") == "success" and price_data.get("current_price") is not None:
+                        build["current_price"] = price_data.get("current_price")
+                        build["estimated_total"] = float(amount) * float(price_data.get("current_price"))
+                except Exception:
+                    pass
+                return build
+            # Standardize error
+            return {"success": False, "status": "error", **{k: v for k, v in build.items() if k != "success"}}
         except Exception as e:
             self.logger.error(f"Error preparing trade: {str(e)}")
-            return {"status": "error", "message": f"Error preparing trade: {str(e)}"}
+            return {"success": False, "status": "error", "message": f"Error preparing trade: {str(e)}"}
 
     def execute_swap(
         self, amount: str, from_token: str, to_token: str, user_id: Optional[str] = None
@@ -1559,215 +1748,6 @@ class GMGNService:
         self.logger.warning(f"Unknown task type: {task_type}")
         return {"status": "error", "message": f"Unknown task type: {task_type}"}
 
-    def get_mango_v3_market_data(
-        self, market_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Retrieve market data from Mango V3 if extension is enabled.
-
-        :param market_name: Optional market name to get specific market data
-        :return: Dictionary of market data or empty dict if not available
-        """
-        if self.mango_v3:
-            try:
-                return self.mango_v3.get_market_data(market_name)
-            except Exception as e:
-                self.logger.warning(f"Error getting Mango V3 market data: {e}")
-        return {}
-
-    def get_mango_v3_portfolio(self) -> Dict[str, Any]:
-        """
-        Retrieve portfolio data from Mango V3 if extension is enabled.
-
-        :return: Dictionary of portfolio data or empty dict if not available
-        """
-        if self.mango_v3:
-            try:
-                return self.mango_v3.get_portfolio_summary()
-            except Exception as e:
-                self.logger.warning(f"Error getting Mango V3 portfolio data: {e}")
-        return {}
-
-    def place_mango_v3_leverage_trade(
-        self, market: str, side: str, price: float, size: float, leverage: float = 1.0
-    ) -> Dict[str, Any]:
-        """
-        Place a leverage trade on Mango V3 if extension is enabled.
-
-        :param market: Market name
-        :param side: Order side (buy or sell)
-        :param price: Order price
-        :param size: Order size
-        :param leverage: Leverage multiplier
-        :return: Trade result or error dict
-        """
-        if self.mango_v3:
-            try:
-                result = self.mango_v3.place_leverage_trade(
-                    market=market, side=side, price=price, size=size, leverage=leverage
-                )
-
-                # Create a memory of the trade if successful
-                if result.get("success") and self.memory_system:
-                    try:
-                        self.memory_system.create_memory(
-                            user_id="system",
-                            memory_type="trade_event",
-                            content=json.dumps(
-                                {
-                                    "event_type": "mango_v3_leverage_trade",
-                                    "market": market,
-                                    "side": side,
-                                    "price": price,
-                                    "size": size,
-                                    "leverage": leverage,
-                                    "timestamp": datetime.now().isoformat(),
-                                }
-                            ),
-                            source="mango_v3",
-                            expiry=None,  # Permanent memory
-                        )
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Failed to create memory for Mango V3 trade: {e}"
-                        )
-
-                return result
-            except Exception as e:
-                self.logger.error(f"Error placing Mango V3 leverage trade: {e}")
-                return {"success": False, "error": str(e)}
-        return {"success": False, "error": "Mango V3 extension not enabled"}
-
-    def place_limit_order(
-        self,
-        market: str,
-        side: str,
-        price: float,
-        size: float,
-        client_id: Optional[str] = None,
-        reduce_only: bool = False,
-        **kwargs,
-    ) -> Dict[str, Any]:
-        """
-        Place a limit order with flexible trade type support.
-
-        Args:
-            market: Trading market
-            side: Order side (buy/sell)
-            price: Limit price
-            size: Order size
-            client_id: Optional client order ID
-            reduce_only: Whether order should only reduce position
-            **kwargs: Additional parameters including:
-                - trade_type: 'spot' or 'leverage'
-                - leverage: Leverage multiplier (for leverage trades)
-                - user_id: Optional user identifier
-        """
-        try:
-            # Basic parameter validation
-            if not market or not side or not price or not size:
-                return {
-                    "success": False,
-                    "error": "Missing required parameters",
-                    "code": "INVALID_INPUT",
-                }
-
-            if side.lower() not in ["buy", "sell"]:
-                return {
-                    "success": False,
-                    "error": f"Invalid side: {side}",
-                    "code": "INVALID_SIDE",
-                }
-
-            trade_type = kwargs.get("trade_type", "spot").lower()
-            if trade_type not in ["spot", "leverage"]:
-                return {
-                    "success": False,
-                    "error": f"Invalid trade type: {trade_type}. Must be spot or leverage.",
-                    "code": "INVALID_TRADE_TYPE",
-                }
-
-            # Execute order based on type
-            if trade_type == "spot":
-                result = self.mango_spot_market.place_limit_order(
-                    market=market,
-                    side=side,
-                    price=price,
-                    size=size,
-                    client_id=client_id,
-                    reduce_only=reduce_only,
-                    user_id=kwargs.get("user_id"),
-                )
-            elif trade_type == "leverage":
-                result = self.leverage_trade_manager.place_limit_order(
-                    market=market,
-                    side=side,
-                    price=price,
-                    size=size,
-                    leverage=kwargs.get("leverage", 1.0),
-                    client_id=client_id,
-                    reduce_only=reduce_only,
-                    user_id=kwargs.get("user_id"),
-                )
-            # Removed the unnecessary else block
-
-            # Log to memory system if successful
-            if result.get("success") and self.memory_system:
-                try:
-                    order_details = {
-                        "event_type": f"mango_v3_{trade_type}_limit_order",
-                        "market": market,
-                        "side": side,
-                        "price": price,
-                        "size": size,
-                        "reduce_only": reduce_only,
-                        "timestamp": datetime.now().isoformat(),
-                    }
-
-                    # Only add client_id if provided
-                    if client_id:
-                        order_details["client_id"] = client_id
-
-                    # Intelligent validation for price, size, and leverage
-                    if not isinstance(price, (int, float)) or price <= 0:
-                        return {
-                            "success": False,
-                            "error": "Invalid price",
-                            "code": "INVALID_PRICE",
-                        }
-                    if not isinstance(size, (int, float)) or size <= 0:
-                        return {
-                            "success": False,
-                            "error": "Invalid size",
-                            "code": "INVALID_SIZE",
-                        }
-                    if leverage and (
-                        not isinstance(leverage, (int, float)) or leverage <= 0
-                    ):
-                        return {
-                            "success": False,
-                            "error": "Invalid leverage",
-                            "code": "INVALID_LEVERAGE",
-                        }
-                    # Add leverage info only for leverage trades
-                    if trade_type == "leverage":
-                        order_details["leverage"] = kwargs.get("leverage", 1.0)
-
-                    self.memory_system.create_memory(
-                        title=f"Limit Order: {market} {side}",
-                        content=json.dumps(order_details),
-                        source="mango_v3",
-                        expiry=None,  # Permanent memory
-                    )
-                except Exception as mem_err:
-                    self.logger.warning(
-                        f"Failed to create memory for limit order: {mem_err}"
-                    )
-
-            return result
-        except Exception as e:
-            self.logger.error(f"Limit order error: {e}", exc_info=True)
-            return {"success": False, "error": str(e), "code": "EXECUTION_ERROR"}
 
     def confirm_trade(self, confirmation_id: str, user_id: str) -> Dict[str, Any]:
         """

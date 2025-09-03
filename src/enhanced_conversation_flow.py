@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import traceback
 from typing import Dict, List, Any, Optional, Union, Callable
+import uuid
 
 # Leverage Trading Integration
 from src.leverage_trading_handler import LeverageTradeManager, LeverageTradeCondition
@@ -1162,21 +1163,59 @@ class EnhancedConversationFlow:
             
             elif action_type == "leverage_trade":
                 request = action.get("request")
-                self.logger.info(f"Processing leverage trade request: {request}")
-                
-                # Use the leverage trade manager to process the request
-                trade_result = await self._handle_leverage_trade_request(
-                    user_id=user_id,
-                    request=request
-                )
-                
-                # Log the result and potentially store in context
-                if trade_result['success']:
-                    self.logger.info(f"Leverage trade processed successfully: {trade_result['message']}")
-                else:
-                    self.logger.warning(f"Leverage trade processing failed: {trade_result['message']}")
-                
-                return
+                prompt = action.get("prompt", True)
+                immediate = action.get("immediate", False)
+                self.logger.info(f"Processing leverage trade request via agent: {request}")
+
+                try:
+                    agent_manager = getattr(self.grace_core, 'agent_manager', None)
+                    if agent_manager is None:
+                        # Fallback to existing manager-only path when agent framework not available
+                        trade_result = await self._handle_leverage_trade_request(user_id=user_id, request=request)
+                        await self._store_action_result(context_id, user_id, "leverage_trade", trade_result)
+                        return
+
+                    # Route through agent framework to leverage Flash flow and risk checks
+                    task = agent_manager.create_task(
+                        task_type="execute_leverage_trade",
+                        content={
+                            "user_id": user_id,
+                            "request": request,
+                            "prompt": bool(prompt),
+                            "immediate": bool(immediate)
+                        }
+                    )
+                    result = agent_manager.process_task_sync(task)
+
+                    # If prompt confirmation required, register it in the conversation context
+                    if isinstance(result, dict) and result.get("status") == "confirmation_required":
+                        confirmation_id = result.get("confirmation_id") or f"confirm_{int(time.time())}"
+                        confirmation_payload = {
+                            "confirmation_id": confirmation_id,
+                            "provider": result.get("provider"),
+                            "flow": result.get("flow"),
+                            "operation": result.get("operation"),
+                            "unsigned_tx_b64": result.get("unsigned_tx_b64"),
+                            "details": result.get("details", {}),
+                            "timestamp": time.time(),
+                        }
+                        await self._register_confirmation_request(context_id, user_id, confirmation_payload)
+                        await self._store_action_result(context_id, user_id, "leverage_trade_prompt", {
+                            "success": True,
+                            "message": "Confirmation required",
+                            "confirmation": confirmation_payload,
+                        })
+                        return
+
+                    # Otherwise, store raw result for visibility
+                    await self._store_action_result(context_id, user_id, "leverage_trade", result)
+                    return
+                except Exception as e:
+                    self.logger.error(f"Error routing leverage trade via agent: {str(e)}")
+                    # Fallback path
+                    trade_result = await self._handle_leverage_trade_request(user_id=user_id, request=request)
+                    await self._store_action_result(context_id, user_id, "leverage_trade", trade_result)
+                    return
             
         except Exception as e:
             self.logger.error(f"Error executing action {action}: {str(e)}")
@@ -1233,6 +1272,35 @@ class EnhancedConversationFlow:
             
         except Exception as e:
             self.logger.error(f"Error storing action result: {str(e)}")
+            self.logger.error(traceback.format_exc())
+
+    async def _register_confirmation_request(self, context_id: str, user_id: str, confirmation: Dict[str, Any]):
+        """Persist a confirmation request in the conversation context to surface to OI/UI."""
+        try:
+            context = await self._safe_call(
+                self.conversation_manager.get_context,
+                context_id=context_id,
+                user_id=user_id
+            )
+            if not context:
+                self.logger.warning(f"Context {context_id} not found for registering confirmation")
+                return
+
+            # Ensure pending_confirmations map exists
+            if not hasattr(context, 'pending_confirmations') or context.pending_confirmations is None:
+                context.pending_confirmations = {}
+
+            cid = confirmation.get("confirmation_id") or f"confirm_{uuid.uuid4()}"
+            context.pending_confirmations[cid] = confirmation
+            context.updated_at = time.time()
+
+            await self._safe_call(
+                self.conversation_manager.save_context,
+                context=context
+            )
+            self.logger.info(f"Registered confirmation {cid} in context {context_id}")
+        except Exception as e:
+            self.logger.error(f"Error registering confirmation request: {str(e)}")
             self.logger.error(traceback.format_exc())
     
     async def _handle_leverage_trade_request(self, user_id: str, request: str) -> Dict[str, Any]:

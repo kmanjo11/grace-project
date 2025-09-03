@@ -9,12 +9,15 @@ This module implements a sophisticated conversation management system with:
 - Topic tracking and active context management
 """
 
+from __future__ import annotations
+
 import os
 import json
 import time
 import uuid
 import logging
 import asyncio
+from src.agent_framework import AgentPriority
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 from collections import deque
@@ -265,6 +268,102 @@ class ConversationContext:
         context.background_tasks = data["background_tasks"]
         context.state = data["state"]
         return context
+
+    def set_agent_manager(self, agent_manager: Any) -> None:
+        """Inject the SystemAgentManager so we can emit tasks from conversation intents.
+        
+        Args:
+            agent_manager: Instance of SystemAgentManager
+        """
+        try:
+            # Basic sanity: must have create_task
+            if not hasattr(agent_manager, "create_task"):
+                raise ValueError("agent_manager is missing create_task()")
+            self.agent_manager = agent_manager
+            logger.info("ConversationManager linked to SystemAgentManager")
+        except Exception as e:
+            logger.error(f"Failed to set agent manager: {e}")
+
+    async def emit_trade_task(
+        self,
+        user_id: str,
+        context: ConversationContext,
+        intent: Dict[str, Any],
+    ) -> Optional[str]:
+        """Create and enqueue an AgentTask based on detected trading intent.
+        Supports GMGN spot (trade_initiate) and Flash leverage (execute_leverage_trade).
+
+        Args:
+            user_id: The user initiating the trade
+            context: Current ConversationContext
+            intent: Dict with detected intent fields (e.g., side, symbol/token, amount, protocol/mode)
+
+        Returns:
+            Task ID if enqueued, else None
+        """
+        if not self.agent_manager:
+            logger.warning("emit_trade_task called without an agent_manager linked")
+            return None
+
+        # Determine task type
+        task_type = intent.get("task_type")
+        if not task_type:
+            protocol = (intent.get("protocol") or intent.get("exchange") or "").lower()
+            mode = (intent.get("mode") or intent.get("trade_mode") or "").lower()
+            if mode in ("leverage", "margin") or protocol in ("flash", "flash-trade", "leverage"):
+                task_type = "execute_leverage_trade"
+            else:
+                task_type = "trade_initiate"
+
+        # Build content payload
+        content = {
+            "user_id": user_id,
+            "context_id": context.context_id,
+            "session_id": context.session_id,
+            "intent": intent,
+        }
+
+        # Common parsed fields if present
+        for key in [
+            "side",
+            "symbol",
+            "token",
+            "amount",
+            "size",
+            "slippage",
+            "price",
+            "order_type",
+            "from_address",
+            "leverage",
+            "chain",
+            "quote",
+        ]:
+            if key in intent:
+                content[key] = intent[key]
+
+        try:
+            task_id = self.agent_manager.create_task(
+                task_type=task_type,
+                content=content,
+                priority=AgentPriority.HIGH,
+                source_agent="conversation_manager",
+                target_agent=None,
+            )
+
+            # Track as background task in context
+            context.add_background_task(task_id=task_id, task_type=task_type, status="pending", data=content)
+
+            # Opportunistic save (don't block on failure)
+            try:
+                await self.save_context(context)
+            except Exception as e:
+                logger.warning(f"emit_trade_task save_context warning: {e}")
+
+            logger.info(f"Emitted trade task {task_id} of type {task_type} for user {user_id}")
+            return task_id
+        except Exception as e:
+            logger.error(f"Failed to emit trade task: {e}")
+            return None
 
 
 class TopicDetector:
@@ -667,6 +766,8 @@ class ConversationManager:
         # Mark state as ready
         self._state_ready = True
         self._lock = asyncio.Lock()
+        # Agent manager injected post-init by GraceCore
+        self.agent_manager = None
     
     async def create_context(self, user_id: str, session_id: str) -> ConversationContext:
         """

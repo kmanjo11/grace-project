@@ -1,0 +1,34 @@
+import { BN } from "@coral-xyz/anchor";
+import { PublicKey } from "@solana/web3.js";
+import { TokenVault } from "./types";
+export declare class TokenVaultAccount implements TokenVault {
+    publicKey: PublicKey;
+    isInitialized: boolean;
+    bump: number;
+    tokenAccountBump: number;
+    tokenMint: PublicKey;
+    tokenVaultTokenAccount: PublicKey;
+    tokenPermissions: any;
+    withdrawTimeLimit: BN;
+    withdrawInstantFee: BN;
+    withdrawInstantFeeEarned: BN;
+    stakeLevel: BN[];
+    tokensStaked: any;
+    rewardTokensToDistribute: BN;
+    rewardTokensPaid: BN;
+    tokensToDistribute: BN;
+    tokensDistributed: BN;
+    lastRewardEpochCount: number;
+    rewardTokensDistributed: BN;
+    padding: number[];
+    revenueTokenAccountBump: number;
+    revenuePerFafStaked: BN;
+    revenueAccrued: BN;
+    revenueDistributed: BN;
+    revenuePaid: BN;
+    padding2: BN[];
+    constructor(publicKey: PublicKey, parseData: TokenVault);
+    static from(publicKey: PublicKey, parseData: TokenVault): TokenVaultAccount;
+    clone(): TokenVaultAccount;
+    updateTokenVaultAccountData(order: TokenVault): void;
+}

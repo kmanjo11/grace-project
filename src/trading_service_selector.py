@@ -1,25 +1,41 @@
 """
 Trading Service Selector for Grace
 
-This module provides a non-invasive way to select and manage trading services,
-making Mango V3 the primary service while keeping GMGN as a backup.
+This module provides a non-invasive way to select and manage trading services.
+GMGN is the primary and only spot trading service used for initiating trades.
+It returns Phantom-signable payloads for client-side signing.
 """
 
 import logging
 import time
 from typing import Dict, Any, Optional
+import asyncio
 from enum import Enum
 
 # Local imports
-try:
-    from .mango_spot_market import MangoSpotMarket
-except ImportError:
-    from mango_spot_market import MangoSpotMarket
 
 try:
     from .gmgn_service import GMGNService
 except ImportError:
     from gmgn_service import GMGNService
+
+# Optional Flash helper client
+try:
+    from .adapters.flash.flash_helper_client import FlashHelperClient  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        from adapters.flash.flash_helper_client import FlashHelperClient  # type: ignore
+    except Exception:  # pragma: no cover
+        FlashHelperClient = None  # type: ignore
+
+# Leverage manager (uses Flash flows already)
+try:
+    from .leverage_trading_handler import LeverageTradeManager  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        from leverage_trading_handler import LeverageTradeManager  # type: ignore
+    except Exception:
+        LeverageTradeManager = None  # type: ignore
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +48,6 @@ _LOGGER = logging.getLogger("TradingServiceSelector")
 class TradingService(Enum):
     """Available trading services."""
 
-    MANGO = "mango"
     GMGN = "gmgn"
 
 
@@ -68,39 +83,164 @@ class TradingServiceSelector:
             self.logger.propagate = False
 
         # Initialize services with proper configuration
-        mango_config = self.config.get("mango", {})
-        if not mango_config.get("mango_url"):
-            mango_config["mango_url"] = "http://mango-v3-service:8080"
-            
-        # Ensure proper logger is passed to services    
-        mango_config["logger"] = self.logger
         gmgn_config = self.config.get("gmgn", {})
         gmgn_config["logger"] = self.logger
         
         # Initialize services
         try:
             self.services = {
-                TradingService.MANGO: MangoSpotMarket(
-                    config=mango_config,
-                    memory_system=memory_system,
-                    conversation_aware=True
-                ),
                 TradingService.GMGN: GMGNService(
                     config=gmgn_config,
                     memory_system=memory_system
                 ),
             }
-            self.primary_service = TradingService.MANGO
+            # Set GMGN as the primary service moving forward
+            self.primary_service = TradingService.GMGN
             self.logger.info(
                 "Trading services initialized with primary: %s",
                 self.primary_service.value
             )
+            # Optional Flash client for direct helper calls
+            self.flash_client = None
+            use_client = str(self.config.get("FLASH_USE_CLIENT") or "").lower() in ("1", "true", "yes")
+            if FlashHelperClient is not None and use_client:
+                try:
+                    self.flash_client = FlashHelperClient()
+                    self.logger.info("FlashHelperClient enabled in TradingServiceSelector")
+                except Exception as e:  # pragma: no cover
+                    self.logger.warning(f"Failed to init FlashHelperClient in selector: {e}")
+
+            # Optional leverage manager for Flash auto loops
+            self.leverage_manager = None
+            if LeverageTradeManager is not None:
+                try:
+                    self.leverage_manager = LeverageTradeManager(
+                        gmgn_service=self.services[TradingService.GMGN],
+                        memory_system=memory_system,
+                        logger=self.logger,
+                    )
+                except Exception as e:  # pragma: no cover
+                    self.logger.warning(f"Failed to init LeverageTradeManager: {e}")
+            self._flash_monitor_task = None
         except Exception as e:
             self.logger.exception(
                 "Failed to initialize trading services: %s",
                 str(e)
             )
             raise RuntimeError("Failed to initialize trading services") from e
+
+    # --- Flash wiring: thin wrappers and monitoring ---
+    def has_flash_client(self) -> bool:
+        return getattr(self, "flash_client", None) is not None
+
+    async def get_flash_prices(self) -> Dict[str, Any]:
+        if not self.has_flash_client():
+            return {"success": False, "error": "Flash client not enabled"}
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, self.flash_client.get_prices)  # type: ignore[attr-defined]
+            return data if isinstance(data, dict) else {"success": False, "error": "Invalid response"}
+        except Exception as e:  # pragma: no cover
+            self.logger.error(f"Flash get_prices error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_flash_positions(self) -> Dict[str, Any]:
+        if not self.has_flash_client():
+            return {"success": False, "error": "Flash client not enabled"}
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, self.flash_client.get_positions)  # type: ignore[attr-defined]
+            return data if isinstance(data, dict) else {"success": False, "error": "Invalid response"}
+        except Exception as e:  # pragma: no cover
+            self.logger.error(f"Flash get_positions error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def start_flash_auto_monitoring(self, poll_interval: float = 5.0) -> Dict[str, Any]:
+        """
+        Start a background loop to monitor Flash prices/positions and invoke leverage manager execution
+        with the same safety and risk measures used for auto-traded spot (GMGN) flows.
+        """
+        if self._flash_monitor_task and not self._flash_monitor_task.done():
+            return {"success": True, "message": "Flash monitoring already running"}
+        if not self.leverage_manager:
+            return {"success": False, "error": "LeverageTradeManager unavailable"}
+        self._flash_monitor_task = asyncio.create_task(self._flash_monitor_loop(poll_interval))
+        return {"success": True}
+
+    async def stop_flash_auto_monitoring(self) -> Dict[str, Any]:
+        task = getattr(self, "_flash_monitor_task", None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        return {"success": True}
+
+    async def _flash_monitor_loop(self, poll_interval: float) -> None:
+        self.logger.info("Starting Flash auto-monitoring loop (interval=%ss)", poll_interval)
+        try:
+            while True:
+                try:
+                    # Fetch prices via leverage manager (which uses Flash client if enabled)
+                    prices_data = self.leverage_manager.flash_get_prices() if self.leverage_manager else {"success": False}
+                    market_prices: Dict[str, float] = {}
+                    if prices_data.get("success"):
+                        for sym, info in (prices_data.get("prices", {}) or {}).items():
+                            try:
+                                exp = int(info.get("exponent", 0))
+                                val = info.get("emaPrice") or info.get("price")
+                                if val is not None:
+                                    price = float(val) * (10 ** exp)
+                                    market_prices[f"{sym.upper()}-PERP"] = price
+                            except Exception:
+                                continue
+                    # Execute leverage trade logic with risk controls
+                    if self.leverage_manager and market_prices:
+                        _ = self.leverage_manager.execute_trades(market_prices)
+                except Exception as inner:
+                    self.logger.debug(f"Flash monitor iteration error: {inner}")
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            self.logger.info("Flash auto-monitoring loop cancelled")
+            raise
+
+    async def setup_auto_trading(
+        self,
+        user_id: str,
+        risk_level: str,
+        max_trade_size: float,
+        stop_loss: float,
+        take_profit: float,
+        wallet_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Pass-through setup for auto trading to the primary service (GMGN).
+
+        This bridges to the synchronous GMGNService.setup_auto_trading using
+        an executor so the selector remains usable in async contexts.
+        """
+        try:
+            service = self.services[self.primary_service]
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None,
+                lambda: service.setup_auto_trading(
+                    user_id=user_id,
+                    risk_level=risk_level,
+                    max_trade_size=max_trade_size,
+                    stop_loss=stop_loss,
+                    take_profit=take_profit,
+                    wallet_address=wallet_address,
+                ),
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.exception("Auto-trading setup failed via selector: %s", str(e))
+            return {
+                "success": False,
+                "error": "Failed to setup auto trading",
+                "code": "AUTO_TRADING_SELECTOR_ERROR",
+                "details": str(e),
+            }
 
     def _map_trade_params(self, trade_params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -144,37 +284,47 @@ class TradingServiceSelector:
                 - code (str, optional): Error code if operation failed
         """
         try:
-            # Map trade parameters to service format
-            mapped_params = self._map_trade_params(trade_params)
-            
-            # Try primary service first
+            # Prepare parameters expected by GMGN
+            action = (trade_params.get("action") or trade_params.get("side") or "buy").lower()
+            token = (
+                trade_params.get("token")
+                or trade_params.get("symbol")
+                or trade_params.get("to_token")
+                or trade_params.get("market")
+            )
+            amount_value = trade_params.get("amount") or trade_params.get("size")
+            amount = str(amount_value) if amount_value is not None else None
+            user_id = trade_params.get("user_id")
+            wallet_address = trade_params.get("wallet_address")
+
+            if not token or not amount or not user_id:
+                raise ValueError("user_id, token, and amount are required for trade initiation")
+
+            # Use GMGN to build a Phantom-signable payload. Bridge sync call via executor.
             service = self.services[self.primary_service]
-            result = await service.execute_trade(mapped_params)
-            
-            if result.get("success", False):
-                self.logger.info(
-                    "Trade executed successfully via %s",
-                    self.primary_service.value
+            loop = asyncio.get_running_loop()
+
+            if hasattr(service, "build_unsigned_spot_transaction"):
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: service.build_unsigned_spot_transaction(
+                        action=action,
+                        amount=amount,
+                        token=token,
+                        wallet_address=wallet_address,
+                        user_id=user_id,
+                    ),
                 )
                 return result
-                
-            error = result.get("error", "Unknown error")
-            self.logger.warning(
-                "Trade execution failed via %s: %s",
-                self.primary_service.value, error
+
+            # Fallback: use GMGN execute_trade to return confirmation info
+            result = await loop.run_in_executor(
+                None,
+                lambda: service.execute_trade(
+                    action=action, amount=amount, token=token, user_id=user_id
+                ),
             )
-            
-            # Fall back to GMGN
-            gmgn_service = self.services[TradingService.GMGN]
-            self.logger.info("Falling back to GMGN for trade execution")
-            
-            # Map parameters for GMGN if needed
-            gmgn_params = self._map_trade_params(trade_params)
-            gmgn_result = await gmgn_service.execute_trade(gmgn_params)
-            
-            if gmgn_result.get("success", False):
-                self.logger.info("Trade executed successfully via GMGN")
-            return gmgn_result
+            return result
             
         except (ValueError, KeyError) as e:
             error_msg = f"Invalid trade parameters: {str(e)}"
@@ -215,9 +365,14 @@ class TradingServiceSelector:
                 - code (str, optional): Error code if operation failed
         """
         try:
-            # Try primary service first
+            # Try primary service (GMGN)
             service = self.services[self.primary_service]
-            result = await service.get_market_data(market)
+            # Bridge sync methods if needed
+            if hasattr(service, "get_market_data") and asyncio.iscoroutinefunction(service.get_market_data):
+                result = await service.get_market_data(market)
+            else:
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, lambda: service.get_market_data(market))
             
             if result.get("success", False):
                 self.logger.debug(
@@ -232,20 +387,8 @@ class TradingServiceSelector:
                 market, self.primary_service.value, error
             )
             
-            # Fall back to GMGN
-            gmgn_service = self.services[TradingService.GMGN]
-            self.logger.info(
-                "Falling back to GMGN for market data: %s",
-                market
-            )
-            
-            gmgn_result = await gmgn_service.get_market_data(market)
-            if gmgn_result.get("success", False):
-                self.logger.debug(
-                    "Market data for %s fetched successfully via GMGN",
-                    market
-                )
-            return gmgn_result
+            # No other services; return the result we have
+            return result
             
         except (ValueError, KeyError) as e:
             error_msg = f"Invalid market symbol {market}: {str(e)}"
@@ -647,291 +790,7 @@ class TradingServiceSelector:
             "platform": self.primary_service.value
         }
 
-    async def execute_leverage_trade(
-            self,
-            trade_params: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Execute a leverage trade using primary service with fallback.
-        
-        Args:
-            trade_params: Leverage trade parameters
-            
-        Returns:
-            Trade result dictionary
-        """
-        try:
-            # Extract key parameters
-            market = trade_params.get("market", "")
-            side = trade_params.get("side", "buy")
-            size = float(trade_params.get("size", 0))
-            leverage = float(trade_params.get("leverage", 1.0))
-            price = float(trade_params.get("price", 0))
-            order_type = trade_params.get("type", "market")
-            reduce_only = trade_params.get("reduce_only", False)
-            client_id = trade_params.get("client_id", f"leverage_{int(time.time())}")
-            user_id = trade_params.get("user_id")
-            
-            self.logger.info(
-                "Executing leverage trade: %s %s %s with %sx leverage",
-                side, size, market, leverage
-            )
-            
-            # Try Mango V3 first for leverage trading
-            service = self.services[self.primary_service]
-            
-            # Check if the service has the specific method for leverage trading
-            if hasattr(service, "place_leverage_trade"):
-                result = await service.place_leverage_trade(
-                    market=market,
-                    side=side,
-                    price=price,
-                    size=size,
-                    leverage=leverage,
-                    order_type=order_type,
-                    reduce_only=reduce_only,
-                    client_id=client_id
-                )
-                
-                if result.get("success", False):
-                    self.logger.info(
-                        "Leverage trade executed successfully via %s",
-                        self.primary_service.value
-                    )
-                    return result
-                
-                error = result.get("error", "Unknown error")
-                self.logger.warning(
-                    "Leverage trade failed via %s: %s",
-                    self.primary_service.value, error
-                )
-            else:
-                self.logger.warning(
-                    "%s doesn't support leverage trading directly",
-                    self.primary_service.value
-                )
-            
-            # Fall back to GMGN service for leverage trading
-            gmgn_service = self.services[TradingService.GMGN]
-            self.logger.info("Falling back to GMGN for leverage trading")
-            
-            # Adapt parameters for GMGN service format if needed
-            gmgn_params = {
-                "symbol": market.split("/")[0] if "/" in market else market,
-                "action": side,
-                "amount": size,
-                "leverage": leverage,
-                "user_id": user_id
-            }
-            
-            # Call GMGN service for leverage trading
-            if hasattr(gmgn_service, "execute_leverage_trade"):
-                return await gmgn_service.execute_leverage_trade(**gmgn_params)
-            else:
-                self.logger.error("No service available for leverage trading")
-                return {
-                    "success": False,
-                    "error": "No service available for leverage trading"
-                }
-                
-        except (ValueError, KeyError) as e:
-            error_msg = "Invalid leverage trade parameters: %s"
-            self.logger.error(error_msg, str(e))
-            return {
-                "success": False,
-                "error": error_msg % str(e),
-                "code": "INVALID_PARAMETERS"
-            }
-        except (ConnectionError, TimeoutError) as e:
-            error_msg = "Connection error executing leverage trade: %s"
-            self.logger.error(error_msg, str(e))
-            return {
-                "success": False,
-                "error": error_msg % str(e),
-                "code": "LEVERAGE_TRADE_CONNECTION_ERROR"
-            }
-        except (ValueError, KeyError) as e:
-            error_msg = f"Invalid parameters for leverage trade: {str(e)}"
-            self.logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "code": "INVALID_LEVERAGE_PARAMS"
-            }
-        except (ConnectionError, TimeoutError) as e:
-            error_msg = f"Connection error executing leverage trade: {str(e)}"
-            self.logger.error(error_msg)
-            return {
-                "success": False,
-                "error": "Failed to connect to trading service",
-                "code": "LEVERAGE_TRADE_CONNECTION_ERROR",
-                "details": str(e)
-            }
-        except Exception as e:  # pylint: disable=broad-except
-            error_msg = f"Unexpected error in leverage trade execution: {str(e)}"
-            self.logger.exception(error_msg)
-            return {
-                "success": False,
-                "error": "An unexpected error occurred during trade execution",
-                "code": "LEVERAGE_TRADE_ERROR",
-                "details": str(e)
-            }
-            
-    async def confirm_trade(self, confirmation_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """Confirm a pending trade execution using the primary service with fallback.
-        
-        Args:
-            confirmation_id: The ID of the trade confirmation to process
-            user_id: Optional user identifier
-            
-        Returns:
-            Dict containing:
-                - success (bool): Whether the operation was successful
-                - error (str, optional): Error message if operation failed
-                - code (str, optional): Error code if operation failed
-        """
-        if not confirmation_id:
-            error_msg = "Confirmation ID is required"
-            self.logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "code": "INVALID_PARAMETERS"
-            }
-            
-        self.logger.info(
-            "Confirming trade with ID: %s for user: %s",
-            confirmation_id, user_id or "unknown"
-        )
-        
-        try:
-            # First try using the primary service (Mango V3)
-            service = self.services[self.primary_service]
-            
-            # Check if the service has a confirm_trade method
-            if hasattr(service, "confirm_trade"):
-                self.logger.debug(
-                    "Attempting trade confirmation via %s",
-                    self.primary_service.value
-                )
-                result = await service.confirm_trade(confirmation_id, user_id=user_id)
-                if result.get("success", False):
-                    self.logger.info(
-                        "Trade %s confirmed successfully via %s",
-                        confirmation_id, self.primary_service.value
-                    )
-                    return result
-                
-                error = result.get("error", "Unknown error")
-                self.logger.warning(
-                    "Trade confirmation failed via %s: %s",
-                    self.primary_service.value, error
-                )
-            else:
-                self.logger.error("No service available for trade confirmation")
-                return {
-                    "success": False,
-                    "error": "No service available for trade confirmation",
-                    "code": "SERVICE_UNAVAILABLE"
-                }
-            
-            # Fall back to GMGN service if primary fails or doesn't support confirmation
-            gmgn_service = self.services[TradingService.GMGN]
-            self.logger.info(
-                "Falling back to GMGN for trade confirmation: %s",
-                confirmation_id
-            )
-            
-            if hasattr(gmgn_service, "confirm_trade"):
-                try:
-                    result = await gmgn_service.confirm_trade(confirmation_id, user_id=user_id)
-                    
-                    # Standardize response format
-                    if "status" in result and "success" not in result:
-                        result["success"] = result["status"] == "success"
-                    
-                    if result.get("success", False):
-                        self.logger.info("Trade %s confirmed successfully via GMGN", confirmation_id)
-                    else:
-                        self.logger.warning(
-                            "Trade confirmation failed via GMGN: %s",
-                            result.get("error", "Unknown error")
-                        )
-                    
-                    return result
-                except Exception as e:  # pylint: disable=broad-except
-                    error_msg = "Error during GMGN trade confirmation: %s"
-                    self.logger.exception(error_msg, str(e))
-                    return {
-                        "success": False,
-                        "error": error_msg % str(e),
-                        "code": "GMGN_CONFIRMATION_ERROR",
-                        "confirmation_id": confirmation_id,
-                        "user_id": user_id
-                    }
-            
-            error_msg = "No service available for trade confirmation"
-            self.logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "code": "SERVICE_UNAVAILABLE",
-                "confirmation_id": confirmation_id,
-                "user_id": user_id
-            }
-                
-        except (ValueError, KeyError) as e:
-            error_msg = "Invalid trade confirmation parameters: %s"
-            self.logger.error(error_msg, str(e))
-            return {
-                "success": False,
-                "error": error_msg % str(e),
-                "code": "INVALID_PARAMETERS",
-                "confirmation_id": confirmation_id,
-                "user_id": user_id
-            }
-        except (ConnectionError, TimeoutError) as e:
-            error_msg = "Connection error confirming trade: %s"
-            self.logger.error(error_msg, str(e))
-            return {
-                "success": False,
-                "error": error_msg % str(e),
-                "code": "CONNECTION_ERROR",
-                "confirmation_id": confirmation_id,
-                "user_id": user_id
-            }
-        except (ValueError, KeyError) as e:
-            error_msg = f"Invalid trade confirmation parameters: {str(e)}"
-            self.logger.error(error_msg)
-            return {
-                "success": False,
-                "error": error_msg,
-                "code": "INVALID_CONFIRMATION_PARAMS",
-                "confirmation_id": confirmation_id,
-                "user_id": user_id
-            }
-        except (ConnectionError, TimeoutError) as e:
-            error_msg = f"Connection error confirming trade: {str(e)}"
-            self.logger.error(error_msg)
-            return {
-                "success": False,
-                "error": "Failed to connect to trade confirmation service",
-                "code": "CONFIRMATION_CONNECTION_ERROR",
-                "confirmation_id": confirmation_id,
-                "user_id": user_id,
-                "details": str(e)
-            }
-        except Exception as e:  # pylint: disable=broad-except
-            error_msg = f"Unexpected error confirming trade {confirmation_id}: {str(e)}"
-            self.logger.exception(error_msg)
-            return {
-                "success": False,
-                "error": "An unexpected error occurred while confirming the trade",
-                "code": "CONFIRMATION_ERROR",
-                "confirmation_id": confirmation_id,
-                "user_id": user_id,
-                "details": str(e)
-            }
-            
+
     async def modify_leverage_position(
         self,
         position_id: str,
